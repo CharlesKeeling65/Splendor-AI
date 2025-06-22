@@ -8,21 +8,31 @@
 
 # pylint: skip-file
 
+from datetime import date
+
 project = "Splendor-AI"
-copyright = "2024, Eyal Royee"
 author = "Eyal Royee"
+copyright = f"{date.today().year}, {author}"
 release = "0.0.2"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    "sphinx.ext.todo",
-    "sphinx.ext.viewcode",
-    "sphinx.ext.autodoc",
-    "sphinx.ext.githubpages",
-    "sphinx_copybutton",
-    "sphinx_rtd_dark_mode",
+    # sphinx-builtin extensions
+    "sphinx.ext.duration",       # Measure durations of Sphinx processing.
+    "sphinx.ext.todo",           # Support for todo items & todolist in sphinx.
+    "sphinx.ext.viewcode",       # Add links to highlighted source code.
+    "sphinx.ext.autodoc",        # Include documentation from docstrings.
+    "sphinx.ext.githubpages",    # Adds .nojekyll so everythings works in gh-pages.
+    "sphinx.ext.graphviz",       # Uses graphviz for plotting graphs & visuals.
+
+    # sphinx external extensions
+    "sphinx_copybutton",         # Adds a copy button to each code block.
+    "sphinx_rtd_dark_mode",      # Adds dark-mode theme to read-the-docs theme.
+    "sphinxcontrib.plantuml",    # Uses plantuml for plotting graphs & visuals.
+    "sphinxcontrib.mermaid",     # Uses mermaid for plotting graphs & visuals.
+    "sphinxcontrib.shellcheck",  # Use shellcheck **inside** code blocks.
 ]
 
 templates_path = ["_templates"]
@@ -34,9 +44,12 @@ exclude_patterns = []
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
+html_baseurl = "https://roeey777.github.io/Splendor-AI/"
 
 
 # -- Custom configuration ----------------------------------------------------
 # user starts in dark mode
 default_dark_mode = True
 
+# plantuml configurations
+plantuml_output_format = "svg_img"

@@ -1,6 +1,6 @@
-black==24.8.0
-ipdb==0.13.13
-ipython==8.27.0
-isort==5.13.2
-matplotlib==3.9.2
-pylint==3.3.1
+black>=24.8.0,<25
+ipdb>=0.13.13,<1
+ipython>=8.27.0,<9
+isort>=5.13.2,<6
+matplotlib>=3.9.2,<4
+pylint>=3.3.1,<4
