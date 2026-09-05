@@ -7,9 +7,69 @@ from numpy.typing import NDArray
 
 from splendor.splendor.constants import MAX_TIER_CARDS, NUMBER_OF_TIERS, RESERVED
 from splendor.splendor.splendor_model import SplendorState
-from splendor.splendor.types import ActionType
+from splendor.splendor.types import ActionType, GemsCount
 
 from .actions import ALL_ACTIONS, Action, ActionEnum, CardPosition
+
+
+def _gems_key(gems: GemsCount | None) -> tuple[tuple[str, int], ...] | None:
+    """
+    Convert a gems count (dict) into a hashable key.
+
+    ``None`` and the empty dict must stay distinguishable: buy actions carry
+    ``collected_gems=None`` while "no gems to return" is an empty dict - the
+    two are different actions.
+    """
+    return None if gems is None else tuple(sorted(gems.items()))
+
+
+def action_key(action: Action) -> tuple:
+    """
+    Convert an Action into a hashable key, preserving the exact equality
+    semantics of the Action dataclass (field-by-field comparison).
+
+    This is the identity used by ACTION_INDEX: ``Action`` holds dict fields
+    (unhashable), so dict lookups must go through this flattened key.
+    """
+    position_key = (
+        (action.position.tier, action.position.card_index, action.position.reserved_index)
+        if action.position is not None
+        else None
+    )
+    return (
+        action.type_enum,
+        _gems_key(action.collected_gems),
+        _gems_key(action.returned_gems),
+        position_key,
+        action.noble_index,
+    )
+
+
+# Built once at import time (O(3510)); every later lookup is O(1).
+ACTION_INDEX: dict[tuple, int] = {
+    action_key(action): index for index, action in enumerate(ALL_ACTIONS)
+}
+
+# A key collision means ALL_ACTIONS contains duplicate actions - better to
+# fail loudly at import than to silently mis-index actions later.
+assert len(ACTION_INDEX) == len(ALL_ACTIONS), (
+    "duplicate actions detected in ALL_ACTIONS (index keys collide)"
+)
+
+
+def _index_of(action_element: Action) -> int:
+    """
+    Return the index of the given action in ALL_ACTIONS (O(1) cache lookup).
+
+    Raises a ValueError carrying the offending action when it isn't part of
+    ALL_ACTIONS - the previous list.index() based implementation raised a
+    bare ValueError deep inside the per-action loop, without any detail
+    about which action failed to match.
+    """
+    try:
+        return ACTION_INDEX[action_key(action_element)]
+    except KeyError as err:
+        raise ValueError(f"action not in ALL_ACTIONS: {action_element}") from err
 
 
 def _valid_position(state: SplendorState, position: CardPosition) -> bool:
@@ -145,6 +205,24 @@ def build_action(
     return action_to_execute
 
 
+def _slow_create_legal_actions_mask(
+    legal_actions: list[ActionType],
+    state: SplendorState,
+    agent_index: int,
+) -> NDArray:
+    """
+    The pre-cache implementation of create_legal_actions_mask, kept only as
+    the reference oracle for the equivalence tests (O(3510) scan per action).
+    """
+    mask = np.zeros(len(ALL_ACTIONS))
+
+    for legal_action in legal_actions:
+        action_element = Action.to_action_element(legal_action, state, agent_index)
+        mask[ALL_ACTIONS.index(action_element)] = 1
+
+    return mask
+
+
 def create_legal_actions_mask(
     legal_actions: list[ActionType],
     state: SplendorState,
@@ -159,9 +237,26 @@ def create_legal_actions_mask(
 
     for legal_action in legal_actions:
         action_element = Action.to_action_element(legal_action, state, agent_index)
-        mask[ALL_ACTIONS.index(action_element)] = 1
+        mask[_index_of(action_element)] = 1
 
     return mask
+
+
+def _slow_create_action_mapping(
+    legal_actions: list[ActionType], state: SplendorState, agent_index: int
+) -> dict[int, ActionType]:
+    """
+    The pre-cache implementation of create_action_mapping, kept only as
+    the reference oracle for the equivalence tests (O(3510) scan per action).
+    """
+    mapping = {
+        ALL_ACTIONS.index(
+            Action.to_action_element(legal_action, state, agent_index)
+        ): legal_action
+        for legal_action in legal_actions
+    }
+
+    return mapping
 
 
 def create_action_mapping(
@@ -172,7 +267,7 @@ def create_action_mapping(
     This would be in use by both SplendorEnv & by the PPO agent.
     """
     mapping = {
-        ALL_ACTIONS.index(
+        _index_of(
             Action.to_action_element(legal_action, state, agent_index)
         ): legal_action
         for legal_action in legal_actions

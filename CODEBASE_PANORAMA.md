@@ -391,4 +391,21 @@ evolve:main → parse_args → evolve
 
 ---
 
-*本全景图对应升级改造前的代码基线；后续按 [plan/](./plan/README.md) 新增的模块（`dqn/`、`browser/`、`tests/` 等）不在本文范围内。*
+*§1-§6 对应升级改造前的代码基线快照；升级新增的模块见 §7 增量记录。*
+
+## 7. 升级增量记录（dev 分支，随阶段实时更新）
+
+### 7.1 Phase-0 地基与对齐（2026-09-05 落地）
+
+| 文件 | 类型 | 内容 |
+|---|---|---|
+| `src/splendor/splendor/gym/envs/utils.py` | 修改 | **ActionIndexCache**：`action_key()`（Action→可哈希键，区分 `None` 与空 dict）、模块级 `ACTION_INDEX`（加载期构建 + 双射断言）、`_index_of()`（未命中抛带细节 ValueError）；`create_legal_actions_mask`/`create_action_mapping` 内部全部改走缓存，**签名与返回值零变化**；旧实现保留为 `_slow_create_legal_actions_mask`/`_slow_create_action_mapping` 供等价性测试对照。实测掩码+映射构建 ×75 提速（见 docs/web_experiments.md M0.2） |
+| `src/splendor/splendor/gym/base.py` | 新增 | **`SplendorEnvBase`** 协议（`@runtime_checkable Protocol`）：`observation_space / action_space / reset / step(action, payment=None) / get_legal_actions_mask / get_payment_options` 五件套——"单接口、双环境"的接口契约，`payment` 为 P4 支付维度前瞻参数 |
+| `src/splendor/splendor/gym/envs/splendor_env.py` | 修改 | `step()` 增加 `payment: int \| None = None` 兼容参数（显式忽略）；新增 `get_payment_options()` 恒返 None（tier-1 语义）——使 SplendorEnv 满足协议 |
+| `src/splendor/browser/`（新包） | 新增 | `card_registry.py`：卡/贵族身份注册表。90 张卡以 `(deck_id, colour, points, sorted_cost)` 四元组为键、10 贵族以 sorted cost 为键，值为引擎同构对象；`web_row_to_deck_id()` 收口网页行序（上→下 = tier 2/1/0）与引擎 deck_id 的方向转换。未命中抛含输入内容的 KeyError |
+| `tests/`（新目录） | 新增 | `test_action_index_cache.py`（A0.1 等价性 + A0.2 双射）、`test_card_registry.py`（A0.3 90 卡/10 贵族命中与字段一致）、`test_env_protocol.py`（A0.4 协议符合 + payment 参数冒烟），共 14 例全绿 |
+| `docs/web_experiments.md` | 新增 | E1-E6 网页实测协议与结论登记表 + M0.2 吞吐留档（E1-E6 实测随 P2 网页联调进行） |
+| `plan/reference/BROWSER_RL_MAPPING.md`、`DQN_GUIDE.md` | 修改 | T0.5 勘误：牌库 90 张（78 是发牌后剩余）、265 维特征不需要记忆重建、支付差距根因在引擎 `getLegalActions`、step 返回 5 元组、`step` 增加 payment 前瞻参数、掩码走缓存路径（就地标注"勘误 2026-09-05"，完整修正表见 UPGRADE_ROADMAP §7） |
+
+存量回归（A0.5）：`splendor -a ...ppo,...minimax -t -m 5` 5 局全部 valid（minimax 5:0，与 ALGORITHM_COMPARISON 既有结论一致）；PPO 训练 3-episode 冒烟正常。
+环境备注：本机改用 Homebrew Python 3.13 + `python-tk@3.13` 重建 venv（uv Python 无 tkinter，`splendor` 命令无法运行）。

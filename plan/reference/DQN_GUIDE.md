@@ -250,6 +250,10 @@ r_t = Δscore_t                                # 保留：即时分数收益作�
 
 胜负判定**必须沿用引擎口径** `calScore`（含 +0.5 买卡数平局裁定）。实现见 [6.2](#62-奖励包装rewardwrapper)。可选进阶：把 B 设为终局分差 `my_score − best_rival`（连续信号，比 ±1 更平滑）；或改成纯势函数塑形 `φ(s) = −(15 − my_score)`（保证最优策略不变性）。
 
+> **勘误/裁决（2026-09-05，UPGRADE_ROADMAP §7）**：奖励改造仍由 wrapper 承担，但 (a) `SplendorEnvBase.step`
+> 签名已增加 `payment: int | None = None` 前瞻参数（P4 支付维度预留），wrapper 与训练循环应透传该参数；
+> (b) 同一 wrapper 原样适用于浏览器环境（两个环境奖励语义已对齐），无需 if-else 分支。
+
 ### 5.5 探索策略
 
 - ε-greedy，ε 从 1.0 线性衰减到 0.05，衰减期覆盖前 20% 总步数。
@@ -269,6 +273,11 @@ r_t = Δscore_t                                # 保留：即时分数收益作�
 | ε | 1.0 → 0.05，前 20% 步数线性 | 掩码内均匀采样 |
 | n-step | 3 | M2 阶段引入 |
 | 网络宽度 | 128 × 4 层 | 沿用 PPO trunk，去 Dropout |
+
+> **新增裁决（2026-09-05，UPGRADE_ROADMAP §1/§7）**：
+> 1. **观测不含公共宝石供给**——`extract_metrics` 从不读 `board.gems`，265 维特征里没有对手可见的宝石池信息；
+>    供给维度是 P4 可选项（T4.2），不改变本方案的观测契约。
+> 2. **训练循环的掩码/映射构建走 P0.1 的 ActionIndexCache**（O(1) 查表），不要在热路径手写 `ALL_ACTIONS.index()`。
 | 总环境步数 | 2×10⁵ ~ 10⁶ | 视吞吐调整，先实测 steps/sec |
 | 评估频率 | 每 5000 步：vs random 20 局 + vs minimax 20 局 | 胜率而非得分作为主指标 |
 

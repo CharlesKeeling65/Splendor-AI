@@ -21,6 +21,18 @@ Some of the features here will require python `3.11` or higher.
 
 ---
 
+---
+**升级计划（UPGRADE PLAN）**
+
+本仓库正按 [`plan/`](./plan/README.md) 实施六阶段升级：**P0 地基与对齐 → P1 本地 DQN 训练 ∥ P2 浏览器适配层 → P3 网页部署（sim-to-real）→ P4 高保真增强（可选）→ P5 工程化固化**。
+目标：本地引擎高速训练 DQN，经统一环境协议部署到网页版（game.hullqin.cn/ccbs）对局。开发在 `dev` 分支进行，逐阶段规范提交；各阶段对代码库的增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
+
+- 环境要求：**Python 3.12+**（引擎使用 `typing.override`，3.11 会 ImportError）；GUI 评测命令需要 **tkinter**（macOS + Homebrew：`brew install python-tk@3.13`）。
+- 运行测试：`python -m pytest tests/`（测试随各阶段同步建立）。
+- 网页规则实测记录：[docs/web_experiments.md](./docs/web_experiments.md)。
+
+---
+
 
 ## Installation of Splendor
 There are 2 possible ways to install the requirements of splendor.

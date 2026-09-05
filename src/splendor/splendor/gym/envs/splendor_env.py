@@ -124,11 +124,16 @@ class SplendorEnv(gym.Env):
         )
 
     @override
-    def step(self, action: int) -> tuple[NDArray, float, bool, bool, dict]:
+    def step(self, action: int, payment: int | None = None) -> tuple[NDArray, float, bool, bool, dict]:
         """
         Run one time-step of the environment's dynamics.
 
         :param: which action to take.
+        :param payment: which payment option to use for a purchase action.
+                        The local engine implies a single greedy payment
+                        (see ``SplendorGameRule.resources_sufficient``), so
+                        this parameter is accepted for protocol compliance
+                        with SplendorEnvBase but deliberately ignored here.
         :return: The new state (successor), the reward given, a flag indicating whether or
                  not the game ended, truncated (will be ignored), additional
                  information (will be ignored).
@@ -136,6 +141,9 @@ class SplendorEnv(gym.Env):
         :note: this method returns 2 redundant variables (truncated & info) only in
                order to comply with gym.Env.step signature.
         """
+        # the engine always pays greedily - there is nothing to choose.
+        _ = payment
+
         if action not in range(len(ALL_ACTIONS)):
             raise ValueError(f"The action {action} isn't a valid action")
 
@@ -187,6 +195,17 @@ class SplendorEnv(gym.Env):
         )
 
         return legal_actions_mask
+
+    def get_payment_options(self, action: int) -> list[dict] | None:
+        """
+        Return the payment options of a purchase action, or None.
+
+        The local engine settles every purchase with one greedy payment
+        (colored gems first, wild gems fill the shortfall), so there is
+        never a choice to make - tier-1 semantics of SplendorEnvBase.
+        """
+        _ = action
+        return None
 
     def _get_opponent_by_turn(self, turn: int) -> Agent:
         """

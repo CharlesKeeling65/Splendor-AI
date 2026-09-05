@@ -2,6 +2,8 @@
 
 > 本文件面向在本仓库工作的 AI 编码 agent。内容基于 2026-09-03 的全量源码调研，所有事实均已逐一验证。
 > 项目升级计划见 [plan/](./plan/README.md)——**动代码前先读对应阶段文档**。
+> 升级进度（dev 分支）：**P0 已落地**（索引缓存 / 身份注册表 / 环境协议 / 源文档勘误）；
+> P1（DQN）与 P2（浏览器层）进行中，P3-P5 未开始。增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
 ## 项目概述
 
@@ -10,8 +12,9 @@
 | 层 | 位置 | 说明 |
 |---|---|---|
 | 游戏引擎 | `src/splendor/splendor/` | `splendor_model.py` 规则核心；完全信息博弈（`private_information = None`） |
-| Gym 环境 | `src/splendor/splendor/gym/` | 把多智能体回合制折叠为单智能体 MDP；对手回合在 `step()`/`reset()` 内自动模拟 |
+| Gym 环境 | `src/splendor/splendor/gym/` | 把多智能体回合制折叠为单智能体 MDP；对手回合在 `step()`/`reset()` 内自动模拟；**P0 起有统一协议 `gym/base.py::SplendorEnvBase`** |
 | Agent 层 | `src/splendor/agents/` | `generic/`（random 等基线）、`our_agents/`（PPO 家族 / minimax / 遗传算法） |
+| 浏览器层 | `src/splendor/browser/` | 网页版（game.hullqin.cn/ccbs）适配：身份注册表已就位（P0-T0.2），DOM 抽取/伪状态/执行器按 plan/phase-2 落地 |
 
 当前主线：按 `plan/` 实施「本地 DQN 训练 → 浏览器层部署网页版（game.hullqin.cn/ccbs）」的 sim-to-real 管线。
 
@@ -28,6 +31,7 @@ evolve       # 遗传算法训练
 ```
 
 环境：**Python 3.12+**（引擎用 `typing.override`，3.11 会 ImportError，尽管 pyproject 声明 >=3.11）；uv 管理（见 README_UV_SETUP.md）。
+注意：`splendor` 命令的 displayer 依赖 **tkinter**——uv 托管的 Python 不带 Tk，需用 Homebrew Python 建 venv 并 `brew install python-tk@3.13`。
 
 ## Agent 接口约定（新增 agent 必须遵守）
 
@@ -46,7 +50,7 @@ evolve       # 遗传算法训练
 6. **`env.reset(seed=)` 不固定发牌**：发牌走全局 `random`、座次走全局 numpy RNG。可复现必须三件套：`random.seed(s)` + `np.random.seed(s)` + `torch.manual_seed(s)`。
 7. **引擎特殊规则**：手宝石 ≤7 时最少拿 `min(3, 可用色数)` 个（非标准规则！`splendor_model.py:443-452`）；同色已购 7 张禁买；买卡只生成**一种贪心支付**（彩色优先、黄金补差，`resources_sufficient`）。
 8. **`generateSuccessor` 原地修改状态**，须配对 `generatePredecessor` 回滚（minmax.py 的搜索模式）或 deepcopy。
-9. **性能热点**：`ALL_ACTIONS.index()` 是 O(3510) 线性扫描（`gym/envs/utils.py:162,175`）；`getLegalActions` 内有 deepcopy。
+9. **性能**：动作索引查找已缓存化（P0-T0.1：`ACTION_INDEX` 查表，×75 提速）。热路径**禁止**再写 `ALL_ACTIONS.index()`——一律走 `create_legal_actions_mask` / `create_action_mapping`（内部 O(1)）；引擎动作若不在 `ALL_ACTIONS` 中会抛带细节的 ValueError（旧版为静默行为）。`getLegalActions` 内仍有 deepcopy。
 10. `build_action()`（`gym/envs/utils.py:43`）不处理黄金通配，**不可**用于构造买卡动作；一律走 `create_action_mapping`。
 
 ## 代码修改纪律
@@ -59,7 +63,10 @@ evolve       # 遗传算法训练
 
 ## 测试
 
-当前仓库**无测试目录**。`tests/` 与 CI 按计划建立（plan/phase-5），核心质量门是**特征/掩码奇偶校验测试**（`test_feature_parity`，plan/phase-2 §3.4）。改动 `utils.py` 掩码逻辑、`features.py`、或浏览器抽取层后必须跑奇偶测试。
+`tests/` 已建立（P0 起随阶段同步补充，最终矩阵见 plan/phase-5 §3.1）。运行：`.venv/bin/python -m pytest tests/`。
+
+现有测试：`test_action_index_cache.py`（缓存等价性/双射）、`test_card_registry.py`（90 卡/10 贵族命中）、`test_env_protocol.py`（协议符合）。
+核心质量门是**特征/掩码奇偶校验测试**（`test_feature_parity`，plan/phase-2 §3.4）——改动 `utils.py` 掩码逻辑、`features.py`、或浏览器抽取层后必须跑奇偶测试。
 
 ## 文档地图
 

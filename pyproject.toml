@@ -123,6 +123,11 @@ lint.ignore = [
 lint.unfixable = [ "F401" ]
 lint.flake8-builtins.builtins-allowed-modules = [ "random", "types" ]
 
+# Tests legitimately compare against literal constants (deck sizes, tuple
+# lengths) and skip boilerplate return annotations.
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [ "ANN201", "ANN202", "PLR2004", "PLC0415" ]
+
 [tool.mypy]
 plugins = [ "numpy.typing.mypy_plugin" ]
 disable_error_code = [ "import-untyped" ]
