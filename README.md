@@ -24,12 +24,25 @@ Some of the features here will require python `3.11` or higher.
 ---
 **升级计划（UPGRADE PLAN）**
 
-本仓库正按 [`plan/`](./plan/README.md) 实施六阶段升级：**P0 地基与对齐 → P1 本地 DQN 训练 ∥ P2 浏览器适配层 → P3 网页部署（sim-to-real）→ P4 高保真增强（可选）→ P5 工程化固化**。
-目标：本地引擎高速训练 DQN，经统一环境协议部署到网页版（game.hullqin.cn/ccbs）对局。开发在 `dev` 分支进行，逐阶段规范提交；各阶段对代码库的增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
+本仓库正按 [`plan/`](./plan/README.md) 实施六阶段升级，**P0-P3 与 P5 已完成**（P4 经 ADR 裁决暂缓，见 [docs/p4_decision.md](./docs/p4_decision.md)）：
+**P0 地基与对齐 → P1 本地 DQN 训练 ∥ P2 浏览器适配层 → P3 网页部署（sim-to-real）→ P4 高保真增强（可选）→ P5 工程化固化**。
+目标：本地引擎高速训练 DQN，经统一环境协议（`SplendorEnvBase`）部署到网页版（game.hullqin.cn/ccbs）对局。开发在 `dev` 分支进行，逐阶段规范提交；各阶段对代码库的增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
+
+**命令闭环**（训练 → 本地评测 → 网页部署）：
+
+```
+dqn          # DQN 训练（Dueling + Double DQN + n-step replay）
+splendor     # 本地对局评测（也可用于加载 checkpoint 观战）
+play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI）
+evolve       # 遗传算法对照
+make test    # 全量离线测试（83 例）
+make parity  # 特征/掩码奇偶质量门（改引擎掩码/features/浏览器抽取层后必跑）
+```
 
 - 环境要求：**Python 3.12+**（引擎使用 `typing.override`，3.11 会 ImportError）；GUI 评测命令需要 **tkinter**（macOS + Homebrew：`brew install python-tk@3.13`）。
-- 运行测试：`python -m pytest tests/`（测试随各阶段同步建立）。
-- 网页规则实测记录：[docs/web_experiments.md](./docs/web_experiments.md)。
+- 网页规则实测记录（E1-E6 + 规则差异 ADR）：[docs/web_experiments.md](./docs/web_experiments.md)。
+- sim-to-real 对照报告模板：[docs/s2r_report.md](./docs/s2r_report.md)。
+- 待办（需训练条件）：DQN 训练课程（M1→M3，plan/phase-1 §2）与 50 局网页部署（plan/phase-3）。
 
 ---
 

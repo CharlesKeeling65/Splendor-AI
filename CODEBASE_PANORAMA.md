@@ -409,3 +409,42 @@ evolve:main → parse_args → evolve
 
 存量回归（A0.5）：`splendor -a ...ppo,...minimax -t -m 5` 5 局全部 valid（minimax 5:0，与 ALGORITHM_COMPARISON 既有结论一致）；PPO 训练 3-episode 冒烟正常。
 环境备注：本机改用 Homebrew Python 3.13 + `python-tk@3.13` 重建 venv（uv Python 无 tkinter，`splendor` 命令无法运行）。
+
+### 7.2 Phase-1 DQN 本地训练（2026-09-05 落地，worktree phase-1-dqn 并行产出后合并）
+
+| 文件 | 类型 | 内容 |
+|---|---|---|
+| `src/splendor/agents/our_agents/dqn/`（9 文件，~1480 行） | 新增 | `constants.py`（超参集中）/ `network.py`（Dueling QNetwork：InputNormalization + 4×[Linear128+LayerNorm+ReLU] 无 Dropout → V/A 头，forward 内掩码 -1e9）/ `replay_buffer.py`（float32 环形缓冲 + n-step 滑窗折叠，不存当前掩码）/ `reward_wrapper.py`（终局 ±10，calScore 口径）/ `training.py`（Double DQN 更新 + ε-greedy 采集 + 独立建局评估 + `collect_from_browser` 回流）/ `dqn.py`（train+main，stats.csv，checkpoint 命名修掉 ppo.py:293 优先级 bug）/ `dqn_agent.py`（`myAgent` 导出）/ `utils.py`（save/load 含 running stats） |
+| 关键设计偏离 | — | QNetwork 终生 eval + `observe()` 手动 EMA：InputNormalization 单样本 train 前向方差为 0 会退化（PPO 整局批量无此问题）——采集/更新/部署三处归一化语义一致的必要处理 |
+| pyproject.toml | 修改 | `scripts.dqn` |
+| tests | 新增 | test_replay_buffer / test_dqn_network / test_dqn_update（手工构造 TD 目标）/ test_reward_wrapper / test_dqn_smoke |
+| 未完成（待训练条件） | — | T1.6 训练课程 M1-M3、checkpoint、3-seed 方差（用户约束：本机不做训练） |
+
+### 7.3 Phase-2 浏览器适配层（2026-09-05 落地，worktree phase-2-browser 并行产出后合并 + 真实 DOM 回填）
+
+| 文件 | 类型 | 内容 |
+|---|---|---|
+| `src/splendor/browser/`（8 文件 + fixtures×5） | 新增 | `driver.py`（BrowserDriver 协议 + MockBrowserDriver + `read_raw_snapshot`）与 `dom_extractor.py`（EXTRACT_SNAPSHOT_JS 单次往返 + schema 校验）互为镜像；`state_builder.py`（object.__new__ 伪状态，占位卡只答 len()，身份全走注册表）；`action_executor.py`（四类动作点击序列 + 贪心药丸 + E2 丢弃流程）；`browser_env.py`（协议实现 + 引擎规则掩码 + 面板差分奖励 + 轮询/降级放弃）；`session.py`（建房/入座/开始/双域 cookie/恢复）；`monitor.py`（掩码奇偶三类归因） |
+| 真实 DOM 修正（T0.4 回填） | 修改 | 六个 [ASSUMED] 类名全部不存在（实测 ccbs 类清单已核）→ 供给=space-x-6 容器、面板=my-2 容器+我标记、状态=叶子文本扫描、药丸=灰条+正则；覆盖按钮无 ccbs 类 → 协议新增 `click_labelled`/`click_card_button` 文本点击原语（mock 同语义实现）；终局判定=棋盘消失（E3）；夹具按真实结构重生成 |
+| tests | 新增 | `test_feature_parity`（**核心质量门**：≥1000 随机状态 obs 逐位 + 掩码全等，实测 ~3s）/ test_browser_adapter / test_mask_parity_monitor |
+| 真机验证 | — | 修正后 EXTRACT_SNAPSHOT_JS 在真实对局页全字段正确；ego-browser 冒烟通过 |
+
+### 7.4 Phase-3 网页部署 harness（2026-09-05 落地）
+
+| 文件 | 类型 | 内容 |
+|---|---|---|
+| `src/splendor/play_web.py` | 新增 | GameReport / run_game（贪心 + 计分：面板快照权威、奖励 telescoping 兜底）/ main（局间随机休息 5-15s、recover 重试一次、JSON 报告） |
+| `src/splendor/browser/ego_driver.py` | 新增 | EgoBrowserDriver：ego-browser CLI 参考适配器（async IIFE 包装、JS 经临时文件传输、stderr 结果行、双流解析）；真机冒烟通过（navigate/evaluate/cookies/screenshot/click_labelled） |
+| `dqn/training.py` | 修改 | `collect_from_browser`：网页对局转移直接入库（off-policy 回流通路） |
+| pyproject.toml | 修改 | `scripts.play-web` |
+| tests | 新增 | test_play_web（run_game 终局报告 / checkpoint 往返 / 回流形状与种子确定性） |
+| 未完成（待训练+部署条件） | — | 50 局真实部署、s2r 报告数字、A3.3 回流 1000 步验证 |
+
+### 7.5 Phase-5 工程化固化（2026-09-05 落地）
+
+| 文件 | 类型 | 内容 |
+|---|---|---|
+| `.github/workflows/ci.yml` | 新增 | Python 3.12/3.13 矩阵：ruff + mypy（新代码路径）+ pytest 全量离线 |
+| `Makefile` | 修改 | `test` / `parity`（部署前强制质量门）/ `train-dqn` / `play-web`，PYTHON 变量优先 venv |
+| 文档 | 修改 | 本文件 §7、AGENTS.md（进度/命令/测试矩阵/浏览器实测事实）、README（命令闭环）、ALGORITHM_COMPARISON（DQN 行） |
+| 全量质量门 | — | **83 tests 全绿**（离线，~6s）；ruff/mypy 对全部新代码路径通过 |
