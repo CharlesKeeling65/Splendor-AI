@@ -17,24 +17,27 @@ process / driver instance running its own SessionManager + env.
 
 from .driver import BrowserDriver
 
-# Measured page facts (BROWSER_RL_MAPPING §2). The lobby URL is measured;
-# the in-lobby button selectors are structural assumptions pending T0.4.
+# Measured page facts (BROWSER_RL_MAPPING §2 + T0.4 experiments 2026-09-05).
+# The lobby's 创建房间 is an <a> link; 加入 / 开始游戏 / N人 / 重连 are plain
+# buttons with no stable ccbs-* class - text is their identity, hence the
+# click_labelled primitives.
 BASE_URL = "https://game.hullqin.cn/ccbs"
 GID_COOKIE = "gid"
 IDENTITY_DOMAINS: tuple[str, ...] = ("game.hullqin.cn", ".game.hullqin.cn")
 
-SELECTOR_CREATE_ROOM = "button.ccbs-create-room"  # [ASSUMED] 创建房间
-SELECTOR_SEATS_TEMPLATE = "button.ccbs-seats-{seats}"  # [ASSUMED] 修改人数
-SELECTOR_JOIN_SEAT_TEMPLATE = ".ccbs-seat-{seat} .ccbs-join"  # [ASSUMED] 加入
-SELECTOR_START_GAME = "button.ccbs-start-game"  # [ASSUMED] 开始游戏
-SELECTOR_REMATCH = "button.ccbs-rematch"  # [ASSUMED] 再来一局
+DEFAULT_SEATS = 2  # the room's default; the toggle only exists for owners
+
+LABEL_CREATE_ROOM = "创建房间"  # lobby link (exact text)
+LABEL_JOIN_SEAT = "加入"  # one button per free seat, document order = seat order
+LABEL_START_GAME = "开始游戏"
+LABEL_RECONNECT = "重连"  # shown when the server flags a cookie problem
 
 # Waiting game start needs the same patience class as any UI migration.
 _START_TIMEOUT = 30.0
 
 
 class SessionManager:
-    """Room lifecycle: create, seat, start, rematch, identity swap, recover."""
+    """Room lifecycle: create, seat, start, identity swap, recover."""
 
     def __init__(self, driver: BrowserDriver, base_url: str = BASE_URL) -> None:
         self._driver = driver
@@ -50,33 +53,46 @@ class SessionManager:
         Create a room with ``seats`` seats and return its URL.
 
         The creator becomes the room owner and still must join a seat before
-        the game can start.
+        the game can start. Only the owner sees the 2人/3人/4人 toggle, and
+        2 is the default - the click is skipped for it.
         """
-        self._driver.navigate(self._base_url)
-        self._driver.click(SELECTOR_CREATE_ROOM)
         if seats not in (2, 3, 4):
             raise ValueError(f"unsupported seat count {seats}")
-        self._driver.click(SELECTOR_SEATS_TEMPLATE.format(seats=seats))
+        self._driver.navigate(self._base_url)
+        self._driver.click_labelled(LABEL_CREATE_ROOM, exact=False)
+        if seats != DEFAULT_SEATS:
+            self._driver.click_labelled(f"{seats}人")
         self._room_url = str(self._driver.evaluate("location.href"))
         return self._room_url
 
     def join_seat(self, seat: int) -> None:
-        """Take ``seat`` (1-based page numbering) in the current room."""
+        """
+        Take ``seat`` (1-based page numbering) in the current room.
+
+        The page renders one 加入 button per *free* seat in seat order, so
+        ``index = seat - 1`` is correct while every seat before ``seat`` is
+        already taken (the normal self-play flow: owner sits first, the
+        second identity joins the next free seat).
+        """
         if seat < 1:
             raise ValueError(f"seat numbers are 1-based, got {seat}")
-        self._driver.click(SELECTOR_JOIN_SEAT_TEMPLATE.format(seat=seat))
+        self._driver.click_labelled(LABEL_JOIN_SEAT, index=seat - 1)
 
     def start_game(self) -> None:
-        """Start the game; requires every seat but one to be occupied."""
-        self._driver.click(SELECTOR_START_GAME)
+        """Start the game; requires at least two occupied seats (owner only)."""
+        self._driver.click_labelled(LABEL_START_GAME)
 
     def new_game(self) -> None:
         """
-        Begin a fresh game for reset(): prefer the rematch button of a ended
-        game, otherwise create a new room and re-join my seat.
+        Begin a fresh game for reset().
+
+        Measured end-of-game reality (E3, T0.4): after a game ends the page
+        returns to the room view where both seats are still occupied and the
+        owner's 开始游戏 button is back - starting again is the common path.
+        Falling back to a fresh room covers a lost room (kick, expiry).
         """
         try:
-            self._driver.click(SELECTOR_REMATCH)
+            self.start_game()
             return
         except ValueError:
             pass
@@ -87,11 +103,13 @@ class SessionManager:
         """
         Rotate the ``gid`` identity cookie (double-identity self-play recipe).
 
-        Ordering is load-bearing (BROWSER_RL_MAPPING §2): the current page is
-        loaded *first* because its websocket identity was fixed at handshake;
-        cookies are then deleted on **both** domain variants (the measured
-        double-domain pitfall); the final reload makes the server assign a
-        fresh gid, which the *next* page load will use.
+        Ordering is load-bearing (BROWSER_RL_MAPPING §2 + T0.4 re-verification):
+        the current page is loaded *first* because its websocket identity was
+        fixed at handshake; cookies are then deleted on **both** domain
+        variants (the measured double-domain pitfall); the final reload makes
+        the server assign a fresh gid, which the *next* page load will use.
+        Only the identity that navigates *after* the rotation picks it up -
+        every other tab must already sit on its final page before rotating.
         """
         self._driver.navigate(self._base_url)  # load page with old identity
         for domain in IDENTITY_DOMAINS:
@@ -105,7 +123,13 @@ class SessionManager:
         Recovery is a first-class operation, not exception handling garnish:
         unattended web deployment (phase 3, 50 games) lives and dies by it.
         Strategy: navigate back to the room (reconnection is automatic on
-        load); without a known room, fall back to a fresh room.
+        load); when the server answers with the measured "cookies disabled"
+        interstitial, click its 重连 button; without a known room, fall back
+        to a fresh room.
         """
         self._driver.navigate(self._room_url or self._base_url)
+        try:
+            self._driver.click_labelled(LABEL_RECONNECT)
+        except ValueError:
+            pass  # no interstitial - the load itself reconnected
         self._driver.wait_for("true", _START_TIMEOUT)

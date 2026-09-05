@@ -30,39 +30,47 @@ from .dom_extractor import (
 )
 from .driver import BrowserDriver
 
-# --- selectors ---------------------------------------------------------------
-# Top action buttons; page labels are emoji-prefixed texts (take gems / buy /
-# reserve / pass). Classes assumed pending T0.4. [ASSUMED]
-SELECTOR_MODE_TAKE_GEMS = "button.ccbs-take-gems"
-SELECTOR_MODE_BUY = "button.ccbs-buy-card"
-SELECTOR_MODE_RESERVE = "button.ccbs-reserve-card"
-SELECTOR_MODE_PASS = "button.ccbs-pass"
+# --- selectors & labels ------------------------------------------------------
+# All identities below were measured on the live page (T0.4 experiments,
+# 2026-09-05, docs/web_experiments.md). The action mode buttons, the
+# confirm/cancel buttons and the card overlay buttons carry **no stable
+# ccbs-* class** - their trimmed text is the only stable identity, so they
+# are addressed through click_labelled / click_card_button.
 
-# Supply chips: button.ccbs-circle.ccbs-color-{c} on my turn. [B3.1]
+# Mode buttons (emoji-prefixed; exact trimmed texts). [MEASURED]
+LABEL_MODE_TAKE_GEMS = "💎取宝石"
+LABEL_MODE_BUY = "💰购买发展卡"
+LABEL_MODE_RESERVE = "💳预定发展卡"
+LABEL_MODE_PASS = "❌放弃"
+
+# Supply chips: button.ccbs-circle.ccbs-color-{c} while in take-gems mode.
+# [B3.1, MEASURED] - outside take mode the same chips render as <div>, which
+# conveniently de-clutters the selector during the discard sub flow.
 SELECTOR_SUPPLY_CHIP_TEMPLATE = "button.ccbs-circle.ccbs-color-{color_index}"
 
-# Overlay buttons rendered on cards while in buy/reserve mode. [ASSUMED]
-SELECTOR_OVERLAY_BUY = ".ccbs-overlay-buy"
-SELECTOR_OVERLAY_RESERVE = ".ccbs-overlay-reserve"
+# Table rows: div.flex.justify-center.origin-top (top row = deck_id 2). The
+# my-reserved band shares the classes plus bg-gray-400. [B3.1, MEASURED]
+SELECTOR_TABLE_ROW = "div.flex.justify-center.origin-top"
+SELECTOR_MY_RESERVED_BAND = "div.flex.justify-center.origin-top.bg-gray-400"
 
-# Table rows: ccbs-row-{0,1,2} top->bottom, scoped descendant selectors for
-# targeting a specific card's overlay. [ASSUMED]
-SELECTOR_ROW_OVERLAY_TEMPLATE = ".ccbs-row-{row} {overlay}"
+# Card overlay labels inside .ccbs-card (no classes - text only). [MEASURED]
+LABEL_OVERLAY_BUY = "购买"
+LABEL_OVERLAY_RESERVE = "预定"
 
-# My reserved band (face-up cards): the gray strip. [B3.1 band, ASSUMED class]
-SELECTOR_MY_RESERVED_BUY = "div.bg-gray-400.ccbs-my-reserved .ccbs-overlay-buy"
+# Confirm / cancel labels of the gray bar (div.mt-2.p-2.bg-gray-400).
+# [B3.1 bar, MEASURED labels incl. the E2 discard step]
+LABEL_CONFIRM_TAKE = "确认拿这些"
+LABEL_CONFIRM_PASS = "确认放弃"
+LABEL_CONFIRM_DISCARD = "确认丢弃"
+SELECTOR_GRAY_BAR = "div.mt-2.p-2.bg-gray-400"
 
-# Confirm/cancel area: gray bar div.mt-2.p-2.bg-gray-400 with 确认拿这些. [B3.1]
-SELECTOR_CONFIRM_TAKE = "button.ccbs-confirm-take"
-# Pass dialog confirm button (确认放弃). [ASSUMED]
-SELECTOR_CONFIRM_PASS = "button.ccbs-confirm-pass"
-# Return-gems confirm button inside the >10-gems sub flow. [ASSUMED][E2 pending]
-SELECTOR_CONFIRM_RETURN = "button.ccbs-confirm-return"
+# Discard/return unit chips (E2 measured): in the discard sub flow each held
+# gem renders as an individual textless button.ccbs-circle.ccbs-color-{c};
+# supply chips are plain <div>s at that moment, so this selector is unambiguous.
+SELECTOR_DISCARD_CHIP_TEMPLATE = "button.ccbs-circle.ccbs-color-{color_index}"
 
-# Payment pills inside the 请选择支付方式 selector. [B3.1 pills, ASSUMED class]
-SELECTOR_PAYMENT_PILL = ".ccbs-payment-options .ccbs-pill"
-
-# Multi-noble choice UI. [ASSUMED][E1 pending]
+# Multi-noble choice UI. [ASSUMED][E1 pending] - the official announcement
+# confirms the feature exists; its DOM is unmeasured, hence still class-based.
 SELECTOR_NOBLE_CHOICE = ".ccbs-noble-options .ccbs-noble-choice"
 
 # --- etiquette ----------------------------------------------------------------
@@ -156,39 +164,42 @@ class ActionExecutor:
         if action.noble_index is not None:
             self._pick_noble(action, pseudo_state)
 
-    # ----- per-type sequences (BROWSER_RL_MAPPING §4.1) -----------------------
+    # ----- per-type sequences (BROWSER_RL_MAPPING §4.1, measured T0.4) --------
     def _execute_pass(self) -> None:
-        # PASS: pass button -> confirm dialog (2 steps).
-        self._click_confirmed(SELECTOR_MODE_PASS, 0)
-        self._click_confirmed(SELECTOR_CONFIRM_PASS, 0)
+        # PASS: pass button -> confirm dialog (2 steps, both measured).
+        self._click_labelled(LABEL_MODE_PASS)
+        self._click_labelled(LABEL_CONFIRM_PASS)
 
     def _execute_collect(self, action: Action) -> None:
         # COLLECT: take-gems mode -> per-colour chip clicks -> confirm (3 steps).
+        # Measured pitfall (T0.4): clicks must be paced one by one - a burst
+        # of synchronous clicks loses all but the last selection.
         collected = action.collected_gems or {}
         if not collected:
             raise ValueError("collect action without collected_gems")
-        self._click_confirmed(SELECTOR_MODE_TAKE_GEMS, 0)
+        self._click_labelled(LABEL_MODE_TAKE_GEMS)
         for colour, count in collected.items():
             selector = _supply_chip_selector(colour)
             for _ in range(count):
                 self._click_confirmed(selector, 0)
-        self._click_confirmed(SELECTOR_CONFIRM_TAKE, 0)
+        self._click_labelled(LABEL_CONFIRM_TAKE)
         self._return_gems_if_needed(action)
 
     def _return_gems_if_needed(self, action: Action) -> None:
         """
-        The >10-gems return sub flow (E2 unmeasured): click the chips to give
-        back, then confirm. Implemented against assumed selectors so the flow
-        exists end to end; T0.4 confirms the exact interaction.
+        The >10-gems return sub flow (E2 measured, 2026-09-05): after the take
+        confirm the page enters a discard step ("请丢弃 N 个宝石"); each held
+        gem is an individual textless chip button, toggled by clicking, and
+        确认丢弃 settles the step.
         """
         returned = action.returned_gems or {}
         if not returned:
             return
         for colour, count in returned.items():
-            selector = _supply_chip_selector(colour)
+            selector = _discard_chip_selector(colour)
             for _ in range(count):
                 self._click_confirmed(selector, 0)
-        self._click_confirmed(SELECTOR_CONFIRM_RETURN, 0)
+        self._click_labelled(LABEL_CONFIRM_DISCARD)
 
     def _execute_reserve(self, action: Action, snapshot: Snapshot) -> None:
         # RESERVE: reserve mode -> target card's reserve overlay (2 steps; the
@@ -201,15 +212,17 @@ class ActionExecutor:
                 f"reserve target (tier={position.tier}, "
                 f"col={position.card_index}) has no card on the page"
             )
-        self._click_confirmed(SELECTOR_MODE_RESERVE, 0)
-        selector = SELECTOR_ROW_OVERLAY_TEMPLATE.format(
-            row=_row_of_deck_id(position.tier), overlay=SELECTOR_OVERLAY_RESERVE
-        )
-        # In reserve mode the deck wrapper (row's first element) also carries a
-        # reserve overlay - reserving from the deck top - so card slots shift
-        # by one whenever that deck still has cards. [ASSUMED ordering]
+        self._click_labelled(LABEL_MODE_RESERVE)
+        # Measured row layout (T0.4): the deck stack is the row's card 0 and
+        # carries its own 预定 overlay, so face cards shift by one whenever
+        # that deck still has cards.
         deck_offset = 1 if snapshot["deck_counts"][position.tier] > 0 else 0
-        self._click_confirmed(selector, deck_offset + position.card_index)
+        self._click_card_button(
+            SELECTOR_TABLE_ROW,
+            _row_of_deck_id(position.tier),
+            deck_offset + position.card_index,
+            LABEL_OVERLAY_RESERVE,
+        )
 
     def _execute_buy(
         self, action: Action, snapshot: Snapshot, pseudo_state: SplendorState | None
@@ -219,7 +232,7 @@ class ActionExecutor:
         position = action.position
         if position is None:
             raise ValueError(f"buy action without a position: {action}")
-        self._click_confirmed(SELECTOR_MODE_BUY, 0)
+        self._click_labelled(LABEL_MODE_BUY)
         if action.type_enum is ActionEnum.BUY_RESERVE:
             reserved = snapshot["my_reserved"]
             if position.reserved_index not in range(len(reserved)):
@@ -227,18 +240,20 @@ class ActionExecutor:
                     f"buy_reserve index {position.reserved_index} outside my "
                     f"{len(reserved)} reserved card(s)"
                 )
-            selector = SELECTOR_MY_RESERVED_BUY
-            overlay_index = position.reserved_index
+            # The band lists my reserved face cards without a deck stack.
+            self._click_card_button(
+                SELECTOR_MY_RESERVED_BAND, 0, position.reserved_index, LABEL_OVERLAY_BUY
+            )
         else:
             if not _card_exists(snapshot, position.tier, position.card_index):
                 raise ValueError(f"buy target not on the page: {action}")
-            selector = SELECTOR_ROW_OVERLAY_TEMPLATE.format(
-                row=_row_of_deck_id(position.tier), overlay=SELECTOR_OVERLAY_BUY
+            deck_offset = 1 if snapshot["deck_counts"][position.tier] > 0 else 0
+            self._click_card_button(
+                SELECTOR_TABLE_ROW,
+                _row_of_deck_id(position.tier),
+                deck_offset + position.card_index,
+                LABEL_OVERLAY_BUY,
             )
-            # Buy overlays never appear on the deck wrapper, so card slots map
-            # 1:1 onto the overlay match list. [ASSUMED ordering]
-            overlay_index = position.card_index
-        self._click_confirmed(selector, overlay_index)
         self._settle_payment(action, pseudo_state)
 
     def _settle_payment(
@@ -262,7 +277,9 @@ class ActionExecutor:
                 "greedy payment strategy needs the engine view of the seat"
             )
         choice = self.select_payment_greedy(pills, action, pseudo_state)
-        self._click_confirmed(SELECTOR_PAYMENT_PILL, choice)
+        # Pills are plain text buttons inside the gray bar (measured T0.4);
+        # the splits are pairwise distinct so the text identifies the pill.
+        self._click_labelled(pills[choice], container_selector=SELECTOR_GRAY_BAR)
 
     def _pick_noble(self, action: Action, pseudo_state: SplendorState | None) -> None:
         """
@@ -361,7 +378,7 @@ class ActionExecutor:
     # ----- click plumbing --------------------------------------------------------
     def _click_confirmed(self, selector: str, index: int) -> None:
         """
-        One etiquette-paced click followed by a UI-migration wait.
+        One etiquette-paced CSS click followed by a UI-migration wait.
 
         Failures are retried exactly once (transient render jank); a second
         failure raises - blindly clicking into an unknown page state is the
@@ -381,6 +398,53 @@ class ActionExecutor:
             f"click {selector!r}[{index}] failed twice: {last_error}"
         ) from last_error
 
+    def _click_labelled(
+        self,
+        label: str,
+        *,
+        container_selector: str | None = None,
+    ) -> None:
+        """
+        One etiquette-paced text click followed by a UI-migration wait, with
+        the same retry-once discipline as the other click helpers.
+        """
+        last_error: Exception | None = None
+        for _ in range(2):
+            try:
+                if self._click_delay:
+                    time.sleep(random.uniform(*self._click_delay))
+                self._driver.click_labelled(
+                    label, container_selector=container_selector
+                )
+                self._driver.wait_for("true", self._wait_timeout)
+                return
+            except Exception as error:  # retried once, then raise
+                last_error = error
+        raise ActionExecutionError(
+            f"labelled click {label!r} failed twice: {last_error}"
+        ) from last_error
+
+    def _click_card_button(
+        self, container_selector: str, container_index: int, card_index: int, label: str
+    ) -> None:
+        """Etiquette-paced overlay click (card first, then its button)."""
+        last_error: Exception | None = None
+        for _ in range(2):
+            try:
+                if self._click_delay:
+                    time.sleep(random.uniform(*self._click_delay))
+                self._driver.click_card_button(
+                    container_selector, container_index, card_index, label
+                )
+                self._driver.wait_for("true", self._wait_timeout)
+                return
+            except Exception as error:  # retried once, then raise
+                last_error = error
+        raise ActionExecutionError(
+            f"card button click {container_selector!r}[{container_index}]:"
+            f"{card_index}:{label!r} failed twice: {last_error}"
+        ) from last_error
+
     def force_pass(self) -> None:
         """
         Degraded rescue used on step timeouts: pass to keep the seat alive.
@@ -393,6 +457,12 @@ def _supply_chip_selector(colour: str) -> str:
     if colour not in COLOR_NAME_TO_INDEX:
         raise ValueError(f"unknown gem colour {colour!r}")
     return SELECTOR_SUPPLY_CHIP_TEMPLATE.format(color_index=COLOR_NAME_TO_INDEX[colour])
+
+
+def _discard_chip_selector(colour: str) -> str:
+    if colour not in COLOR_NAME_TO_INDEX:
+        raise ValueError(f"unknown gem colour {colour!r}")
+    return SELECTOR_DISCARD_CHIP_TEMPLATE.format(color_index=COLOR_NAME_TO_INDEX[colour])
 
 
 def _row_of_deck_id(deck_id: int) -> int:

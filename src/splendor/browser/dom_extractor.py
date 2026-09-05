@@ -107,7 +107,7 @@ class RawSnapshotReading(TypedDict):
     nobles: list[RawNobleReading]
     supply: list[RawCountReading]
     panels: list[RawPanelReading]  # DOM order = seat order
-    my_panel_index: int | None  # position of the ccbs-me panel
+    my_panel_index: int | None  # position of my panel (the 我-marked one)
     my_reserved: list[RawCardReading]  # face-up cards in my gray band
     status_text: str
     body_text: str
@@ -167,8 +167,9 @@ EXTRACT_SNAPSHOT_JS: str = (
     + """
 // Single-round-trip DOM reading for the Splendor browser layer.
 // Selector provenance: [B3.1] = plan/reference/BROWSER_RL_MAPPING.md section
-// 3.1 (measured on the real page); [ASSUMED] = structural anchor not recorded
-// there, pending the T0.4 page experiments. All interpretation happens in
+// 3.1 (measured on the real page); [MEASURED 2026-09-05] = verified during
+// the T0.4 page experiments (docs/web_experiments.md); [ASSUMED] = pending
+// live confirmation (multi-noble choice UI only). All interpretation happens in
 // Python (dom_extractor.snapshot_from_raw); this script only selects ccbs-*
 // elements and reads class indices / text.
 (() => {
@@ -225,15 +226,23 @@ EXTRACT_SNAPSHOT_JS: str = (
       rects: readCounts(noble, ".ccbs-rect"),  // [B3.1] noble requirements
     })
   );
-  // [ASSUMED] supply container; chips themselves are button.ccbs-circle
-  // (div when not my turn) per [B3.1].
-  const supplyArea = document.querySelector(".ccbs-supply");
-  const supply = supplyArea ? readCounts(supplyArea, ".ccbs-circle") : [];
-  // [ASSUMED] per-seat panel container; [ASSUMED] ccbs-me marks my panel.
-  const panelEls = Array.from(document.querySelectorAll(".ccbs-player"));
-  const myPanelIndex = panelEls.findIndex((el) =>
-    el.classList.contains("ccbs-me")
+  // [MEASURED 2026-09-05] supply container: a single row of six chips below
+  // the table (div.ccbs-circle.ccbs-color-N.scale-125, <button> only in
+  // take-gems mode). A bare ".ccbs-circle" query would hit card-cost pips
+  // first - they precede the supply row in document order.
+  const supplyArea = document.querySelector(
+    "div.mt-4.flex.items-center.justify-center.space-x-6"
   );
+  const supply = supplyArea ? readCounts(supplyArea, ".ccbs-circle") : [];
+  // [MEASURED 2026-09-05] one div.flex.flex-wrap.items-center.justify-center.my-2
+  // per seat, in seat order; my own panel is the one whose text carries 我.
+  const panelEls = Array.from(
+    document.querySelectorAll("div.flex.flex-wrap.items-center.justify-center.my-2")
+  );
+  const myPanelIdx = panelEls.findIndex((el) =>
+    (el.innerText || el.textContent || "").includes("我")
+  );
+  const myPanelIndex = myPanelIdx >= 0 ? myPanelIdx : null;
   const panels = panelEls.map((p) => {
     const score = p.querySelector(".ccbs-score");  // [B3.1] "N分" element
     return {
@@ -255,10 +264,19 @@ EXTRACT_SNAPSHOT_JS: str = (
         .filter((el) => typeIndexOf(el) !== 5)
         .map(readCard)
     : [];
-  // [ASSUMED] turn-status element (等待你操作 / 等待玩家N操作 per [B3.1]).
-  const statusEl = document.querySelector(".ccbs-status");
-  // [ASSUMED] pending payment pills (observed texts "3白" / "2白1金", [B3.1]).
-  const paymentArea = document.querySelector(".ccbs-payment-options");
+  // [MEASURED 2026-09-05] the turn-status element has no stable class (a
+  // bare div.mt-4 inside div.text-center); the *texts* 等待你操作 /
+  // 等待玩家N操作 are the stable identity - pick the unique leaf matching.
+  const statusEl = Array.from(document.querySelectorAll("*")).find(
+    (el) =>
+      el.children.length === 0 &&
+      /^等待(你|玩家[0-9]+)操作$/.test((el.textContent || "").trim())
+  );
+  // [MEASURED 2026-09-05] pending payment pills render inside the gray
+  // confirm bar next to a 请选择支付方式 heading; pill buttons are plain
+  // <button> elements whose text is a digit+colour-character sequence.
+  const paymentArea = document.querySelector("div.mt-2.p-2.bg-gray-400");
+  const pillRe = /^(?:[0-9]+[白蓝绿红黑金])+$/;
   // [ASSUMED][E1 pending] multi-noble choice UI.
   const nobleArea = document.querySelector(".ccbs-noble-options");
   return {
@@ -270,11 +288,12 @@ EXTRACT_SNAPSHOT_JS: str = (
     my_reserved: myReserved,
     status_text: statusEl ? (statusEl.textContent || "").trim() : "",
     body_text: document.body ? document.body.innerText || "" : "",
-    payment_pill_texts: paymentArea
-      ? Array.from(paymentArea.querySelectorAll(".ccbs-pill")).map(
-          (el) => (el.textContent || "").trim()
-        )
-      : null,
+    payment_pill_texts:
+      paymentArea && (paymentArea.textContent || "").includes("请选择支付方式")
+        ? Array.from(paymentArea.querySelectorAll("button"))
+            .map((el) => (el.textContent || "").trim())
+            .filter((text) => pillRe.test(text))
+        : null,
     noble_option_rects: nobleArea
       ? Array.from(nobleArea.querySelectorAll(".ccbs-noble-choice")).map(
           (choice) => readCounts(choice, ".ccbs-rect")
@@ -304,26 +323,75 @@ def extract_snapshot(driver: BrowserDriver) -> Snapshot:
     return snapshot_from_raw(raw)
 
 
+def _interpret_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[list[CardInfo | None]], list[int]]:
+    """
+    Interpret the three table rows into engine orientation.
+
+    Web rows run top -> bottom = deck_id 2/1/0 (the tier direction conversion
+    is funnelled through this single loop - the most off-by-one-prone spot).
+    Empty slots (deck exhausted) are trailing Nones on the page; a mid-row
+    empty slot is not producible by the engine's deal order.
+    """
+    dealt: list[list[CardInfo | None]] = []
+    deck_counts: list[int] = []
+    for deck_id in range(NUMBER_OF_TIERS):
+        row = rows[NUMBER_OF_TIERS - 1 - deck_id]
+        cards: list[CardInfo | None] = [
+            _interpret_card(raw_card, deck_id)
+            for raw_card in row["cards"][:MAX_TIER_CARDS]
+        ]
+        while len(cards) < MAX_TIER_CARDS:
+            cards.append(None)
+        dealt.append(cards)
+        deck_counts.append(_parse_count(row["deck_count_text"], fallback=0))
+    return dealt, deck_counts
+
+
+def _room_page_snapshot(raw: Mapping[str, Any]) -> Snapshot:
+    """Interpret the measured post-game room page (E3): no board at all."""
+    panels: list[PanelInfo] = []
+    for index, raw_panel in enumerate(raw["panels"]):
+        rects = _counts_to_dict(raw_panel["rects"])
+        circles = _counts_to_dict(raw_panel["circles"])
+        panels.append(
+            {
+                "seat": index + 1,
+                "score": _parse_score(raw_panel["score_text"], raw_panel["text"]),
+                "card_counts": {name: rects.get(name, 0) for name in FACE_INDEX_TO_NAME},
+                "gems": {name: circles.get(name, 0) for name in COLOR_INDEX_TO_NAME},
+                "reserved_tiers": [
+                    tier for tier in raw_panel["reserved_backs"] if tier >= 0
+                ],
+            }
+        )
+    my_panel_index = raw["my_panel_index"]
+    status = raw["status_text"] or _status_from_body(raw["body_text"])
+    return {
+        "dealt": [[None] * MAX_TIER_CARDS for _ in range(NUMBER_OF_TIERS)],
+        "deck_counts": [0, 0, 0],
+        "nobles": [],
+        "supply": dict.fromkeys(COLOR_INDEX_TO_NAME, 0),
+        "panels": panels,
+        "my_seat": (my_panel_index + 1) if my_panel_index is not None else 0,
+        "my_reserved": [],
+        "status": status,
+        "payment_options": None,
+        "noble_options": None,
+    }
+
+
 def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
     """Validate a raw reading and interpret it into the public Snapshot."""
     _validate_raw_reading(raw)
 
     rows = raw["rows"]
-    dealt: list[list[CardInfo | None]] = []
-    deck_counts: list[int] = []
-    # Web rows run top -> bottom = deck_id 2/1/0 (tier direction conversion
-    # is funnelled through this single loop - the most off-by-one-prone spot).
-    for deck_id in range(NUMBER_OF_TIERS):
-        row = rows[NUMBER_OF_TIERS - 1 - deck_id]
-        cards: list[CardInfo | None] = []
-        for raw_card in row["cards"][:MAX_TIER_CARDS]:
-            cards.append(_interpret_card(raw_card, deck_id))
-        # Empty slots (deck exhausted) are trailing Nones on the page; a
-        # mid-row empty slot is not producible by the engine's deal order.
-        while len(cards) < MAX_TIER_CARDS:
-            cards.append(None)
-        dealt.append(cards)
-        deck_counts.append(_parse_count(row["deck_count_text"], fallback=0))
+    # An empty rows list is the measured room page after game over (E3): the
+    # board is simply gone.
+    if not rows:
+        return _room_page_snapshot(raw)
+    dealt, deck_counts = _interpret_rows(rows)
 
     nobles: list[NobleInfo] = [
         {"requirements": _counts_to_dict(noble["rects"])} for noble in raw["nobles"]
@@ -351,10 +419,12 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         )
 
     my_panel_index = raw["my_panel_index"]
-    if my_panel_index is None:
+    if raw["panels"] and (
+        my_panel_index is None or my_panel_index not in range(len(raw["panels"]))
+    ):
         raise SnapshotSchemaError(
-            "my panel not found: no .ccbs-player element carries the ccbs-me "
-            "marker (extraction bug or page redesign)"
+            "my panel not found: no seat panel text carries the 我 marker "
+            "(extraction bug or page redesign)"
         )
     my_reserved: list[CardInfo] = []
     panel_backs = raw["panels"][my_panel_index]["reserved_backs"]
@@ -386,7 +456,9 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         "nobles": nobles,
         "supply": supply,
         "panels": panels,
-        "my_seat": my_panel_index + 1,
+        # 0 = "no seat" (room page after game over; the env treats it as
+        # terminal and never builds a pseudo state from such a snapshot)
+        "my_seat": (my_panel_index + 1) if my_panel_index is not None else 0,
         "my_reserved": my_reserved,
         "status": status,
         "payment_options": payment_options,
@@ -497,14 +569,22 @@ def waiting_seat(status: str) -> int | None:
 
 
 def looks_like_game_over(
-    text: str, markers: Sequence[str] = DEFAULT_GAME_OVER_MARKERS
+    text: str,
+    markers: Sequence[str] = DEFAULT_GAME_OVER_MARKERS,
+    *,
+    board_present: bool = True,
 ) -> bool:
     """
-    Whether the page text signals a finished game.
+    Whether the page signals a finished game.
 
-    The terminal DOM feature is unmeasured (E3 pending): keep the marker list
-    configurable until the experiment settles it.
+    Measured terminal signal (E3, T0.4 2026-09-05): on game over the page
+    returns to the room view - the table rows disappear entirely - so an
+    absent board is terminal by itself. Text markers (e.g. 游戏结束) stay
+    configurable as a secondary signal for the natural-end screen, whose
+    exact DOM lands with the phase-3 live deployment.
     """
+    if not board_present:
+        return True
     return any(marker in text for marker in markers)
 
 
@@ -573,8 +653,8 @@ def _parse_score(score_text: str, panel_text: str) -> int:
 
 
 def _status_from_body(body_text: str) -> str:
-    # Fallback when the [ASSUMED] .ccbs-status element is absent: fish the
-    # measured status phrases out of the whole page text.
+    # Fallback when the JS-side status scan came up empty (e.g. game over):
+    # fish the measured status phrases out of the whole page text.
     if MY_TURN_TEXT in body_text:
         return MY_TURN_TEXT
     match = _WAITING_RE.search(body_text)
@@ -604,9 +684,9 @@ def _validate_raw_reading(raw: Mapping[str, Any]) -> None:
     rows = raw["rows"]
     _check(
         rows,
-        lambda v: _is_list_of_len(v, NUMBER_OF_TIERS),
+        lambda v: isinstance(v, list) and len(v) in (0, NUMBER_OF_TIERS),
         "rows",
-        "list of exactly 3 rows",
+        "list of exactly 3 rows (in game) or empty (room page after game over)",
     )
     for index, row in enumerate(rows):
         _check(row, _is_mapping, f"rows[{index}]", "RawRowReading object")

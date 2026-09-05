@@ -12,16 +12,22 @@ import pytest
 
 import splendor.splendor.gym  # noqa: F401  # registers gym envs (idempotent)
 from splendor.browser.action_executor import (
-    SELECTOR_CONFIRM_PASS,
-    SELECTOR_CONFIRM_TAKE,
-    SELECTOR_MODE_PASS,
-    SELECTOR_MODE_TAKE_GEMS,
+    LABEL_CONFIRM_DISCARD,
+    LABEL_CONFIRM_PASS,
+    LABEL_CONFIRM_TAKE,
+    LABEL_MODE_BUY,
+    LABEL_MODE_PASS,
+    LABEL_MODE_RESERVE,
+    LABEL_MODE_TAKE_GEMS,
+    LABEL_OVERLAY_BUY,
+    LABEL_OVERLAY_RESERVE,
     ActionExecutionError,
     ActionExecutor,
     parse_pill,
 )
 from splendor.browser.browser_env import BrowserSplendorEnv
 from splendor.browser.dom_extractor import (
+    DEFAULT_GAME_OVER_MARKERS,
     SnapshotSchemaError,
     extract_snapshot,
     is_my_turn,
@@ -127,8 +133,15 @@ def test_env_get_payment_options_reads_pending_pills() -> None:
         _StubSession(_driver_for("payment_pills.html")),
         click_delay=(0, 0),
     )
+    # the fixture carries the five pills measured in the E-payment experiment
     options = payment_env.get_payment_options(0)
-    assert options == [{"white": 3}, {"white": 2, "yellow": 1}]
+    assert options == [
+        {"white": 1, "green": 1, "red": 1, "black": 1},
+        {"green": 1, "red": 1, "black": 1, "yellow": 1},
+        {"white": 1, "red": 1, "black": 1, "yellow": 1},
+        {"white": 1, "green": 1, "black": 1, "yellow": 1},
+        {"white": 1, "green": 1, "red": 1, "yellow": 1},
+    ]
 
     plain_driver = _driver_for("opening.html")
     plain_env = BrowserSplendorEnv(
@@ -189,8 +202,8 @@ def test_executor_pass_sequence() -> None:
     executor.execute(0, snapshot, None)  # ALL_ACTIONS[0] = PASS
 
     assert driver.click_log == [
-        (SELECTOR_MODE_PASS, 0),
-        (SELECTOR_CONFIRM_PASS, 0),
+        (f"label:{LABEL_MODE_PASS}", 0),
+        (f"label:{LABEL_CONFIRM_PASS}", 0),
     ]
 
 
@@ -208,8 +221,8 @@ def test_executor_collect_sequence() -> None:
     )
     executor.execute(collect_index, snapshot, None)
 
-    assert driver.click_log[0] == (SELECTOR_MODE_TAKE_GEMS, 0)
-    assert driver.click_log[-1] == (SELECTOR_CONFIRM_TAKE, 0)
+    assert driver.click_log[0] == (f"label:{LABEL_MODE_TAKE_GEMS}", 0)
+    assert driver.click_log[-1] == (f"label:{LABEL_CONFIRM_TAKE}", 0)
     clicked_chips = sorted(selector for selector, _ in driver.click_log[1:-1])
     assert clicked_chips == sorted(
         [
@@ -218,6 +231,33 @@ def test_executor_collect_sequence() -> None:
             "button.ccbs-circle.ccbs-color-2",  # green
         ]
     )  # click order follows the action's dict order, which is not semantic
+
+
+def test_executor_collect_with_return_clicks_discard_units() -> None:
+    """E2 measured flow: take confirm -> textless unit chips -> 确认丢弃."""
+    driver = _driver_for("empty_deck.html")
+    snapshot = extract_snapshot(driver)
+    executor = ActionExecutor(driver, click_delay=(0, 0))
+
+    # collect 2 red while returning 1 white (hand already at the limit)
+    collect_index = next(
+        index
+        for index, action in enumerate(ALL_ACTIONS)
+        if action.type_enum is ActionEnum.COLLECT_SAME
+        and action.collected_gems == {"red": 2}
+        and action.returned_gems == {"white": 1}
+        and action.noble_index is None
+    )
+    executor.execute(collect_index, snapshot, None)
+
+    # two clicks on the textless red unit chip + the measured discard confirm
+    red_unit_clicks = [
+        entry for entry in driver.click_log if entry[0] == "button.ccbs-circle.ccbs-color-3"
+    ]
+    assert len(red_unit_clicks) == 2
+    assert driver.click_log[-1] == (f"label:{LABEL_CONFIRM_DISCARD}", 0)
+    # the take confirm precedes the discard sub flow
+    assert (f"label:{LABEL_CONFIRM_TAKE}", 0) in driver.click_log
 
 
 def test_executor_buy_sequence_clicks_card_overlay() -> None:
@@ -237,8 +277,10 @@ def test_executor_buy_sequence_clicks_card_overlay() -> None:
         and action.noble_index is None
     )
     executor.execute(buy_index, snapshot, None)
-    assert driver.click_log[0] == ("button.ccbs-buy-card", 0)
-    assert driver.click_log[1] == (".ccbs-row-2 .ccbs-overlay-buy", 0)
+    assert driver.click_log[0] == (f"label:{LABEL_MODE_BUY}", 0)
+    # bottom row = row index 2; the deck stack occupies card slot 0, so face
+    # card 0 sits at slot 1 (measured T0.4 row layout)
+    assert driver.click_log[1] == (f"card:2:1:{LABEL_OVERLAY_BUY}", 0)
 
 
 def test_executor_reserve_on_deck_top_offsets_by_deck_wrapper() -> None:
@@ -261,24 +303,29 @@ def test_executor_reserve_on_deck_top_offsets_by_deck_wrapper() -> None:
     )
     executor.execute(reserve_card, snapshot, None)
     assert driver.click_log == [
-        ("button.ccbs-reserve-card", 0),
-        (".ccbs-row-2 .ccbs-overlay-reserve", 1),
+        (f"label:{LABEL_MODE_RESERVE}", 0),
+        (f"card:2:1:{LABEL_OVERLAY_RESERVE}", 0),
     ]
 
 
 _NO_BUTTONS_PAGE = (
     "<html><body>"
-    '<div class="ccbs-status">等待你操作</div>'
+    # measured status leaf: a bare div inside div.text-center
+    '<div class="text-center"><div class="mt-4">等待你操作</div></div>'
     + "".join(
-        f'<div class="flex justify-center origin-top ccbs-row-{r}">'
+        '<div class="flex justify-center origin-top">'
         '<div class="ccbs-card ccbs-type-5 ccbs-img-0">'
         '<div class="ccbs-left-count">0</div></div></div>'
-        for r in range(3)
+        for _ in range(3)
     )
-    + '<div class="ccbs-supply">'
-    '<button class="ccbs-circle ccbs-color-0">0</button>'
+    # measured supply container
+    + '<div class="mt-4 flex items-center justify-center space-x-6">'
+    '<button class="ccbs-circle ccbs-color-0 scale-125">0</button>'
     "</div>"
-    '<div class="ccbs-player ccbs-me"><span class="ccbs-score">0分</span></div>'
+    # measured panel container (my panel carries the 我 marker)
+    '<div class="flex flex-wrap items-center justify-center my-2">'
+    "<span>😊 1 我</span>"
+    '<span class="ccbs-score">0分</span></div>'
     "</body></html>"
 )
 
@@ -313,38 +360,59 @@ def test_env_satisfies_protocol_and_resets() -> None:
     assert mask.sum() > 0
 
 
+# Measured terminal reality (E3, T0.4): game over returns to the ROOM page -
+# no table rows / ccbs cards at all, owner sees 开始游戏 again, no seat panels.
 _TERMINAL_PAGE = """
 <html><body>
-<div class="ccbs-status">游戏结束 本局结算</div>
-<div class="ccbs-supply">
-<button class="ccbs-circle ccbs-color-0">1</button><button class="ccbs-circle ccbs-color-1">1</button>
-<button class="ccbs-circle ccbs-color-2">1</button><button class="ccbs-circle ccbs-color-3">1</button>
-<button class="ccbs-circle ccbs-color-4">1</button><button class="ccbs-circle ccbs-color-5">1</button>
-</div>
-<div class="ccbs-player ccbs-me"><span class="ccbs-score">12分</span></div>
-<div class="ccbs-player"><span class="ccbs-score">15分</span></div>
-<div class="flex justify-center origin-top ccbs-row-0"><div class="ccbs-card ccbs-type-5 ccbs-img-2"><div class="ccbs-left-count">1</div></div></div>
-<div class="flex justify-center origin-top ccbs-row-1"><div class="ccbs-card ccbs-type-5 ccbs-img-1"><div class="ccbs-left-count">1</div></div></div>
-<div class="flex justify-center origin-top ccbs-row-2"><div class="ccbs-card ccbs-type-5 ccbs-img-0"><div class="ccbs-left-count">1</div></div></div>
-<button class="ccbs-pass">放弃</button><button class="ccbs-confirm-pass">确认放弃</button>
-<button class="ccbs-take-gems">取宝石</button><button class="ccbs-confirm-take">确认拿这些</button>
-<button class="ccbs-buy-card">购买</button><button class="ccbs-reserve-card">预定</button>
+<button>结束游戏</button>
+<span>😊 房主 1 我</span><span class="ccbs-score">12分</span>
+<span>😊 2</span><span class="ccbs-score">15分</span>
+<button>开始游戏</button>
 </body></html>
 """
 
 
-def test_env_step_detects_terminal_via_status_text() -> None:
-    """Terminal detection unit (E3 marker text) through the public step()."""
-    driver = _driver_for("opening.html")
-    driver.set_html(_TERMINAL_PAGE, url=f"{BASE_URL}/gt01")
+def test_env_step_detects_terminal_via_vanished_board() -> None:
+    """Terminal detection (E3 measured: after the action the page returns to
+    the room view - the board vanishes and the game is over)."""
+    opening = (FIXTURES / "opening.html").read_text(encoding="utf-8")
+    # reads 1-2 keep the opening board (pre-action extract + first poll);
+    # read 3+ is the finished room page
+    rotating = _RotatingDriver(opening, _TERMINAL_PAGE)
+    rotating.set_html(opening, url=f"{BASE_URL}/gt01")
     env = BrowserSplendorEnv(
-        driver, _StubSession(driver, _TERMINAL_PAGE), click_delay=(0, 0)
+        rotating,
+        _StubSession(rotating, opening),
+        click_delay=(0, 0),
+        poll_interval=0.0,
+        game_over_markers=DEFAULT_GAME_OVER_MARKERS,
     )
     env.reset(seed=1)
+    rotating.arm()  # every post-action read shows the finished room page
     _obs, reward, terminated, truncated, _info = env.step(0)  # PASS
     assert terminated is True
     assert truncated is False
-    assert reward == 0.0  # passing never scores
+    assert reward == 0.0  # the score window closed with the game view
+    # the observation falls back to the last in-game vector (room page has
+    # no observable board)
+    assert _obs.shape == (265,)
+
+
+def test_reset_times_out_when_no_game_starts() -> None:
+    """reset() against the room page must time out, not fake a game."""
+    driver = _driver_for("game_over.html")
+    env = BrowserSplendorEnv(
+        driver, _StubSession(driver), click_delay=(0, 0), step_timeout=0.2,
+        poll_interval=0.0,
+    )
+    with pytest.raises(TimeoutError, match="did not start"):
+        env.reset(seed=1)
+
+
+def test_looks_like_game_over_board_presence_semantics() -> None:
+    assert looks_like_game_over("等待你操作", board_present=False) is True
+    assert looks_like_game_over("等待你操作", board_present=True) is False
+    assert looks_like_game_over("游戏结束", board_present=True) is True
 
 
 class _RotatingDriver(MockBrowserDriver):
@@ -414,15 +482,15 @@ def test_env_step_reward_is_panel_score_differential() -> None:
 # ---------------------------------------------------------------------------
 # Session recipes (BROWSER_RL_MAPPING §2)
 # ---------------------------------------------------------------------------
+# Measured lobby/room buttons: plain text, no stable ccbs-* class (T0.4).
 _LOBBY_PAGE = """
 <html><body>
-<button class="ccbs-create-room">创建房间</button>
-<button class="ccbs-seats-2">2人</button>
-<button class="ccbs-seats-4">4人</button>
-<div class="ccbs-seat-1"><button class="ccbs-join">加入</button></div>
-<div class="ccbs-seat-2"><button class="ccbs-join">加入</button></div>
-<button class="ccbs-start-game">开始游戏</button>
-<button class="ccbs-rematch">再来一局</button>
+<a href="/ccbs/gt01">👥 创建房间</a>
+<button>2人</button>
+<button>4人</button>
+<div class="ccbs-seat-1"><button>加入</button></div>
+<div class="ccbs-seat-2"><button>加入</button></div>
+<button>开始游戏</button>
 </body></html>
 """
 
@@ -442,18 +510,24 @@ def test_session_room_lifecycle_clicks() -> None:
     driver.register_page(BASE_URL, _LOBBY_PAGE)
     session = SessionManager(driver)
 
-    room_url = session.create_room(seats=2)
+    room_url = session.create_room(seats=4)
     assert room_url == BASE_URL  # the mock cannot navigate client-side
-    assert ("button.ccbs-create-room", 0) in driver.click_log
-    assert ("button.ccbs-seats-2", 0) in driver.click_log
+    assert ("label:创建房间", 0) in driver.click_log
+    assert ("label:4人", 0) in driver.click_log
 
     session.join_seat(1)
     session.start_game()
-    assert (".ccbs-seat-1 .ccbs-join", 0) in driver.click_log
-    assert ("button.ccbs-start-game", 0) in driver.click_log
+    assert ("label:加入", 0) in driver.click_log
+    assert ("label:开始游戏", 0) in driver.click_log
 
-    session.new_game()  # rematch button present in the lobby page
-    assert ("button.ccbs-rematch", 0) in driver.click_log
+    # new_game(): measured E3 path - the room view still shows 开始游戏
+    session.new_game()
+    assert driver.click_log.count(("label:开始游戏", 0)) == 2
+
+    # seats=2 (the default) must not click a seat-count toggle at all
+    driver.click_log.clear()
+    session.create_room(seats=2)
+    assert ("label:2人", 0) not in driver.click_log
 
 
 def test_switch_identity_deletes_gid_on_both_domains() -> None:
@@ -511,13 +585,11 @@ def test_snapshot_schema_error_on_missing_top_level_field() -> None:
 def test_snapshot_schema_error_when_my_panel_marker_missing() -> None:
     html = (
         "<html><body>"
-        '<div class="ccbs-status">等待你操作</div>'
-        + "".join(
-            f'<div class="flex justify-center origin-top ccbs-row-{r}"></div>'
-            for r in range(3)
-        )
-        + '<div class="ccbs-supply"></div>'
-        '<div class="ccbs-player"><span class="ccbs-score">1分</span></div>'
+        '<div class="text-center"><div class="mt-4">等待你操作</div></div>'
+        + '<div class="flex justify-center origin-top"></div>' * 3
+        + '<div class="mt-4 flex items-center justify-center space-x-6"></div>'
+        '<div class="flex flex-wrap items-center justify-center my-2">'
+        '<span class="ccbs-score">1分</span></div>'
         "</body></html>"
     )
     driver = MockBrowserDriver()

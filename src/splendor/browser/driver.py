@@ -19,6 +19,7 @@ drivers natively support CSS selectors, a superset of that subset.
 
 from __future__ import annotations
 
+import re
 import xml.sax.saxutils as _sax
 from collections.abc import Iterator
 from html.parser import HTMLParser
@@ -33,6 +34,31 @@ SNAPSHOT_JS_MARKER = "__CCBS_EXTRACT_SNAPSHOT__"
 # Special-cased by MockBrowserDriver (and natively supported by every real
 # driver): reading the current URL without extending the protocol.
 CURRENT_URL_JS = "location.href"
+
+# Payment pill label: digit + Chinese colour-character pairs, e.g. "2白1金"
+# (measured T0.4). Used by the mock reader to tell pills apart from the
+# confirm/cancel buttons sharing the gray bar.
+_PILL_TEXT_RE = re.compile(r"^(?:[0-9]+[白蓝绿红黑金])+$")
+
+# Measured turn-status texts (T0.4): a leaf element flips between these while
+# the game runs; both vanish on game over. Kept here because the module must
+# not import dom_extractor (import cycle).
+_STATUS_TEXT_RE = re.compile(r"等待(你|玩家[0-9]+)操作")
+
+
+def _read_status_text(root: _Element) -> str:
+    """
+    Text of the turn-status leaf (等待你操作 / 等待玩家N操作), or "".
+
+    The status element has no stable class (measured T0.4: a bare
+    ``div.mt-4`` inside ``div.text-center``), so the reading keys on the
+    measured *texts* instead: the unique childless element matching them.
+    """
+    for element in root.iter_tree():
+        text = element.text_content().strip()
+        if _STATUS_TEXT_RE.fullmatch(text):
+            return text
+    return ""
 
 # The card-back type index in the ccbs-type encoding (BROWSER_RL_MAPPING
 # §3.1: ccbs-type-5 is only used for deck piles / card backs). Mirrored here
@@ -60,6 +86,60 @@ class BrowserDriver(Protocol):
 
         :raises ValueError: when no element matches (fail fast instead of
                             clicking into a stale page).
+        """
+        ...
+
+    def click_labelled(
+        self,
+        label: str,
+        *,
+        exact: bool = True,
+        index: int = 0,
+        container_selector: str | None = None,
+        container_index: int = 0,
+    ) -> None:
+        """
+        Click the ``index``-th element whose trimmed text matches ``label``
+        (optionally scoped inside the ``container_index``-th container).
+
+        Measured page reality (T0.4 experiments, 2026-09-05): the action mode
+        buttons (``💎取宝石`` ...), the confirm/cancel buttons (``确认拿这些``,
+        ``确认放弃``, ``确认丢弃``), the payment pills and the room buttons
+        (``创建房间`` / ``加入`` / ``开始游戏`` / ``重连``) carry **no stable
+        ccbs-* class** - text is their only stable identity, so the protocol
+        must expose text-based clicking.
+
+        :param label: the text to match (trimmed comparison).
+        :param exact: when False, any element whose text *contains* the label
+                      matches (for emoji-prefixed labels where the emoji glyph
+                      may vary across font renders).
+        :param index: which match to click (document order within container).
+        :param container_selector: optional CSS scope (e.g. the gray confirm
+                                   bar for payment pills).
+        :param container_index: which container match to scope into.
+
+        :raises ValueError: when no element matches.
+        """
+        ...
+
+    def click_card_button(
+        self,
+        container_selector: str,
+        container_index: int,
+        card_index: int,
+        label: str,
+    ) -> None:
+        """
+        Click the button labelled ``label`` inside the ``card_index``-th
+        ``.ccbs-card`` of the ``container_index``-th container match.
+
+        Buy/reserve overlay buttons carry no ccbs-* class either (measured,
+        T0.4: pure Tailwind utilities + the texts ``购买`` / ``预定``), and the
+        overlay set depends on *affordability* - so the card is addressed
+        first (stable board position) and its overlay resolved second, never
+        the other way around. Rows list the deck stack as card 0 (measured).
+
+        :raises ValueError: when the container, card or button is missing.
         """
         ...
 
@@ -189,6 +269,12 @@ def _matches_compound(element: _Element, tag: str, classes: list[str]) -> bool:
     return all(cls in element.classes for cls in classes)
 
 
+def _label_matches(element: _Element, label: str, exact: bool) -> bool:
+    """Text identity used by click_labelled (trimmed comparison)."""
+    text = element.text_content().strip()
+    return text == label if exact else label in text
+
+
 def query_selector_all(root: _Element, selector: str) -> list[_Element]:
     """
     Evaluate the mock's selector subset, returning document-order matches.
@@ -287,6 +373,70 @@ class MockBrowserDriver:
                 f"index {index} is out of range"
             )
         self.click_log.append((selector, index))
+
+    def click_labelled(
+        self,
+        label: str,
+        *,
+        exact: bool = True,
+        index: int = 0,
+        container_selector: str | None = None,
+        container_index: int = 0,
+    ) -> None:
+        scope = self._root
+        if container_selector is not None:
+            containers = query_selector_all(self._root, container_selector)
+            if container_index not in range(len(containers)):
+                raise ValueError(
+                    f"container {container_selector!r} matched "
+                    f"{len(containers)} element(s); index {container_index} "
+                    "is out of range"
+                )
+            scope = containers[container_index]
+
+        matches = [
+            element
+            for element in scope.iter_tree()
+            if _label_matches(element, label, exact)
+        ]
+        if index not in range(len(matches)):
+            raise ValueError(
+                f"label {label!r} matched {len(matches)} element(s); "
+                f"index {index} is out of range"
+            )
+        self.click_log.append((f"label:{label}", index))
+
+    def click_card_button(
+        self,
+        container_selector: str,
+        container_index: int,
+        card_index: int,
+        label: str,
+    ) -> None:
+        containers = query_selector_all(self._root, container_selector)
+        if container_index not in range(len(containers)):
+            raise ValueError(
+                f"container {container_selector!r} matched "
+                f"{len(containers)} element(s); index {container_index} "
+                "is out of range"
+            )
+        cards = query_selector_all(containers[container_index], ".ccbs-card")
+        if card_index not in range(len(cards)):
+            raise ValueError(
+                f"card index {card_index} outside the {len(cards)} card(s) of "
+                f"{container_selector!r}[{container_index}]"
+            )
+        buttons = [
+            element
+            for element in cards[card_index].iter_tree()
+            if element.tag == "button" and _label_matches(element, label, True)
+        ]
+        if not buttons:
+            raise ValueError(
+                f"no button labelled {label!r} inside card {card_index} of "
+                f"{container_selector!r}[{container_index}]"
+            )
+        self.click_log.append((f"card:{container_index}:{card_index}:{label}", 0))
 
     def wait_for(self, condition_js: str, timeout: float) -> None:
         for pattern, satisfied in self._wait_results:
@@ -406,13 +556,17 @@ def _read_nobles(root: _Element) -> list[dict]:
 
 def _read_panels(root: _Element) -> tuple[list[dict], int | None]:
     """
-    Read the per-seat panels; also report the position of my own panel
-    (the one carrying the ccbs-me marker), or None when absent.
+    Read the per-seat panels; also report the position of my own panel.
+
+    Measured container (T0.4, 2026-09-05): one
+    ``div.flex.flex-wrap.items-center.justify-center.my-2`` per seat, in seat
+    order; my own panel is the one whose text carries the ``我`` marker.
     """
+    panel_selector = "div.flex.flex-wrap.items-center.justify-center.my-2"
     panels: list[dict] = []
     my_panel_index: int | None = None
-    for seat_offset, panel in enumerate(query_selector_all(root, ".ccbs-player")):
-        if "ccbs-me" in panel.classes:
+    for seat_offset, panel in enumerate(query_selector_all(root, panel_selector)):
+        if "我" in panel.text_content():
             my_panel_index = seat_offset
         scores = query_selector_all(panel, ".ccbs-score")
         panels.append(
@@ -455,21 +609,29 @@ def read_raw_snapshot(root: _Element) -> dict:
         else []
     )
 
-    status_elements = query_selector_all(root, ".ccbs-status")
-    status_text = status_elements[0].text_content().strip() if status_elements else ""
+    status_text = _read_status_text(root)
 
-    supply_area = query_selector_all(root, ".ccbs-supply")
+    # Measured supply container (T0.4): a single row of six chips below the
+    # table - div.ccbs-circle.ccbs-color-N.scale-125 when idle, the same
+    # elements as <button> while in take-gems mode. A bare ".ccbs-circle"
+    # query would hit card-cost pips first (they precede the supply row in
+    # document order), so the container is part of the selector.
+    supply_area = query_selector_all(
+        root, "div.mt-4.flex.items-center.justify-center.space-x-6"
+    )
     supply = _read_counts(supply_area[0], ".ccbs-circle") if supply_area else []
 
-    payment_area = query_selector_all(root, ".ccbs-payment-options")
-    payment_pills = (
-        [
+    # Measured payment UI (T0.4): pending pills render inside the gray
+    # confirm bar (div.mt-2.p-2.bg-gray-400) next to a 请选择支付方式 heading;
+    # pill buttons are plain <button> elements (no ccbs-pill class).
+    payment_area = query_selector_all(root, "div.mt-2.p-2.bg-gray-400")
+    payment_pills = None
+    if payment_area and "请选择支付方式" in payment_area[0].text_content():
+        payment_pills = [
             el.text_content().strip()
-            for el in query_selector_all(payment_area[0], ".ccbs-pill")
+            for el in query_selector_all(payment_area[0], "button")
+            if _PILL_TEXT_RE.match(el.text_content().strip())
         ]
-        if payment_area
-        else None
-    )
 
     noble_area = query_selector_all(root, ".ccbs-noble-options")
     noble_options = (

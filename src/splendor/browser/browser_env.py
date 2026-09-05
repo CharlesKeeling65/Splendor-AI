@@ -90,6 +90,9 @@ class BrowserSplendorEnv(gym.Env):
 
         self._my_seat = 0
         self._turns = 0
+        self._last_obs = np.zeros(
+            features.METRICS_WITH_CARDS_SHAPE, dtype=np.float32
+        )
         self.last_parity_report: list[str] = []
 
     # ----- SplendorEnvBase protocol -----------------------------------------
@@ -148,11 +151,20 @@ class BrowserSplendorEnv(gym.Env):
         self._turns += 1
 
         final_snapshot = self._wait_for_my_turn()
-        current_score = final_snapshot["panels"][self._my_index]["score"]
+        if self._my_index in range(len(final_snapshot["panels"])):
+            current_score = final_snapshot["panels"][self._my_index]["score"]
+        else:
+            # Game over returns to the room page (E3): no seat panels left,
+            # so the score-differential window closes with the last view.
+            current_score = previous_score
         reward = float(current_score - previous_score)
         terminated = looks_like_game_over(
-            final_snapshot["status"], self._game_over_markers
+            final_snapshot["status"],
+            self._game_over_markers,
+            board_present=self._board_present(final_snapshot),
         )
+        # A finished game returns to the room page (E3): no table rows, hence
+        # no observable board - the last in-game observation stands in.
         return self._observe(final_snapshot), reward, terminated, False, {}
 
     def get_legal_actions_mask(self) -> NDArray:
@@ -194,21 +206,32 @@ class BrowserSplendorEnv(gym.Env):
         """Agent index of my seat (page seats are 1-based, panels in order)."""
         return self._my_seat - 1
 
+    @staticmethod
+    def _board_present(snapshot: Snapshot) -> bool:
+        """Measured E3 terminal signal: the room page renders no board."""
+        return any(count > 0 for count in snapshot["deck_counts"]) or any(
+            slot is not None for row in snapshot["dealt"] for slot in row
+        )
+
     def _observe(self, snapshot: Snapshot) -> NDArray:
+        if not self._board_present(snapshot) or not snapshot["panels"]:
+            # Room page (game over or not yet started): nothing to vectorize.
+            return self._last_obs
         pseudo_state = build_pseudo_state(
             snapshot, self._my_index, turns=self._turns
         )
-        return features.extract_metrics_with_cards(
+        self._last_obs = features.extract_metrics_with_cards(
             pseudo_state, self._my_index
         ).astype(np.float32)
+        return self._last_obs
 
     def _wait_for_game_start(self) -> Snapshot:
+        # Only my turn counts as "started": the room page (before/after a
+        # game) is a waiting state too, not a playable board (measured E3).
         deadline = time.monotonic() + self._step_timeout
         while True:
             snapshot = extract_snapshot(self._driver)
-            if is_my_turn(snapshot["status"]) or looks_like_game_over(
-                snapshot["status"], self._game_over_markers
-            ):
+            if is_my_turn(snapshot["status"]) and self._board_present(snapshot):
                 return snapshot
             if time.monotonic() > deadline:
                 raise TimeoutError(
@@ -233,7 +256,11 @@ class BrowserSplendorEnv(gym.Env):
         while True:
             snapshot = extract_snapshot(self._driver)
             status = snapshot["status"]
-            if looks_like_game_over(status, self._game_over_markers):
+            if looks_like_game_over(
+                status,
+                self._game_over_markers,
+                board_present=self._board_present(snapshot),
+            ):
                 return snapshot
             if is_my_turn(status):
                 if saw_other_turn:
