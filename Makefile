@@ -35,20 +35,26 @@ publish-docs: docs
 clean:
 	make -C docs/ clean
 
+# Repo venv first (uv-built Pythons lack tkinter, and system Python may miss
+# the deps entirely); override with `make PYTHON=python3`.
+PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
+
 .PHONY: test
 test:
-	python -m pytest tests/
+	$(PYTHON) -m pytest tests/
 
 # The parity gate: mandatory before any web deployment after touching the
 # engine's mask logic, features.py, or the browser extraction layer.
 .PHONY: parity
 parity:
-	python -m pytest tests/test_feature_parity.py tests/test_browser_adapter.py -v
+	$(PYTHON) -m pytest tests/test_feature_parity.py tests/test_browser_adapter.py -v
 
 .PHONY: train-dqn
 train-dqn:
-	dqn --help && echo "usage: dqn -o random --test-opponent minimax [see plan/phase-1]"
+	$(PYTHON) -m splendor.agents.our_agents.dqn.dqn --help && \
+	echo "usage: dqn -o random --test-opponent minimax [see plan/phase-1]"
 
 .PHONY: play-web
 play-web:
-	play-web --help && echo "usage: play-web --checkpoint <path> --games 50 [see plan/phase-3]"
+	$(PYTHON) -m splendor.play_web --help && \
+	echo "usage: play-web --checkpoint <path> --games 50 [see plan/phase-3]"
