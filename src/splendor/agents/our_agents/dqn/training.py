@@ -338,3 +338,66 @@ def evaluate(
         "loss": losses / n_games,
         "avg_score": total_score / n_games,
     }
+
+
+def collect_from_browser(
+    browser_env: gym.Env,
+    buffer: ReplayBuffer,
+    n_games: int,
+    q_net: QNetwork | None = None,
+) -> dict[str, float]:
+    """
+    Fold completed web games into the local replay buffer (off-policy).
+
+    Real opponent data corrects the distribution shift no local opponent pool
+    covers - humans hoard gems, starve colours, and err non-linearly. Even a
+    slow trickle of browser transitions (minutes per game vs seconds locally)
+    is enough to nudge the value function, because the replay accepts data
+    from *any* behaviour policy. This is the红利 that on-policy algorithms
+    (PPO) cannot cash.
+
+    :param browser_env: a reset-ready BrowserSplendorEnv (reward semantics
+                        already match the local env, so no wrapper needed).
+    :param buffer: the replay buffer to append transitions to.
+    :param n_games: how many web games to harvest.
+    :param q_net: when given, actions come from its greedy policy; otherwise
+                  transitions are collected under the random-in-mask policy
+                  (useful to seed the buffer before any checkpoint exists).
+    :return: {"games", "steps", "avg_score"} - harvest statistics for logs.
+    """
+    total_steps = 0
+    total_score = 0.0
+
+    for _ in range(n_games):
+        obs, _info = browser_env.reset()
+        obs = np.asarray(obs, dtype=np.float32)
+        mask = np.asarray(browser_env.get_legal_actions_mask(), dtype=np.float32)
+        terminated = False
+        game_reward = 0.0
+        while not terminated:
+            if q_net is not None:
+                action = q_net.act(torch.from_numpy(obs), torch.from_numpy(mask))
+            else:
+                action = int(np.random.choice(np.flatnonzero(mask)))
+            next_obs, reward, terminated, _truncated, _info = browser_env.step(action)
+            next_obs = np.asarray(next_obs, dtype=np.float32)
+            next_mask = (
+                np.zeros_like(mask)
+                if terminated
+                else np.asarray(
+                    browser_env.get_legal_actions_mask(), dtype=np.float32
+                )
+            )
+            buffer.add(obs, action, float(reward), next_obs, next_mask, terminated)
+            obs, mask = next_obs, next_mask
+            total_steps += 1
+            # the browser env's rewards are panel score deltas, so their sum
+            # telescopes to the final score (no terminal wrapper on the web)
+            game_reward += float(reward)
+        total_score += game_reward
+
+    return {
+        "games": float(n_games),
+        "steps": float(total_steps),
+        "avg_score": total_score / n_games,
+    }

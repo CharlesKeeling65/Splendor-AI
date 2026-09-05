@@ -93,6 +93,7 @@ class BrowserSplendorEnv(gym.Env):
         self._last_obs = np.zeros(
             features.METRICS_WITH_CARDS_SHAPE, dtype=np.float32
         )
+        self._last_seen_score: float | None = None
         self.last_parity_report: list[str] = []
 
     # ----- SplendorEnvBase protocol -----------------------------------------
@@ -116,9 +117,8 @@ class BrowserSplendorEnv(gym.Env):
             np.random.seed(seed)
 
         self._session.new_game()
-        self._wait_for_game_start()
-
-        snapshot = extract_snapshot(self._driver)
+        # one round trip: the start-wait loop already produced the snapshot
+        snapshot = self._wait_for_game_start()
         self._my_seat = snapshot["my_seat"]
         self._rule = SplendorGameRule(len(snapshot["panels"]))
         self._turns = 0
@@ -149,13 +149,14 @@ class BrowserSplendorEnv(gym.Env):
 
         self._executor.execute(action, snapshot, pseudo_state)
         self._turns += 1
+        self._last_seen_score = None
 
         final_snapshot = self._wait_for_my_turn()
-        if self._my_index in range(len(final_snapshot["panels"])):
-            current_score = final_snapshot["panels"][self._my_index]["score"]
+        if self._last_seen_score is not None:
+            current_score = self._last_seen_score
         else:
-            # Game over returns to the room page (E3): no seat panels left,
-            # so the score-differential window closes with the last view.
+            # Game over returned to the room page before any poll saw a board
+            # (E3): the score-differential window closes with the last view.
             current_score = previous_score
         reward = float(current_score - previous_score)
         terminated = looks_like_game_over(
@@ -255,6 +256,13 @@ class BrowserSplendorEnv(gym.Env):
         rescued = False
         while True:
             snapshot = extract_snapshot(self._driver)
+            if self._my_index in range(len(snapshot["panels"])):
+                # Remember the newest in-game panel score: on game over the
+                # board (and the panels with it) vanishes, and the final
+                # reward must not lose the last scoring transition.
+                self._last_seen_score = float(
+                    snapshot["panels"][self._my_index]["score"]
+                )
             status = snapshot["status"]
             if looks_like_game_over(
                 status,
