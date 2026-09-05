@@ -51,6 +51,7 @@ urls.Issues = "https://github.com/roeey777/Splendor-AI/issues"
 urls.Repository = "https://github.com/roeey777/Splendor-AI"
 scripts.evolve = "splendor.agents.our_agents.genetic_algorithm.evolve:main"
 scripts.ppo = "splendor.agents.our_agents.ppo.ppo:main"
+scripts.dqn = "splendor.agents.our_agents.dqn.dqn:main"
 gui-scripts.splendor = "splendor.general_game_runner:main"
 
 [tool.setuptools]
