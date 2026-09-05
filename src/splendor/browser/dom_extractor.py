@@ -94,7 +94,9 @@ class RawNobleReading(TypedDict):
 
 
 class RawPanelReading(TypedDict):
-    text: str  # panel inner text (carries "N分" and the seat number)
+    text: str  # panel inner text (carries the seat number)
+    score_text: str  # .ccbs-score text ("N分"); scoped read so the seat
+    # number in `text` can never glue onto the score ("115分" bug)
     rects: list[RawCountReading]  # permanent cards per colour
     circles: list[RawCountReading]  # gems in hand
     reserved_backs: list[int]  # ccbs-img-N of type-5 backs (N leaks tier)
@@ -232,14 +234,18 @@ EXTRACT_SNAPSHOT_JS: str = (
   const myPanelIndex = panelEls.findIndex((el) =>
     el.classList.contains("ccbs-me")
   );
-  const panels = panelEls.map((p) => ({
+  const panels = panelEls.map((p) => {
+    const score = p.querySelector(".ccbs-score");  // [B3.1] "N分" element
+    return {
     text: p.innerText || p.textContent || "",
+    score_text: score ? (score.textContent || "").trim() : "",
     rects: readCounts(p, ".ccbs-rect"),     // [B3.1] permanent cards
     circles: readCounts(p, ".ccbs-circle"), // [B3.1] gems in hand
     reserved_backs: Array.from(
       p.querySelectorAll(".ccbs-card.ccbs-type-5")  // [B3.1] backs leak tier
     ).map(imgIndexOf),
-  }));
+    };
+  });
   // [B3.1] my reserved band: face-up .ccbs-card inside the gray strip.
   const band = document.querySelector(
     "div.flex.justify-center.origin-top.bg-gray-400"
@@ -335,7 +341,7 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         panels.append(
             {
                 "seat": index + 1,
-                "score": _parse_score(raw_panel["text"]),
+                "score": _parse_score(raw_panel["score_text"], raw_panel["text"]),
                 "card_counts": {name: rects.get(name, 0) for name in FACE_INDEX_TO_NAME},
                 "gems": {name: circles.get(name, 0) for name in COLOR_INDEX_TO_NAME},
                 "reserved_tiers": [
@@ -554,8 +560,15 @@ def _parse_count(text: str | None, fallback: int) -> int:
 _SCORE_RE = re.compile(r"(\d+)分")
 
 
-def _parse_score(panel_text: str) -> int:
-    match = _SCORE_RE.search(panel_text)
+def _parse_score(score_text: str, panel_text: str) -> int:
+    """
+    Panel score from the scoped ``.ccbs-score`` element text ("15分" -> 15),
+    falling back to the whole panel text when the element is missing.
+
+    The scoped read matters: the raw panel text glues the seat number onto
+    the score ("座位1" + "15分" reads as "115分").
+    """
+    match = _SCORE_RE.search(score_text) or _SCORE_RE.search(panel_text)
     return int(match.group(1)) if match else 0
 
 
@@ -629,6 +642,7 @@ def _validate_raw_reading(raw: Mapping[str, Any]) -> None:
             panel,
             lambda v: isinstance(v, Mapping)
             and isinstance(v.get("text", None), str)
+            and isinstance(v.get("score_text", None), str)
             and _is_count_list(v.get("rects", None))
             and _is_count_list(v.get("circles", None))
             and _is_int_list(v.get("reserved_backs", None)),

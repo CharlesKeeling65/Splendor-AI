@@ -121,7 +121,10 @@ class ActionExecutor:
 
     # ----- entry point --------------------------------------------------------
     def execute(
-        self, action_index: int, snapshot: Snapshot, pseudo_state: SplendorState
+        self,
+        action_index: int,
+        snapshot: Snapshot,
+        pseudo_state: SplendorState | None = None,
     ) -> None:
         """
         Perform the click sequence of ``ALL_ACTIONS[action_index]``.
@@ -129,6 +132,9 @@ class ActionExecutor:
         :param snapshot: the snapshot this action was decided on (used for
             DOM preconditions); the executor re-reads the page where the UI
             state changes mid-sequence (payment pills).
+        :param pseudo_state: required for actions whose semantics need engine
+            data (BUY payment strategy, noble eligibility); PASS/COLLECT/
+            RESERVE sequences never touch it, and tests may pass None there.
         :raises ActionExecutionError: when a step fails twice.
         :raises ValueError: on an out-of-range index or unmet preconditions.
         """
@@ -206,7 +212,7 @@ class ActionExecutor:
         self._click_confirmed(selector, deck_offset + position.card_index)
 
     def _execute_buy(
-        self, action: Action, snapshot: Snapshot, pseudo_state: SplendorState
+        self, action: Action, snapshot: Snapshot, pseudo_state: SplendorState | None
     ) -> None:
         # BUY: buy mode -> target card's buy overlay -> optional payment pill
         # (2-3 steps; a unique payment settles immediately).
@@ -235,7 +241,9 @@ class ActionExecutor:
         self._click_confirmed(selector, overlay_index)
         self._settle_payment(action, pseudo_state)
 
-    def _settle_payment(self, action: Action, pseudo_state: SplendorState) -> None:
+    def _settle_payment(
+        self, action: Action, pseudo_state: SplendorState | None
+    ) -> None:
         """
         Settle a purchase when the page asks for a payment choice.
 
@@ -248,16 +256,23 @@ class ActionExecutor:
         pills = fresh["payment_options"]
         if not pills:
             return
+        if pseudo_state is None:
+            raise ValueError(
+                "payment pills pending but no pseudo state supplied - the "
+                "greedy payment strategy needs the engine view of the seat"
+            )
         choice = self.select_payment_greedy(pills, action, pseudo_state)
         self._click_confirmed(SELECTOR_PAYMENT_PILL, choice)
 
-    def _pick_noble(self, action: Action, pseudo_state: SplendorState) -> None:
+    def _pick_noble(self, action: Action, pseudo_state: SplendorState | None) -> None:
         """
         Claim the noble this action selected when the choice UI is up (E1
         pending). The UI is assumed to list the *eligible* nobles; eligibility
         is engine code (``noble_visit``), so the click index is derived by
         engine rule reuse instead of assuming board order.
         """
+        if pseudo_state is None:
+            raise ValueError("noble claim needs the pseudo state (eligibility)")
         nobles = pseudo_state.board.nobles
         if action.noble_index not in range(len(nobles)):
             raise ValueError(
@@ -276,7 +291,7 @@ class ActionExecutor:
 
     # ----- payment strategy -----------------------------------------------------
     def select_payment_greedy(
-        self, pills: list[str], action: Action, pseudo_state: SplendorState
+        self, pills: list[str], action: Action, pseudo_state: SplendorState | None
     ) -> int:
         """
         Tier-1 payment policy: imitate the engine's greedy payment.
@@ -292,6 +307,8 @@ class ActionExecutor:
 
         :returns: the index into ``pills`` to click.
         """
+        if pseudo_state is None:
+            raise ValueError("payment strategy needs the pseudo state")
         cost = self._cost_of(action, pseudo_state)
         agent = pseudo_state.agents[pseudo_state.agent_to_move]
         greedy = self._rule.resources_sufficient(agent, cost)
@@ -314,11 +331,15 @@ class ActionExecutor:
                 return index
         return candidates[0]
 
-    def _cost_of(self, action: Action, pseudo_state: SplendorState) -> dict[str, int]:
+    def _cost_of(
+        self, action: Action, pseudo_state: SplendorState | None
+    ) -> dict[str, int]:
         """Cost dict of the card a buy action targets."""
         position = action.position
         if position is None:
             raise ValueError(f"buy action without a position: {action}")
+        if pseudo_state is None:  # pragma: no cover - guarded by caller
+            raise ValueError("buy cost lookup needs the pseudo state")
         if action.type_enum is ActionEnum.BUY_RESERVE:
             my = pseudo_state.agents[pseudo_state.agent_to_move]
             if position.reserved_index not in range(len(my.cards[RESERVED])):

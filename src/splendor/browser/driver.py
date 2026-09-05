@@ -194,7 +194,10 @@ def query_selector_all(root: _Element, selector: str) -> list[_Element]:
     Evaluate the mock's selector subset, returning document-order matches.
 
     Supported: whitespace-separated compounds (descendant combinator); each
-    compound is an optional tag name plus ``.class`` tokens.
+    compound is an optional tag name plus ``.class`` tokens. As in CSS, the
+    returned elements are the matches of the *last* compound that have the
+    required ancestor chain (``".row .buy"`` returns the buy buttons inside
+    rows, not the rows themselves).
     """
     compounds: list[tuple[str, list[str]]] = []
     for token in selector.split():
@@ -203,22 +206,23 @@ def query_selector_all(root: _Element, selector: str) -> list[_Element]:
     if not compounds:
         return []
 
-    matches: list[_Element] = []
-
-    def matches_from(element: _Element, compound_index: int) -> bool:
+    def matches_chain(element: _Element, compound_index: int) -> bool:
         tag, classes = compounds[compound_index]
         if not _matches_compound(element, tag, classes):
             return False
-        return compound_index == len(compounds) - 1 or any(
-            matches_from(descendant, compound_index + 1)
-            for descendant in element.iter_tree()
-            if descendant is not element
-        )
+        if compound_index == 0:
+            return True
+        ancestor = element.parent
+        while ancestor is not None:
+            if matches_chain(ancestor, compound_index - 1):
+                return True
+            ancestor = ancestor.parent
+        return False
 
-    for element in root.iter_tree():
-        if matches_from(element, 0):
-            matches.append(element)
-    return matches
+    last = len(compounds) - 1
+    return [
+        element for element in root.iter_tree() if matches_chain(element, last)
+    ]
 
 
 class MockBrowserDriver:
@@ -410,9 +414,14 @@ def _read_panels(root: _Element) -> tuple[list[dict], int | None]:
     for seat_offset, panel in enumerate(query_selector_all(root, ".ccbs-player")):
         if "ccbs-me" in panel.classes:
             my_panel_index = seat_offset
+        scores = query_selector_all(panel, ".ccbs-score")
         panels.append(
             {
                 "text": panel.text_content(),
+                # Score read from the dedicated element: parsing the whole
+                # panel text would glue the seat number to the score
+                # ("座位1" + "15分" -> "115分").
+                "score_text": scores[0].text_content().strip() if scores else "",
                 "rects": _read_counts(panel, ".ccbs-rect"),
                 "circles": _read_counts(panel, ".ccbs-circle"),
                 "reserved_backs": [
