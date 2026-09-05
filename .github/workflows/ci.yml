@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Python 3.12+ is a hard constraint: the engine uses
+        # typing.override (AGENTS.md - 3.11 raises ImportError despite
+        # pyproject declaring >=3.11).
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the project
+        run: |
+          uv venv
+          uv pip install -e ".[dev]" pytest
+
+      - name: Lint (ruff)
+        run: |
+          uv pip install ruff
+          .venv/bin/ruff check src/ tests/
+
+      - name: Type check (mypy, new code paths)
+        run: |
+          uv pip install mypy
+          .venv/bin/python -m mypy src/splendor/browser \
+            src/splendor/agents/our_agents/dqn \
+            src/splendor/splendor/gym/base.py \
+            src/splendor/play_web.py
+
+      - name: Test (pytest, offline only)
+        run: .venv/bin/python -m pytest tests/ -v

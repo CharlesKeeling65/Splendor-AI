@@ -34,3 +34,21 @@ publish-docs: docs
 .PHONY: clean
 clean:
 	make -C docs/ clean
+
+.PHONY: test
+test:
+	python -m pytest tests/
+
+# The parity gate: mandatory before any web deployment after touching the
+# engine's mask logic, features.py, or the browser extraction layer.
+.PHONY: parity
+parity:
+	python -m pytest tests/test_feature_parity.py tests/test_browser_adapter.py -v
+
+.PHONY: train-dqn
+train-dqn:
+	dqn --help && echo "usage: dqn -o random --test-opponent minimax [see plan/phase-1]"
+
+.PHONY: play-web
+play-web:
+	play-web --help && echo "usage: play-web --checkpoint <path> --games 50 [see plan/phase-3]"
