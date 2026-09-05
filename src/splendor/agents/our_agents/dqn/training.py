@@ -17,8 +17,8 @@ from torch import nn
 from torch.optim.optimizer import Optimizer
 
 import splendor.splendor.gym  # noqa: F401  # registers the splendor-v1 env
-from splendor.splendor.gym.base import SplendorEnvBase
 from splendor.splendor.features import extract_metrics_with_cards
+from splendor.splendor.gym.base import SplendorEnvBase
 from splendor.splendor.gym.envs.splendor_env import SplendorEnv
 from splendor.template import Agent
 

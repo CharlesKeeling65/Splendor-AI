@@ -39,10 +39,23 @@ _START_TIMEOUT = 30.0
 class SessionManager:
     """Room lifecycle: create, seat, start, identity swap, recover."""
 
-    def __init__(self, driver: BrowserDriver, base_url: str = BASE_URL) -> None:
+    def __init__(
+        self,
+        driver: BrowserDriver,
+        base_url: str = BASE_URL,
+        room_url: str | None = None,
+        seats: int = DEFAULT_SEATS,
+    ) -> None:
+        """
+        :param room_url: pin the session to an existing room (e.g. one the
+            user created to watch or play against the agent); new_game()
+            then re-joins this room instead of creating fresh ones.
+        :param seats: room size used when creating rooms.
+        """
         self._driver = driver
         self._base_url = base_url
-        self._room_url: str | None = None
+        self._room_url: str | None = room_url
+        self._seats = seats
 
     @property
     def room_url(self) -> str | None:
@@ -72,11 +85,22 @@ class SessionManager:
         The page renders one 加入 button per *free* seat in seat order, so
         ``index = seat - 1`` is correct while every seat before ``seat`` is
         already taken (the normal self-play flow: owner sits first, the
-        second identity joins the next free seat).
+        second identity joins the next free seat). For "just take whatever
+        is open" prefer :meth:`join_first_free_seat`.
         """
         if seat < 1:
             raise ValueError(f"seat numbers are 1-based, got {seat}")
         self._driver.click_labelled(LABEL_JOIN_SEAT, index=seat - 1)
+
+    def join_first_free_seat(self) -> None:
+        """
+        Take the lowest-numbered free seat, whatever it is.
+
+        This is the robust entry for scripted play: on a fresh room it takes
+        seat 1 (ownership); in a room where a human or another process
+        already sits lower, it takes the next free seat automatically.
+        """
+        self._driver.click_labelled(LABEL_JOIN_SEAT, index=0)
 
     def start_game(self) -> None:
         """Start the game; requires at least two occupied seats (owner only)."""
@@ -86,18 +110,33 @@ class SessionManager:
         """
         Begin a fresh game for reset().
 
+        Pinned-room mode (``room_url`` given): re-join the room, take the
+        first free seat, and try to start - tolerated to fail because the
+        room owner (e.g. a human watching) presses 开始游戏 themselves.
+
         Measured end-of-game reality (E3, T0.4): after a game ends the page
         returns to the room view where both seats are still occupied and the
         owner's 开始游戏 button is back - starting again is the common path.
         Falling back to a fresh room covers a lost room (kick, expiry).
         """
+        if self._room_url is not None:
+            self._driver.navigate(self._room_url)
+            try:
+                self.join_first_free_seat()
+            except ValueError:
+                pass  # already seated (the common case between games)
+            try:
+                self.start_game()
+            except ValueError:
+                pass  # not the owner - the human/owner seat starts the game
+            return
         try:
             self.start_game()
             return
         except ValueError:
             pass
-        self.create_room()
-        self.join_seat(1)
+        self.create_room(seats=self._seats)
+        self.join_first_free_seat()
 
     def switch_identity(self) -> None:
         """

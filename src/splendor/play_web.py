@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import torch
@@ -64,7 +64,7 @@ def _greedy_action(env: SplendorEnvBase, q_net: QNetwork, obs: np.ndarray) -> in
 
 
 def run_game(
-    env: SplendorEnvBase, q_net: QNetwork, max_steps: int = 200
+    env: BrowserSplendorEnv, q_net: QNetwork, max_steps: int = 200
 ) -> GameReport:
     """
     Play one web game with the greedy policy and report the outcome.
@@ -122,12 +122,10 @@ def run_game(
     )
 
 
-def _panel_scores(env: SplendorEnvBase, my_seat: int) -> tuple[float, float] | None:
+def _panel_scores(env: BrowserSplendorEnv, my_seat: int) -> tuple[float, float] | None:
     """Best-effort (my, best-rival) panel scores from the env's last view."""
     try:
-        # harness-level introspection of the browser env's driver
-        driver_view = cast(BrowserDriver, getattr(env, "_driver"))
-        snapshot = extract_snapshot(driver_view)
+        snapshot = extract_snapshot(env.driver)
         if not snapshot["panels"]:
             return None
         mine = next(
@@ -147,7 +145,9 @@ def main() -> None:
     q_net = load_agent(options["checkpoint"])
 
     driver = options["driver_factory"]()
-    session = SessionManager(driver)
+    session = SessionManager(
+        driver, room_url=options["room_url"], seats=options["seats"]
+    )
     env = BrowserSplendorEnv(
         driver, session, poll_interval=options["poll"], step_timeout=options["timeout"]
     )
@@ -167,6 +167,8 @@ def main() -> None:
                     result="aborted", my_score=0.0, rival_score=0.0,
                     steps=0, duration=0.0, mask_anomalies=0,
                 )
+        if session.room_url:
+            print(f"room: {session.room_url}  <- open this URL to watch")
         reports.append(report)
         print(
             f"game {game_index + 1}/{options['games']}: {report.result} "

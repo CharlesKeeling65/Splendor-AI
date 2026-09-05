@@ -203,6 +203,16 @@ class BrowserSplendorEnv(gym.Env):
 
     # ----- internals ----------------------------------------------------------
     @property
+    def driver(self) -> BrowserDriver:
+        """
+        The underlying browser driver.
+
+        Harness-level introspection (play-web's reporting reads the last
+        page view through it); normal environment users never need this.
+        """
+        return self._driver
+
+    @property
     def _my_index(self) -> int:
         """Agent index of my seat (page seats are 1-based, panels in order)."""
         return self._my_seat - 1

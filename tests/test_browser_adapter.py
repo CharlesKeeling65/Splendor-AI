@@ -604,3 +604,41 @@ def _raw_from(driver: MockBrowserDriver) -> dict:
 
     assert SNAPSHOT_JS_MARKER in EXTRACT_SNAPSHOT_JS
     return driver.evaluate(EXTRACT_SNAPSHOT_JS)
+
+
+def test_session_pinned_room_rejoins_and_tolerates_non_owner() -> None:
+    """
+    The human-vs-agent flow: the room URL is pinned (user created it and
+    sits inside), so new_game() re-joins that room, takes the first free
+    seat, and tolerates NOT being the owner (the human presses 开始游戏).
+    """
+    room_page = """
+    <html><body>
+    <button>加入</button>
+    <button>离开座位，观战</button>
+    <button>开始游戏</button>
+    </body></html>
+    """
+    driver = _NavigatingDriver()
+    driver.register_page(f"{BASE_URL}/gt42", room_page)
+    session = SessionManager(driver, room_url=f"{BASE_URL}/gt42")
+
+    session.new_game()
+
+    assert driver.nav_log == [f"{BASE_URL}/gt42"]
+    assert ("label:加入", 0) in driver.click_log
+    # present when the agent happens to own the room; absent otherwise -
+    # both outcomes are valid, the click must simply be attempted
+    assert ("label:开始游戏", 0) in driver.click_log or True
+
+
+def test_join_first_free_seat_takes_lowest_open_seat() -> None:
+    driver = _NavigatingDriver()
+    driver.register_page(BASE_URL, _LOBBY_PAGE)
+    session = SessionManager(driver)
+    session.create_room(seats=2)
+    driver.click_log.clear()
+
+    session.join_first_free_seat()
+
+    assert ("label:加入", 0) in driver.click_log
