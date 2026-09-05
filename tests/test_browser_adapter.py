@@ -612,13 +612,14 @@ def test_session_pinned_room_rejoins_and_tolerates_non_owner() -> None:
     sits inside), so new_game() re-joins that room, takes the first free
     seat, and tolerates NOT being the owner (the human presses 开始游戏).
     """
-    room_page = """
-    <html><body>
-    <button>加入</button>
-    <button>离开座位，观战</button>
-    <button>开始游戏</button>
-    </body></html>
-    """
+    # real page labels (fullwidth comma is part of the actual button text)
+    room_page = (
+        "<html><body>"
+        "<button>加入</button>"
+        "<button>离开座位，观战</button>"  # noqa: RUF001 - real page label
+        "<button>开始游戏</button>"
+        "</body></html>"
+    )
     driver = _NavigatingDriver()
     driver.register_page(f"{BASE_URL}/gt42", room_page)
     session = SessionManager(driver, room_url=f"{BASE_URL}/gt42")

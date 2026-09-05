@@ -211,7 +211,7 @@ METRIC_NORMALIZATION: NDArray = np.array(
 )
 
 
-def extract_metrics(game_state: SplendorState, agent_index: int) -> NDArray:  # noqa: PLR0914
+def extract_metrics(game_state: SplendorState, agent_index: int) -> NDArray:
     # pylint: disable=too-many-locals
     """
     Extract metrics/features from a given state.

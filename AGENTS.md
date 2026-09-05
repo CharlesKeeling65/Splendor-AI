@@ -85,6 +85,8 @@ CI（GitHub Actions）：ruff + mypy（新代码路径）+ pytest，Python 3.12/
 | `plan/reference/DQN_GUIDE.md` | DQN 算法完整方案（超参表、十二陷阱清单） |
 | `plan/reference/BROWSER_RL_MAPPING.md` | 网页版 DOM/动作/奖励映射（实测依据；T0.5 勘误已就地标注） |
 | `plan/reference/IMPLEMENTATION_SPEC.md` | 函数级签名规格与任务看板 |
+| `docs/TRAINING_GUIDE.md` | **DQN 训练实操手册**（课程/参数/监控/验收，操作者视角） |
+| `docs/WEB_DEPLOYMENT_GUIDE.md` | **浏览器部署与可视化手册**（人机对战/挂机/双开/旁观/回流） |
 | `docs/web_experiments.md` | **E1-E6 网页规则实测记录 + M0.2 吞吐留档 + 规则差异 ADR** |
 | `docs/p4_decision.md` | P4 go/no-go 决策（全部暂缓，复审条件） |
 | `docs/s2r_report.md` | sim-to-real 对照报告模板（数字待部署后回填） |
