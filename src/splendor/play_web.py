@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -125,7 +125,8 @@ def run_game(
 def _panel_scores(env: SplendorEnvBase, my_seat: int) -> tuple[float, float] | None:
     """Best-effort (my, best-rival) panel scores from the env's last view."""
     try:
-        driver_view = env._driver  # noqa: SLF001 - harness introspection
+        # harness-level introspection of the browser env's driver
+        driver_view = cast(BrowserDriver, getattr(env, "_driver"))
         snapshot = extract_snapshot(driver_view)
         if not snapshot["panels"]:
             return None
