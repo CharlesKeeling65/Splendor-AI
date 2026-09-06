@@ -388,7 +388,10 @@ def train(  # noqa: C901,PLR0912,PLR0913,PLR0915,PLR0917
             _write_json(
                 status_path,
                 {
-                    "status": "completed" if event == "complete" else "running",
+                    "status": {
+                        "complete": "completed",
+                        "interrupted": "interrupted",
+                    }.get(event, "running"),
                     "event": event,
                     "step": current_step,
                     "episode": current_episode,
@@ -403,7 +406,13 @@ def train(  # noqa: C901,PLR0912,PLR0913,PLR0915,PLR0917
 
         # Main training loop
         for step in range(total_steps):
-            result = collect_one_step(train_env, q_net, buffer, params, step)
+            try:
+                result = collect_one_step(train_env, q_net, buffer, params, step)
+            except KeyboardInterrupt:
+                write_progress("interrupted", step, episode)
+                train_env.close()
+                print(f"Training interrupted at step {step}; checkpoints are kept.")
+                return q_net
 
             if len(buffer) >= params.warmup:
                 latest_update = dqn_update(

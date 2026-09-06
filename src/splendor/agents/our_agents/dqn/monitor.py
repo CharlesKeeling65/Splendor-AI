@@ -91,7 +91,7 @@ def find_latest_run(runs_dir: Path) -> Path | None:
 def _status(run_dir: Path) -> JsonObject:
     stored = _read_json(run_dir / "run_status.json")
     stored_status = stored.get("status")
-    if stored_status in {"completed", "failed"}:
+    if stored_status in {"completed", "failed", "interrupted"}:
         return stored
     if stored_status == "running":
         last_update = _run_mtime(run_dir)

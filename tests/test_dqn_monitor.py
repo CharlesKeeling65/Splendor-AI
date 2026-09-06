@@ -36,6 +36,18 @@ def test_load_payload_reads_live_artifacts(tmp_path: Path) -> None:
     assert payload["progress"][-1]["step"] == 12
 
 
+def test_load_payload_preserves_interrupted_status(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run__dqn"
+    run_dir.mkdir()
+    (run_dir / "run_status.json").write_text(
+        json.dumps({"status": "interrupted", "step": 42}), encoding="utf-8"
+    )
+
+    payload = load_payload(run_dir)
+
+    assert payload["status"] == {"status": "interrupted", "step": 42}
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
 def test_save_model_keeps_cuda_network_on_cuda(tmp_path: Path) -> None:
     model = QNetwork(hidden_layers=(8, 8)).to("cuda")
