@@ -161,7 +161,11 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
         next_q = (
             target_net(next_obs, next_masks).gather(1, best_next_actions).squeeze(1)
         )
-        targets = rewards + params.gamma * (1.0 - dones) * next_q
+        if params.gamma != buffer.gamma:
+            raise ValueError("replay and TD update must use the same discount")
+        # Nonterminal windows always have n_step entries. Short terminal
+        # suffixes do not bootstrap, so their length does not enter this term.
+        targets = rewards + params.gamma**buffer.n_step * (1.0 - dones) * next_q
 
     # The executed action is legal by construction, so the current-step mask
     # is not needed - an all-ones mask leaves the gathered values untouched.

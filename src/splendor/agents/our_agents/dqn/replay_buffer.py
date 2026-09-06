@@ -131,8 +131,11 @@ class ReplayBuffer:
             (obs, int(action), float(reward), next_obs, next_mask, bool(done))
         )
 
-        if len(self._pending) < self.n_step and not done:
-            return
+        while self._pending and (done or len(self._pending) >= self.n_step):
+            self._fold_oldest()
+
+    def _fold_oldest(self) -> None:
+        """Store one origin, including every shorter suffix at termination."""
 
         # Fold the pending window: R = sum over the window of gamma^k * r_k,
         # the successor state is the tail's, and a terminal step truncates.
@@ -158,12 +161,7 @@ class ReplayBuffer:
             last_done,
         )
 
-        if done:
-            # Never let a window span two episodes.
-            self._pending.clear()
-        else:
-            # Sliding window: the oldest step just became a folded transition.
-            self._pending.pop(0)
+        self._pending.pop(0)
 
     def sample(
         self, batch_size: int

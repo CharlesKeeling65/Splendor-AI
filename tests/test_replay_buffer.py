@@ -84,20 +84,16 @@ def test_nstep_done_truncation():
     obs1, act1, reward1, next1, mask1, _ = make_transition(1)
     buffer.add(obs1, act1, reward1, next1, mask1, True)  # episode ends early
 
-    # one truncated 2-step transition, marked as done
-    assert len(buffer) == 1
-
-    np.random.seed(0)
-    _, _, rewards, next_obs, _, dones = buffer.sample(1)
-
-    assert rewards.item() == pytest.approx(0 + 0.5 * 1)
-    assert dones.item() == 1.0
-    assert next_obs[0, 0].item() == 2
+    # Both origins are retained, including the final action itself.
+    assert len(buffer) == 2
+    np.testing.assert_allclose(buffer.rewards[:2], [0.5, 1.0])
+    np.testing.assert_array_equal(buffer.dones[:2], [1.0, 1.0])
+    np.testing.assert_array_equal(buffer.next_obs[:2, 0], [2, 2])
 
     # the pending window was cleared - a new episode starts a fresh window,
     # so the next add is held back instead of being folded across episodes
     buffer.add(*make_transition(10))
-    assert len(buffer) == 1
+    assert len(buffer) == 2
 
 
 def test_wraparound():
