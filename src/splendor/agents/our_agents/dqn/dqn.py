@@ -3,7 +3,11 @@ Entry-point for DQN training.
 """
 
 import argparse
+import json
+import platform
 import random
+import sys
+import time
 import typing
 from csv import writer as csv_writer
 from datetime import datetime
@@ -66,9 +70,48 @@ STATS_HEADERS = (
     "eval_wr",
     "eval_avg_score",
 )
+PROGRESS_FILE = "progress.csv"
+PROGRESS_HEADERS = (
+    "timestamp",
+    "event",
+    "step",
+    "episode",
+    "epsilon",
+    "loss",
+    "q_mean",
+    "td_abs_mean",
+    "train_score",
+    "eval_win",
+    "eval_draw",
+    "eval_loss",
+    "eval_avg_score",
+    "buffer_size",
+    "elapsed_sec",
+    "steps_per_sec",
+    "gpu_memory_mb",
+)
+CONFIG_FILE = "run_config.json"
+STATUS_FILE = "run_status.json"
 
 DeviceName = Literal["cuda", "cpu", "mps"]
 DEVICE_NAME_CHOICES = typing.get_args(DeviceName)
+
+
+def _write_json(path: Path, payload: dict[str, typing.Any]) -> None:
+    """Write a small monitoring artifact atomically."""
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def _gpu_memory_mb(device: torch.device) -> float | None:
+    """Return currently allocated CUDA memory, when the run is on CUDA."""
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None
+    return round(torch.cuda.memory_allocated(device) / (1024**2), 2)
 
 
 class DQNArguments(TypedDict):
@@ -206,17 +249,107 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
         "seed": seed,
     }
 
+    started_at = datetime.now().astimezone()
+    started_monotonic = time.monotonic()
+    gpu_name = (
+        torch.cuda.get_device_name(device)
+        if device.type == "cuda" and torch.cuda.is_available()
+        else None
+    )
+    run_config: dict[str, typing.Any] = {
+        **checkpoint_config,
+        "total_steps": total_steps,
+        "learning_rate": learning_rate,
+        "save_every": save_every,
+        "eval_every": eval_every,
+        "eval_games": EVAL_GAMES,
+        "observation_dim": int(q_net.input_dim),
+        "action_dim": int(q_net.output_dim),
+        "device": str(device),
+        "device_name": gpu_name or str(device),
+        "python_version": sys.version.split()[0],
+        "platform": platform.platform(),
+        "torch_version": torch.__version__,
+        "torch_cuda_version": torch.version.cuda,
+        "started_at": started_at.isoformat(timespec="seconds"),
+    }
+    _write_json(folder / CONFIG_FILE, run_config)
+
     episode = 0
     latest_update = {"loss": 0.0, "q_mean": 0.0, "td_abs_mean": 0.0}
     latest_eval = {"win": 0.0, "draw": 0.0, "loss": 0.0, "avg_score": 0.0}
 
     train_env.reset(seed=seed)
 
-    with Path.open(
-        folder / STATS_FILE, "w", newline="\n", encoding="ascii"
-    ) as stats_file:
+    status_path = folder / STATUS_FILE
+    with (
+        Path.open(
+            folder / STATS_FILE,
+            "w",
+            buffering=1,
+            newline="\n",
+            encoding="ascii",
+        ) as stats_file,
+        Path.open(
+            folder / PROGRESS_FILE,
+            "w",
+            buffering=1,
+            newline="\n",
+            encoding="ascii",
+        ) as progress_file,
+    ):
         stats_csv = csv_writer(stats_file)
         stats_csv.writerow(STATS_HEADERS)
+        stats_file.flush()
+        progress_csv = csv_writer(progress_file)
+        progress_csv.writerow(PROGRESS_HEADERS)
+        progress_file.flush()
+
+        def write_progress(
+            event: str,
+            current_step: int,
+            current_episode: int,
+            train_score: float | None = None,
+        ) -> None:
+            """Append a live-monitoring row and publish the run status."""
+            elapsed = max(time.monotonic() - started_monotonic, 1e-9)
+            progress_csv.writerow(
+                [
+                    datetime.now().astimezone().isoformat(timespec="seconds"),
+                    event,
+                    current_step,
+                    current_episode,
+                    round(epsilon_at(current_step, params), 6),
+                    latest_update["loss"],
+                    latest_update["q_mean"],
+                    latest_update["td_abs_mean"],
+                    train_score,
+                    latest_eval["win"],
+                    latest_eval["draw"],
+                    latest_eval["loss"],
+                    latest_eval["avg_score"],
+                    len(buffer),
+                    round(elapsed, 3),
+                    round(current_step / elapsed, 3),
+                    _gpu_memory_mb(device),
+                ]
+            )
+            progress_file.flush()
+            _write_json(
+                status_path,
+                {
+                    "status": "completed" if event == "complete" else "running",
+                    "event": event,
+                    "step": current_step,
+                    "episode": current_episode,
+                    "total_steps": total_steps,
+                    "updated_at": datetime.now()
+                    .astimezone()
+                    .isoformat(timespec="seconds"),
+                },
+            )
+
+        write_progress("start", 0, 0)
 
         # Main training loop
         for step in range(total_steps):
@@ -228,6 +361,12 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
                 )
 
             if result["episode_ended"]:
+                final_score = result["final_score"]
+                train_score = (
+                    float(final_score)
+                    if isinstance(final_score, (float, int))
+                    else None
+                )
                 stats_csv.writerow(
                     [
                         step,
@@ -240,15 +379,19 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
                         latest_eval["avg_score"],
                     ]
                 )
+                stats_file.flush()
                 episode += 1
+                write_progress("episode", step + 1, episode, train_score)
 
             if (step + 1) % eval_every == 0:
                 latest_eval = evaluate(q_net, make_eval_opponents, EVAL_GAMES)
                 print(
                     f"| Step: {step + 1} | Win: {latest_eval['win']:.2f} | "
                     f"Draw: {latest_eval['draw']:.2f} | Loss: {latest_eval['loss']:.2f} | "
-                    f"Avg Score: {latest_eval['avg_score']:.2f} |"
+                    f"Avg Score: {latest_eval['avg_score']:.2f} |",
+                    flush=True,
                 )
+                write_progress("eval", step + 1, episode)
 
             if (step + 1) % save_every == 0:
                 # explicit floor division inside the braces - an unbracketed
@@ -261,16 +404,19 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
                     step=step + 1,
                     config=checkpoint_config,
                 )
+                write_progress("checkpoint", step + 1, episode)
 
-    save_model(
-        q_net,
-        models_folder / "dqn_model.pth",
-        step=total_steps,
-        config=checkpoint_config,
-    )
-    save_model(
-        q_net, DEFAULT_SAVED_DQN_PATH, step=total_steps, config=checkpoint_config
-    )
+        save_model(
+            q_net,
+            models_folder / "dqn_model.pth",
+            step=total_steps,
+            config=checkpoint_config,
+        )
+        save_model(
+            q_net, DEFAULT_SAVED_DQN_PATH, step=total_steps, config=checkpoint_config
+        )
+        write_progress("complete", total_steps, episode)
+
     print(f"Final model saved to {models_folder / 'dqn_model.pth'}")
     print(f"Deployed model saved to {DEFAULT_SAVED_DQN_PATH}")
 

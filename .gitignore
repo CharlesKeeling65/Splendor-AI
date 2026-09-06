@@ -5,6 +5,7 @@
 *.egg-info
 build
 *.pth
+runs/
 docs/_build/
 .mypy_cache/
 

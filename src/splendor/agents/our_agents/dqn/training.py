@@ -286,6 +286,7 @@ def evaluate(
     """
     was_training = q_net.training
     q_net.eval()
+    device = next(q_net.parameters()).device
     try:
         wins = 0
         draws = 0
@@ -305,7 +306,10 @@ def evaluate(
                 obs: NDArray[np.float32] = extract_metrics_with_cards(
                     splendor_env.state, splendor_env.my_turn
                 ).astype(np.float32)
-                action = q_net.act(torch.from_numpy(obs), torch.from_numpy(mask))
+                action = q_net.act(
+                    torch.from_numpy(obs).to(device),
+                    torch.from_numpy(mask).to(device),
+                )
                 _, _, terminated, truncated, _ = env.step(action)
                 if not (terminated or truncated):
                     mask = splendor_env.get_legal_actions_mask().astype(np.float32)
@@ -375,9 +379,15 @@ def collect_from_browser(
         mask = np.asarray(browser_env.get_legal_actions_mask(), dtype=np.float32)
         terminated = False
         game_reward = 0.0
+        device = (
+            next(q_net.parameters()).device if q_net is not None else torch.device("cpu")
+        )
         while not terminated:
             if q_net is not None:
-                action = q_net.act(torch.from_numpy(obs), torch.from_numpy(mask))
+                action = q_net.act(
+                    torch.from_numpy(obs).to(device),
+                    torch.from_numpy(mask).to(device),
+                )
             else:
                 action = int(np.random.choice(np.flatnonzero(mask)))
             next_obs, reward, terminated, _truncated, _info = browser_env.step(action)

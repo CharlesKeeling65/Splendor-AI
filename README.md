@@ -35,7 +35,7 @@ dqn          # DQN 训练（Dueling + Double DQN + n-step replay）
 splendor     # 本地对局评测（也可用于加载 checkpoint 观战）
 play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI）
 evolve       # 遗传算法对照
-make test    # 全量离线测试（83 例）
+make test    # 全量离线测试（86 例，CUDA 专项无 GPU 时跳过）
 make parity  # 特征/掩码奇偶质量门（改引擎掩码/features/浏览器抽取层后必跑）
 ```
 

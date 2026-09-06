@@ -20,7 +20,7 @@
 环境自检：
 
 ```bash
-.venv/bin/python -m pytest tests/          # 85 tests 全绿 = 环境正确
+.venv/bin/python -m pytest tests/          # 86 passed（CUDA 专项无 GPU 时跳过）
 dqn --help                                  # console script 可用
 ```
 
@@ -30,7 +30,20 @@ dqn --help                                  # console script 可用
 dqn -o random --test-opponent random --total-steps 200000 -w ./runs -s 1234
 ```
 
-产物在 `./runs/<时间戳>/`：`stats.csv`（逐 episode 指标）+ `models/dqn_model_<N>.pth`（每 1 万步一个 checkpoint）+ 最终 `dqn_model.pth`。
+产物在 `./runs/<时间戳>/`：`stats.csv`（保持兼容的逐 episode 指标）+
+`progress.csv`（实时事件流）+ `run_config.json`（完整训练参数与运行环境）+
+`run_status.json`（当前状态）+ `models/dqn_model_<N>.pth`（每 1 万步一个 checkpoint）+
+最终 `models/dqn_model.pth`。
+
+训练启动后，可在另一个终端打开实时监控页：
+
+```bash
+dqn-monitor --runs-dir ./runs
+# 浏览器访问 http://127.0.0.1:8765
+```
+
+监控页默认跟随 `./runs` 下最近更新的 run；也可用
+`dqn-monitor --run ./runs/<时间戳>__dqn` 固定某一次训练。
 
 ## 3. 训练管线速览（理解在调参前）
 
@@ -101,7 +114,11 @@ print(stats)
 
 ## 6. 监控与产物解读
 
-`stats.csv` 逐 episode 字段：`step, episode, epsilon, loss, q_mean, train_score, eval_wr, eval_avg_score`。
+`stats.csv` 逐 episode 字段仍是：`step, episode, epsilon, loss, q_mean, train_score, eval_wr, eval_avg_score`。
+实时页读取 `progress.csv`，按 `start`、`episode`、`eval`、`checkpoint`、`complete`
+事件显示训练状态，并额外展示 `td_abs_mean`、replay buffer 大小、耗时、steps/s
+和 CUDA 显存。训练参数、Python/PyTorch/CUDA 版本及实际设备名在
+`run_config.json` 中留档。
 
 **健康信号**：loss 在有限区间震荡后缓降；`q_mean` 缓升不爆；`eval_wr` 渐进上升。
 **病态信号**（对照 DQN_GUIDE §9 十二陷阱）：

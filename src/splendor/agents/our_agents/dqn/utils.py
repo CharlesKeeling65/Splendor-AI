@@ -32,15 +32,25 @@ def save_model(
     :param config: the training configuration to store alongside the weights
                    (also used by ``load_saved_dqn`` to rebuild the network).
     """
-    model = model.cpu()
+    # Serialize tensors on CPU without moving the live network.  Moving the
+    # model here would break a CUDA training loop immediately after the first
+    # periodic checkpoint.
+    model_state_dict = {
+        name: value.detach().cpu().clone()
+        for name, value in model.state_dict().items()
+    }
     checkpoint: dict[str, Any] = {
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": model_state_dict,
         "step": step,
         "config": config if config is not None else {},
     }
     if model.input_norm is not None:
-        checkpoint["running_mean"] = model.input_norm.running_mean.reshape(1, -1)
-        checkpoint["running_var"] = model.input_norm.running_var.reshape(1, -1)
+        checkpoint["running_mean"] = (
+            model.input_norm.running_mean.detach().cpu().clone().reshape(1, -1)
+        )
+        checkpoint["running_var"] = (
+            model.input_norm.running_var.detach().cpu().clone().reshape(1, -1)
+        )
 
     torch.save(checkpoint, str(path))
 
