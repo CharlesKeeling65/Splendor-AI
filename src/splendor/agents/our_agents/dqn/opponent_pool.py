@@ -37,7 +37,9 @@ class OpponentPoolAgent(Agent):
     ) -> None:
         """Create a pool with already-constructed opponent agents."""
         if len(entries) != len(agents) or not entries:
-            raise ValueError("opponent pool entries and agents must be non-empty and aligned")
+            raise ValueError(
+                "opponent pool entries and agents must be non-empty and aligned"
+            )
 
         super().__init__(_id)
         self.entries = tuple(entries)
@@ -48,9 +50,7 @@ class OpponentPoolAgent(Agent):
     @property
     def description(self) -> str:
         """Return a stable CLI/config description of the pool."""
-        return ",".join(
-            f"{entry.name}:{entry.weight:g}" for entry in self.entries
-        )
+        return ",".join(f"{entry.name}:{entry.weight:g}" for entry in self.entries)
 
     def _choose_for_new_game(self, game_state: SplendorState) -> Agent:
         """Sample a policy when the opponent's trace is empty."""
@@ -100,7 +100,9 @@ def parse_opponent_pool(spec: str) -> list[OpponentPoolEntry]:
         except ValueError as error:
             raise ValueError(f"invalid opponent weight in {raw_item!r}") from error
         if not math.isfinite(weight) or weight <= 0:
-            raise ValueError(f"opponent weights must be finite and positive: {raw_item!r}")
+            raise ValueError(
+                f"opponent weights must be finite and positive: {raw_item!r}"
+            )
         entries.append(OpponentPoolEntry(name, weight))
 
     if not entries:

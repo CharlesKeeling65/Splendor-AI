@@ -159,8 +159,11 @@ def _build_agent(
         # Rivals: features read only their score (F7); getLegalActions only
         # computes my actions. Zero gems / empty card lists keep every other
         # code path that might touch a rival well-defined.
-        agent.gems = dict.fromkeys(COLOURS.values(), 0)
-        agent.cards = {colour: [] for colour in COLOURS.values()}
+        agent.gems = dict(panel["gems"])
+        agent.gems.setdefault(WILDCARD, 0)
+        agent.cards = _my_cards(panel["card_counts"], [])
+        # Only count is used by public-v2, never pretend these are real faces.
+        agent.cards["yellow"] = _placeholder_cards("yellow", len(panel["reserved_tiers"]))
         agent.agent_trace = AgentTrace(index)
         agent.agent_trace.action_reward = []
     return agent

@@ -8,7 +8,6 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from splendor.splendor.features import extract_metrics_with_cards
 from splendor.splendor.gym.envs.utils import (
     create_action_mapping,
     create_legal_actions_mask,
@@ -17,6 +16,7 @@ from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
 from splendor.template import Agent
 
+from .features import extract_observation
 from .network import QNetwork
 from .utils import load_saved_dqn
 
@@ -65,8 +65,9 @@ class DQNAgent(Agent):
         select an action to play from the given actions.
         """
         with torch.no_grad():
-            state: NDArray = extract_metrics_with_cards(game_state, self.id).astype(
-                np.float32
+            assert self.net is not None
+            state: NDArray = extract_observation(
+                game_state, self.id, self.net.feature_version
             )
             state_tensor: torch.Tensor = torch.from_numpy(state).to(self.device)
 

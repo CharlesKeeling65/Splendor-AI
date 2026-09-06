@@ -149,7 +149,8 @@ def main() -> None:
         driver, room_url=options["room_url"], seats=options["seats"]
     )
     env = BrowserSplendorEnv(
-        driver, session, poll_interval=options["poll"], step_timeout=options["timeout"]
+        driver, session, poll_interval=options["poll"], step_timeout=options["timeout"],
+        feature_version=q_net.feature_version,
     )
 
     reports: list[GameReport] = []

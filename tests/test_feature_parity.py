@@ -19,11 +19,13 @@ uses - the test projector here and the reference for offline fixtures.
 """
 
 import random
+from copy import deepcopy
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from splendor.agents.our_agents.dqn.features import extract_observation
 from splendor.browser.dom_extractor import (
     CardInfo,
     NobleInfo,
@@ -59,7 +61,9 @@ def project_visible(state: SplendorState, my_index: int) -> Snapshot:
             if card is None:
                 row.append(None)
             else:
-                row.append(_card_info(card.deck_id, card.colour, card.points, card.cost))
+                row.append(
+                    _card_info(card.deck_id, card.colour, card.points, card.cost)
+                )
         dealt.append(row)
 
     panels: list[PanelInfo] = []
@@ -127,7 +131,9 @@ def _collect_parity_points(
             if not legal:  # pragma: no cover - engine always yields pass
                 break
             turns = len(state.agents[agent_index].agent_trace.action_reward)
-            points.append((state, rule, agent_index, turns))
+            # The engine mutates states in place: retaining references would
+            # compare repeated end positions instead of 1000 decision points.
+            points.append((deepcopy(state), rule, agent_index, turns))
             random.choice(legal)
             rule.update(random.choice(legal))
     return points
@@ -147,12 +153,14 @@ def test_obs_and_mask_parity() -> None:
 
     for point_index, (state, rule, agent_index, turns) in enumerate(points):
         snapshot = project_visible(state, agent_index)
-        pseudo_state = build_pseudo_state(
-            snapshot, agent_index, turns=turns
-        )
+        pseudo_state = build_pseudo_state(snapshot, agent_index, turns=turns)
 
         engine_obs = extract_metrics_with_cards(state, agent_index)
         pseudo_obs = extract_metrics_with_cards(pseudo_state, agent_index)
+        np.testing.assert_array_equal(
+            extract_observation(state, agent_index, "public-v2"),
+            extract_observation(pseudo_state, agent_index, "public-v2"),
+        )
         if not np.allclose(engine_obs, pseudo_obs, rtol=0, atol=0):
             _fail_obs(point_index, engine_obs, pseudo_obs)
 

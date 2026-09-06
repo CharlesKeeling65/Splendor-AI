@@ -17,7 +17,6 @@ from torch import nn
 from torch.optim.optimizer import Optimizer
 
 import splendor.splendor.gym  # noqa: F401  # registers the splendor-v1 env
-from splendor.splendor.features import extract_metrics_with_cards
 from splendor.splendor.gym.base import SplendorEnvBase
 from splendor.splendor.gym.envs.splendor_env import SplendorEnv
 from splendor.template import Agent
@@ -31,6 +30,7 @@ from .constants import (
     TARGET_UPDATE_FREQ,
     TARGET_UPDATE_TAU,
 )
+from .features import extract_observation
 from .network import QNetwork
 from .replay_buffer import ReplayBuffer
 
@@ -176,9 +176,7 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
 
     optimizer.zero_grad()
     loss.backward()
-    gradient_norm = nn.utils.clip_grad_norm_(
-        q_net.parameters(), params.max_grad_norm
-    )
+    gradient_norm = nn.utils.clip_grad_norm_(q_net.parameters(), params.max_grad_norm)
     optimizer.step()
 
     _update_target_network(q_net, target_net, params, step)
@@ -230,9 +228,9 @@ def collect_one_step(
 
     # The env vectorizes the same way it does internally, so the recomputed
     # observation always equals the one returned by the previous step call.
-    obs: NDArray[np.float32] = extract_metrics_with_cards(
-        splendor_env.state, splendor_env.my_turn
-    ).astype(np.float32)
+    obs = extract_observation(
+        splendor_env.state, splendor_env.my_turn, q_net.feature_version
+    )
     mask: NDArray[np.float32] = splendor_env.get_legal_actions_mask().astype(np.float32)
 
     obs_tensor = torch.from_numpy(obs).to(params.device)
@@ -245,7 +243,9 @@ def collect_one_step(
         action = q_net.act(obs_tensor, torch.from_numpy(mask).to(params.device))
 
     next_obs, reward, terminated, truncated, _ = env.step(action)
-    next_obs = np.asarray(next_obs, dtype=np.float32)
+    next_obs = extract_observation(
+        splendor_env.state, splendor_env.my_turn, q_net.feature_version
+    )
 
     # A (never expected, defensive) time-limit truncation is treated as an
     # episode boundary for both the n-step fold and the reset, so that a
@@ -332,9 +332,9 @@ def evaluate(  # noqa: PLR0915
                 )
                 terminated, truncated = False, False
                 while not (terminated or truncated):
-                    obs: NDArray[np.float32] = extract_metrics_with_cards(
-                        splendor_env.state, splendor_env.my_turn
-                    ).astype(np.float32)
+                    obs = extract_observation(
+                        splendor_env.state, splendor_env.my_turn, q_net.feature_version
+                    )
                     action = q_net.act(
                         torch.from_numpy(obs).to(device),
                         torch.from_numpy(mask).to(device),
@@ -420,7 +420,9 @@ def collect_from_browser(
         terminated = False
         game_reward = 0.0
         device = (
-            next(q_net.parameters()).device if q_net is not None else torch.device("cpu")
+            next(q_net.parameters()).device
+            if q_net is not None
+            else torch.device("cpu")
         )
         while not terminated:
             if q_net is not None:
@@ -435,9 +437,7 @@ def collect_from_browser(
             next_mask = (
                 np.zeros_like(mask)
                 if terminated
-                else np.asarray(
-                    browser_env.get_legal_actions_mask(), dtype=np.float32
-                )
+                else np.asarray(browser_env.get_legal_actions_mask(), dtype=np.float32)
             )
             buffer.add(obs, action, float(reward), next_obs, next_mask, terminated)
             obs, mask = next_obs, next_mask

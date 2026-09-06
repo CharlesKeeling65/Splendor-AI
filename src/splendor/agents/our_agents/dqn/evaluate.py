@@ -67,9 +67,7 @@ def evaluate_checkpoint(
         n_games=games,
         seed=seed,
     )
-    checkpoint = torch.load(
-        str(resolved_path), map_location="cpu", weights_only=False
-    )
+    checkpoint = torch.load(str(resolved_path), map_location="cpu", weights_only=False)
     step = checkpoint.get("step", 0)
     return {
         "checkpoint": str(resolved_path),

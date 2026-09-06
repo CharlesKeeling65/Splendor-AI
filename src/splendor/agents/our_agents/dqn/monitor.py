@@ -411,8 +411,7 @@ def main() -> None:
 
     server = ThreadingHTTPServer((args.host, args.port), _handler(resolve_run))
     print(
-        f"DQN monitor: http://{args.host}:{args.port} "
-        f"(runs-dir: {runs_dir})",
+        f"DQN monitor: http://{args.host}:{args.port} (runs-dir: {runs_dir})",
         flush=True,
     )
     try:

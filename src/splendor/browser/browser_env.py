@@ -23,6 +23,7 @@ import gymnasium as gym
 import numpy as np
 from numpy.typing import NDArray
 
+from splendor.agents.our_agents.dqn.features import extract_observation, observation_dim
 from splendor.splendor import features
 from splendor.splendor.gym.envs.actions import ALL_ACTIONS
 from splendor.splendor.gym.envs.utils import create_legal_actions_mask
@@ -66,6 +67,7 @@ class BrowserSplendorEnv(gym.Env):
         monitor: MaskParityMonitor | None = None,
         game_over_markers: tuple[str, ...] = DEFAULT_GAME_OVER_MARKERS,
         click_delay: tuple[float, float] = HUMAN_CLICK_DELAY,
+        feature_version: str = "v1",
     ) -> None:
         """
         :param driver: the browser abstraction to drive the page with.
@@ -79,6 +81,11 @@ class BrowserSplendorEnv(gym.Env):
             configurable instead of hard-coded.
         """
         super().__init__()
+        self.feature_version = feature_version
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf,
+            shape=(observation_dim(feature_version),), dtype=np.float32,
+        )
         self._driver = driver
         self._session = session
         self._rule = rule
@@ -91,7 +98,7 @@ class BrowserSplendorEnv(gym.Env):
         self._my_seat = 0
         self._turns = 0
         self._last_obs = np.zeros(
-            features.METRICS_WITH_CARDS_SHAPE, dtype=np.float32
+            (observation_dim(feature_version),), dtype=np.float32
         )
         self._last_seen_score: float | None = None
         self.last_parity_report: list[str] = []
@@ -231,9 +238,9 @@ class BrowserSplendorEnv(gym.Env):
         pseudo_state = build_pseudo_state(
             snapshot, self._my_index, turns=self._turns
         )
-        self._last_obs = features.extract_metrics_with_cards(
-            pseudo_state, self._my_index
-        ).astype(np.float32)
+        self._last_obs = extract_observation(
+            pseudo_state, self._my_index, self.feature_version
+        )
         return self._last_obs
 
     def _wait_for_game_start(self) -> Snapshot:

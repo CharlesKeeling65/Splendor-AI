@@ -51,13 +51,15 @@ class QNetwork(nn.Module):
            normalize with identical running statistics.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - versioned architecture options
         self,
         input_dim: int = OBS_DIM,
         output_dim: int = ACTION_DIM,
         hidden_layers: tuple[int, ...] = HIDDEN_DIMS,
         use_input_norm: bool = True,
         dueling: bool = True,
+        feature_version: str = "v1",
+        auxiliary_heads: bool = False,
     ) -> None:
         """
         Create a new Q-network.
@@ -75,6 +77,10 @@ class QNetwork(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.dueling = dueling
+        self.feature_version = feature_version
+        self.hidden_layers = hidden_layers
+        self.auxiliary_heads = auxiliary_heads
+        self.normalization_frozen = False
 
         self.input_norm: InputNormalization | None = (
             InputNormalization(input_dim) if use_input_norm else None
@@ -101,6 +107,11 @@ class QNetwork(nn.Module):
 
         # Initialize weights (recursively), mirroring the PPO network.
         self.apply(self._init_weights)
+        if auxiliary_heads:
+            self.policy_head = nn.Linear(prev_dim, output_dim)
+            self.outcome_head = nn.Linear(prev_dim, 1)
+            self.policy_head.apply(self._init_weights)
+            self.outcome_head.apply(self._init_weights)
 
         # See the class docstring: training-mode forwards through
         # InputNormalization are degenerate for this network, so it lives in
@@ -191,7 +202,7 @@ class QNetwork(nn.Module):
 
         :param obs: a single observation, of shape (features,).
         """
-        if self.input_norm is None:
+        if self.input_norm is None or self.normalization_frozen:
             return
 
         x = obs.unsqueeze(0) if obs.dim() == 1 else obs
@@ -217,3 +228,18 @@ class QNetwork(nn.Module):
         :return: unmasked Q values, of shape (batch, output_dim).
         """
         return self._unmasked_q(obs)
+
+    def policy_value(
+        self, obs: torch.Tensor, mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Separate outcome value (not return Q) and masked policy logits."""
+        if not self.auxiliary_heads:
+            raise ValueError("checkpoint has no policy/value heads")
+        if obs.dim() == 1:
+            obs = obs.unsqueeze(0)
+        x = self.input_norm(obs) if self.input_norm is not None else obs
+        hidden = self.net(x)
+        return (
+            self.policy_head(hidden).masked_fill(mask == 0, HUGE_NEG),
+            torch.tanh(self.outcome_head(hidden)).squeeze(-1),
+        )

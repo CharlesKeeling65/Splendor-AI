@@ -222,21 +222,33 @@ def test_update_works_with_real_network_shapes():
 def test_three_step_bootstrap_discount():
     buffer = ReplayBuffer(8, OBS_DIM, ACTION_DIM, n_step=3, gamma=0.5)
     for reward in [1.0, 2.0, 3.0]:
-        buffer.add(np.zeros(OBS_DIM, np.float32), 2, reward,
-                   np.ones(OBS_DIM, np.float32), NEXT_MASK.numpy()[0], False)
+        buffer.add(
+            np.zeros(OBS_DIM, np.float32),
+            2,
+            reward,
+            np.ones(OBS_DIM, np.float32),
+            NEXT_MASK.numpy()[0],
+            False,
+        )
     online = ConstantQNetwork(ONLINE_TABLE)
     target = ConstantQNetwork(TARGET_TABLE)
-    stats = dqn_update(online, target, buffer,
-                       optim.SGD(online.parameters(), lr=0), make_params())
+    stats = dqn_update(
+        online, target, buffer, optim.SGD(online.parameters(), lr=0), make_params()
+    )
     assert stats["target_q_mean"] == pytest.approx(2.75 + 0.5**3 * 30)
 
 
 def test_terminal_suffixes_all_retained():
     buffer = ReplayBuffer(8, OBS_DIM, ACTION_DIM, n_step=3, gamma=0.5)
     for index, reward in enumerate([1.0, 2.0, 3.0]):
-        buffer.add(np.zeros(OBS_DIM, np.float32), 2, reward,
-                   np.ones(OBS_DIM, np.float32), np.zeros(ACTION_DIM, np.float32),
-                   index == 2)
+        buffer.add(
+            np.zeros(OBS_DIM, np.float32),
+            2,
+            reward,
+            np.ones(OBS_DIM, np.float32),
+            np.zeros(ACTION_DIM, np.float32),
+            index == 2,
+        )
     assert len(buffer) == 3
     np.testing.assert_allclose(buffer.rewards[:3], [2.75, 3.5, 3])
     np.testing.assert_array_equal(buffer.dones[:3], [1, 1, 1])
