@@ -41,18 +41,21 @@ OMP_NUM_THREADS=1 .venv-p5000/bin/python -m pytest tests/ -q
 make parity PYTHON=.venv-p5000/bin/python
 OMP_NUM_THREADS=1 .venv-p5000/bin/python -m splendor.agents.our_agents.dqn.experiment \
   --output runs/staged-10k --steps 10000 --eval-every 5000 \
-  --seeds 42 1234 2024 --test-deals 10
+  --seeds 42 1234 2024 --test-deals 10 --workers 6
 ```
 
 Each of `corrected`, `frozen`, `public`, `population`, `search` starts from
-scratch. Defaults otherwise: Adam lr 5e-5, gamma .99, tau .001, batch 128,
+scratch. Spawned workers own independent RNG streams; all training futures
+must finish before any held-out evaluation is submitted. Defaults otherwise:
+Adam lr 5e-5, gamma .99, tau .001, batch 128,
 warmup 1000, buffer 30000, epsilon 1→.05 over 8000 steps, terminal bonus 10,
 snapshot interval 2000, 16 search simulations. All are saved in manifest.json.
 No automatic deployment or overwrite of existing model directories.
 
 Validation: deals 700000–700004, each in both seats, against isolated minimax.
 Select by greedy validation win rate (ties keep earliest checkpoint). All jobs
-finish before the test set is opened. Test: deals 900000 onward, each in both
+finish before the test set is opened. Test: deals 910000 onward (900000 was
+used only for parallel wiring smoke tests), each in both
 seats, against random/heuristic/minimax; search variant also tested using MCTS.
 Opponents receive cloned states/rules to prevent minimax rollback artifacts
 from mutating real games. Archived models are re-evaluated using this protocol,

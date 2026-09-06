@@ -7,10 +7,12 @@ Each stage is an independent equal-step training run, not sequential fine-tuning
 import argparse
 import csv
 import json
+import multiprocessing
 import random
 import subprocess
 import time
 from collections import deque
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -38,7 +40,9 @@ from .utils import load_saved_dqn, save_model
 VARIANTS = ("corrected", "frozen", "public", "population", "search")
 # Disjoint ranges reserved before any runs. Test seeds never select checkpoints.
 VALIDATION_START = 700_000
-TEST_START = 900_000
+# 900000 was used for the parallel wiring smoke test; formal runs reserve
+# a fresh range before training so no smoke outcome enters the final set.
+TEST_START = 910_000
 
 
 @dataclass
@@ -332,10 +336,36 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
     return folder / "best.pth"
 
 
+def training_job(
+    folder: Path, variant: str, seed: int, config: ExperimentConfig
+) -> Path:
+    """Spawn-safe worker: each job has independent Python/numpy/torch RNGs."""
+    torch.set_num_threads(1)
+    with isolated_rng(seed):
+        return train_variant(folder, variant, seed, config)
+
+
+def testing_job(
+    path: Path, simulations: int, config: ExperimentConfig
+) -> dict[str, Any]:
+    """Called only after the training barrier; results retain all game records."""
+    torch.set_num_threads(1)
+    net = load_saved_dqn(path).to(config.device)
+    seeds = list(range(TEST_START, TEST_START + config.test_deals))
+    reports = {
+        opponent: benchmark(net, opponent, seeds)
+        for opponent in ("random", "heuristic", "minimax")
+    }
+    if simulations:
+        reports["minimax_search"] = benchmark(net, "minimax", seeds, simulations)
+    return reports
+
+
 def main() -> None:  # noqa: C901 - CLI validation and staged orchestration
     """Train all declared jobs first, then unseal the common test set once."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument(
         "--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS)
     )
@@ -378,7 +408,9 @@ def main() -> None:  # noqa: C901 - CLI validation and staged orchestration
         args.variants
     ):
         parser.error("duplicate seeds/variants")
-    if any(seed >= VALIDATION_START for seed in args.seeds):
+    if args.workers < 1:
+        parser.error("workers must be positive")
+    if any(seed < 0 or seed >= VALIDATION_START for seed in args.seeds):
         parser.error("training seeds must be below reserved evaluation ranges")
     torch.set_num_threads(1)
     args.output.mkdir(parents=True, exist_ok=False)
@@ -388,48 +420,61 @@ def main() -> None:  # noqa: C901 - CLI validation and staged orchestration
             "config": asdict(config),
             "variants": args.variants,
             "seeds": args.seeds,
+            "workers": args.workers,
             "baseline": [str(p) for p in args.baseline],
             "selection": "best greedy minimax validation win rate; ties keep earliest",
             "test_protocol": "same deal seeds in both seats; all training completes before test",
         },
     )
     jobs: list[tuple[str, Path, int]] = []
-    for variant in args.variants:
-        for seed in args.seeds:
-            with isolated_rng(seed):
-                path = train_variant(
-                    args.output / f"{variant}-{seed}", variant, seed, config
-                )
-            jobs.append(
-                (
-                    f"{variant}-{seed}",
-                    path,
-                    config.simulations if variant == "search" else 0,
-                )
-            )
-    jobs.extend((f"archive-{i}", path, 0) for i, path in enumerate(args.baseline))
     results: dict[str, Any] = {}
-    for name, path, simulations in jobs:
-        net = load_saved_dqn(path).to(config.device)
-        results[name] = {}
-        for opponent in ("random", "heuristic", "minimax"):
-            report = benchmark(
-                net, opponent, list(range(TEST_START, TEST_START + config.test_deals))
+    status_path = args.output / "suite-status.json"
+    write_json(status_path, {"status": "training"})
+    try:
+        with ProcessPoolExecutor(
+            max_workers=args.workers, mp_context=multiprocessing.get_context("spawn")
+        ) as executor:
+            pending = {
+                executor.submit(
+                    training_job,
+                    args.output / f"{variant}-{seed}",
+                    variant,
+                    seed,
+                    config,
+                ): (variant, seed)
+                for variant in args.variants
+                for seed in args.seeds
+            }
+            for future in as_completed(pending):
+                variant, seed = pending[future]
+                jobs.append(
+                    (
+                        f"{variant}-{seed}",
+                        future.result(),
+                        config.simulations if variant == "search" else 0,
+                    )
+                )
+            # Barrier: absolutely no held-out tests until every training job finished.
+            jobs.extend(
+                (f"archive-{i}", path, 0) for i, path in enumerate(args.baseline)
             )
-            results[name][opponent] = report
-            print(
-                f"TEST {name} {opponent}: {report['wins']}/{report['games']}",
-                flush=True,
-            )
-            write_json(args.output / "results.json", results)
-        if simulations:
-            results[name]["minimax_search"] = benchmark(
-                net,
-                "minimax",
-                list(range(TEST_START, TEST_START + config.test_deals)),
-                simulations,
-            )
-            write_json(args.output / "results.json", results)
+            write_json(status_path, {"status": "testing", "jobs": len(jobs)})
+            evaluations = {
+                executor.submit(testing_job, path, simulations, config): name
+                for name, path, simulations in jobs
+            }
+            for evaluation_future in as_completed(evaluations):
+                name = evaluations[evaluation_future]
+                results[name] = evaluation_future.result()
+                for opponent, report in results[name].items():
+                    print(
+                        f"TEST {name} {opponent}: {report['wins']}/{report['games']}",
+                        flush=True,
+                    )
+                write_json(args.output / "results.json", results)
+    except BaseException as error:
+        write_json(status_path, {"status": "failed", "error": repr(error)})
+        raise
     write_json(
         args.output / "suite-status.json", {"status": "completed", "jobs": len(jobs)}
     )
