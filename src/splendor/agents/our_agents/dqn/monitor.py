@@ -244,7 +244,7 @@ PAGE = r"""<!doctype html>
 
   <script>
     let lastData = null;
-    const colors = { loss: "#50d2dc", q_mean: "#7fa8ff", td_abs_mean: "#f7c66b", eval_win: "#79d49b", eval_avg_score: "#ff9f7a", epsilon: "#c59cff" };
+    const colors = { loss: "#50d2dc", q_mean: "#7fa8ff", target_q_mean: "#b38cff", td_abs_mean: "#f7c66b", td_abs_p90: "#ff8f8f", eval_win: "#79d49b", eval_avg_score: "#ff9f7a", epsilon: "#c59cff" };
     const $ = (id) => document.getElementById(id);
     const num = (value) => { const n = Number(value); return Number.isFinite(n) ? n : null; };
     const fmt = (value, digits = 2) => { const n = num(value); return n === null ? "—" : n.toFixed(digits); };
@@ -327,7 +327,7 @@ PAGE = r"""<!doctype html>
       const state = status.status || "missing"; const statusElement = $("status"); statusElement.dataset.state = state; statusElement.textContent = state.toUpperCase();
       text("run-path", data.run_dir || "尚未发现训练目录"); text("updated", status.updated_at || latest.timestamp || "等待数据");
       $("notice").textContent = data.run_dir ? (rows.length ? "监控已连接; 训练运行时页面会自动更新。" : "已连接训练目录, 等待第一条进度事件。") : "请先启动 dqn, 或用 --runs-dir 指向训练输出目录。";
-      drawChart("optimization-chart", rows, [{ key: "loss", label: "loss", color: colors.loss }, { key: "q_mean", label: "q mean", color: colors.q_mean }, { key: "td_abs_mean", label: "td abs", color: colors.td_abs_mean }]);
+      drawChart("optimization-chart", rows, [{ key: "loss", label: "loss", color: colors.loss }, { key: "q_mean", label: "q mean", color: colors.q_mean }, { key: "target_q_mean", label: "target q", color: colors.target_q_mean }, { key: "td_abs_mean", label: "td abs", color: colors.td_abs_mean }, { key: "td_abs_p90", label: "td p90", color: colors.td_abs_p90 }]);
       drawChart("evaluation-chart", rows.filter((row) => row.event === "eval" || num(row.eval_win) !== null), [{ key: "eval_win", label: "win rate", color: colors.eval_win }, { key: "eval_avg_score", label: "avg score", color: colors.eval_avg_score }]);
       drawChart("exploration-chart", rows, [{ key: "epsilon", label: "epsilon", color: colors.epsilon }]);
       renderEvents(rows); renderConfig(config);

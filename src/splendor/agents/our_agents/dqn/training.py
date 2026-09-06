@@ -141,7 +141,7 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
     :param params: the learning parameters.
     :param step: the current global step (only used to time hard target
                  updates when ``params.target_update_freq > 0``).
-    :return: {"loss", "q_mean", "td_abs_mean"} for stats.csv / monitoring.
+    :return: update diagnostics for stats.csv / monitoring.
     """
     obs, actions, rewards, next_obs, next_masks, dones = buffer.sample(
         params.batch_size
@@ -172,16 +172,23 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
 
     optimizer.zero_grad()
     loss.backward()
-    nn.utils.clip_grad_norm_(q_net.parameters(), params.max_grad_norm)
+    gradient_norm = nn.utils.clip_grad_norm_(
+        q_net.parameters(), params.max_grad_norm
+    )
     optimizer.step()
 
     _update_target_network(q_net, target_net, params, step)
 
     td_errors = q_pred.detach() - targets
+    td_abs = td_errors.abs()
     return {
         "loss": float(loss.item()),
         "q_mean": float(q_pred.detach().mean().item()),
-        "td_abs_mean": float(td_errors.abs().mean().item()),
+        "target_q_mean": float(targets.mean().item()),
+        "target_q_abs_mean": float(targets.abs().mean().item()),
+        "td_abs_mean": float(td_abs.mean().item()),
+        "td_abs_p90": float(torch.quantile(td_abs, 0.9).item()),
+        "grad_norm": float(gradient_norm.item()),
     }
 
 
@@ -263,10 +270,11 @@ def collect_one_step(
 
 
 @torch.no_grad()
-def evaluate(
+def evaluate(  # noqa: PLR0915
     q_net: QNetwork,
     make_opponents: Callable[[], list[Agent]],
     n_games: int = EVAL_GAMES,
+    seed: int | None = None,
 ) -> dict[str, float]:
     """
     Play ``n_games`` with the greedy policy and tally win/draw/loss by calScore.
@@ -281,59 +289,87 @@ def evaluate(
     :param make_opponents: zero-argument factory producing the opponent agents
                            of a single evaluation game.
     :param n_games: how many games to play.
+    :param seed: optional base seed.  When supplied, each game uses
+                 ``seed + game_index`` for the repository's three RNGs and
+                 the caller's RNG states are restored after evaluation.
     :return: {"win", "draw", "loss", "avg_score"} rates / average final
              calScore of our agent.
     """
     was_training = q_net.training
     q_net.eval()
     device = next(q_net.parameters()).device
+    saved_random_state = random.getstate() if seed is not None else None
+    saved_numpy_state = np.random.get_state() if seed is not None else None
+    saved_torch_state = torch.get_rng_state() if seed is not None else None
+    saved_cuda_state = (
+        torch.cuda.get_rng_state_all()
+        if seed is not None and torch.cuda.is_available()
+        else None
+    )
     try:
         wins = 0
         draws = 0
         losses = 0
         total_score = 0.0
 
-        for _ in range(n_games):
+        for game_index in range(n_games):
+            if seed is not None:
+                game_seed = seed + game_index
+                random.seed(game_seed)
+                np.random.seed(game_seed)
+                torch.manual_seed(game_seed)
             env = gym.make("splendor-v1", agents=make_opponents())
-            splendor_env = cast(SplendorEnv, env.unwrapped)
-            env.reset()
+            try:
+                splendor_env = cast(SplendorEnv, env.unwrapped)
+                env.reset(seed=seed + game_index if seed is not None else None)
 
-            mask: NDArray[np.float32] = splendor_env.get_legal_actions_mask().astype(
-                np.float32
-            )
-            terminated, truncated = False, False
-            while not (terminated or truncated):
-                obs: NDArray[np.float32] = extract_metrics_with_cards(
-                    splendor_env.state, splendor_env.my_turn
-                ).astype(np.float32)
-                action = q_net.act(
-                    torch.from_numpy(obs).to(device),
-                    torch.from_numpy(mask).to(device),
+                mask: NDArray[np.float32] = (
+                    splendor_env.get_legal_actions_mask().astype(np.float32)
                 )
-                _, _, terminated, truncated, _ = env.step(action)
-                if not (terminated or truncated):
-                    mask = splendor_env.get_legal_actions_mask().astype(np.float32)
+                terminated, truncated = False, False
+                while not (terminated or truncated):
+                    obs: NDArray[np.float32] = extract_metrics_with_cards(
+                        splendor_env.state, splendor_env.my_turn
+                    ).astype(np.float32)
+                    action = q_net.act(
+                        torch.from_numpy(obs).to(device),
+                        torch.from_numpy(mask).to(device),
+                    )
+                    _, _, terminated, truncated, _ = env.step(action)
+                    if not (terminated or truncated):
+                        mask = splendor_env.get_legal_actions_mask().astype(np.float32)
 
-            state = splendor_env.state
-            game_rule = splendor_env.game_rule
-            my_id = splendor_env.my_turn
-            my_score = float(game_rule.calScore(state, my_id))
-            best_rival_score = max(
-                (
-                    float(game_rule.calScore(state, agent.id))
-                    for agent in state.agents
-                    if agent.id != my_id
-                ),
-                default=my_score,
-            )
-            if my_score > best_rival_score:
-                wins += 1
-            elif my_score < best_rival_score:
-                losses += 1
-            else:
-                draws += 1
-            total_score += my_score
+                state = splendor_env.state
+                game_rule = splendor_env.game_rule
+                my_id = splendor_env.my_turn
+                my_score = float(game_rule.calScore(state, my_id))
+                best_rival_score = max(
+                    (
+                        float(game_rule.calScore(state, agent.id))
+                        for agent in state.agents
+                        if agent.id != my_id
+                    ),
+                    default=my_score,
+                )
+                if my_score > best_rival_score:
+                    wins += 1
+                elif my_score < best_rival_score:
+                    losses += 1
+                else:
+                    draws += 1
+                total_score += my_score
+            finally:
+                env.close()
     finally:
+        if seed is not None:
+            assert saved_random_state is not None
+            assert saved_numpy_state is not None
+            assert saved_torch_state is not None
+            random.setstate(saved_random_state)
+            np.random.set_state(saved_numpy_state)
+            torch.set_rng_state(saved_torch_state)
+            if saved_cuda_state is not None:
+                torch.cuda.set_rng_state_all(saved_cuda_state)
         if was_training:
             q_net.train()
 

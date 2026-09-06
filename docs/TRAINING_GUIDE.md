@@ -45,6 +45,20 @@ dqn-monitor --runs-dir ./runs
 监控页默认跟随 `./runs` 下最近更新的 run；也可用
 `dqn-monitor --run ./runs/<时间戳>__dqn` 固定某一次训练。
 
+对抗性训练建议从混合池开始；策略按完整对局抽样，不会在一局中途切换：
+
+```bash
+dqn --opponent-pool random:0.5,minimax:0.5 \
+    --test-opponent minimax --learning-rate 5e-5 --target-tau 0.001 \
+    --total-steps 200000 -w ./runs -s 1234
+```
+
+独立验证用固定 seed 的 100 局评测命令：
+
+```bash
+dqn-evaluate ./runs/<时间戳>__dqn --opponent minimax --games 100 --seed 1234
+```
+
 ## 3. 训练管线速览（理解在调参前）
 
 ```
@@ -68,12 +82,15 @@ Double DQN 更新 ── 在线网选动作、目标网评估；Huber；梯度�
 | 参数 | 默认 | 说明 / 何时调整 |
 |---|---|---|
 | `-o --opponent` | `random` | 训练对手：`random` / `minimax` / `ppo`（及各 PPO 变体）/ `itself`（自博弈，共享网络）。课程见 §5 |
+| `--opponent-pool` | 空 | 加权混池，例如 `random:0.5,minimax:0.5`；按整局抽样，优先用于 M2/M3 |
 | `--test-opponent` | `minimax` | 评估对手；stats.csv 的 `eval_wr` 即对它的胜率 |
 | `--total-steps` | 200000 | 总步数。M1 2×10⁵ / M2 3×10⁵ / M3 5×10⁵（每阶段独立训练会话） |
 | `-l --learning-rate` | 1e-4 | **不要用 PPO 的 1e-6**；不稳定再降 5e-5 |
 | `--buffer-size` | 500000 | ≈1 万局；内存 ~2.6GB |
 | `--batch-size` | 512 | 265 维小网络，大 batch 更稳 |
 | `--win-bonus` | 10.0 | 终局胜负奖励量级；太小学成"刷分"，太大丢中间塑形 |
+| `--target-tau` | 0.005 | 软更新目标网；Q 值偏高或抖动时可试 `0.001` |
+| `--target-update-freq` | 0 | 设为正数后改用硬同步，覆盖软更新 |
 | `-s --seed` | 1234 | **3-seed 纪律：正式结论至少跑 42/1234/2024 三个 seed** |
 | `--save-every` | 10000 | checkpoint 间隔（步） |
 | `--eval-every` | 5000 | 评估间隔；评估较慢（每 5000 步打 20 局），minimax 对手时可调大 |
@@ -87,42 +104,30 @@ Double DQN 更新 ── 在线网选动作、目标网评估；Huber；梯度�
 | 里程碑 | 命令 | 门槛（自动判定） |
 |---|---|---|
 | **M1** 学会买分 | `dqn -o random --test-opponent random --total-steps 200000 -s <seed> -w runs/m1` | vs random 平均终局得分 **> 10**（≥100 局） |
-| **M2** 碾压 random | `dqn -o random --test-opponent minimax --total-steps 300000 -s <seed> -w runs/m2` | vs random 胜率 **> 90%**（20 局滑窗稳定） |
-| **M3** 超越 minimax | `dqn -o minimax --test-opponent minimax --total-steps 500000 -s <seed> -w runs/m3` | vs minimax 100 局 **≥ 55%** |
+| **M2** 碾压 random | `dqn --opponent-pool random:0.5,minimax:0.5 --test-opponent random --total-steps 300000 -s <seed> -w runs/m2` | vs random 胜率 **> 90%**（20 局滑窗稳定） |
+| **M3** 超越 minimax | `dqn --opponent-pool random:0.2,minimax:0.5 --test-opponent minimax --total-steps 500000 -s <seed> -w runs/m3` | vs minimax 100 局 **≥ 55%** |
 
 自博弈（M3 进阶混池）：`dqn -o itself --test-opponent minimax ...`——对手与己方共享网络。
 
-门槛判定脚本（以 M3 为例，用与训练同源的 `evaluate`）：
+门槛判定命令（以 M3 为例）：
 
-```python
-# eval_gate.py —— 放仓库根目录运行：.venv/bin/python eval_gate.py runs/m3/<时间戳>/dqn_model.pth minimax 100
-import sys
-from pathlib import Path
-import splendor.splendor.gym  # noqa: F401  注册 gym 环境
-from splendor.agents.our_agents.dqn.network import QNetwork
-from splendor.agents.our_agents.dqn.training import evaluate
-from splendor.agents.our_agents.dqn.utils import load_saved_dqn
-from splendor.agents.generic.random import myAgent as RandomAgent
-from splendor.agents.our_agents.minmax import myAgent as MinMaxAgent
-
-checkpoint, opponent, n_games = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
-factory = {"random": RandomAgent, "minimax": MinMaxAgent}[opponent]
-q_net = load_saved_dqn(checkpoint)
-stats = evaluate(q_net, make_opponents=lambda: [factory(0)], n_games=n_games)
-print(stats)
+```bash
+dqn-evaluate runs/m3/<时间戳>__dqn --opponent minimax --games 100 --seed 1234
 ```
 
 ## 6. 监控与产物解读
 
-`stats.csv` 逐 episode 字段仍是：`step, episode, epsilon, loss, q_mean, train_score, eval_wr, eval_avg_score`。
+`stats.csv` 逐 episode 字段包括：`step, episode, epsilon, loss, q_mean,
+target_q_mean, target_q_abs_mean, train_score, eval_wr, eval_avg_score`。
 实时页读取 `progress.csv`，按 `start`、`episode`、`eval`、`checkpoint`、`complete`
-事件显示训练状态，并额外展示 `td_abs_mean`、replay buffer 大小、耗时、steps/s
-和 CUDA 显存。训练参数、Python/PyTorch/CUDA 版本及实际设备名在
+事件显示训练状态，并额外展示 target-Q、`td_abs_mean`、TD P90、梯度范数、
+replay buffer 大小、耗时、steps/s 和 CUDA 显存。训练参数、Python/PyTorch/CUDA
+版本及实际设备名在
 `run_config.json` 中留档。
 
 **健康信号**：loss 在有限区间震荡后缓降；`q_mean` 缓升不爆；`eval_wr` 渐进上升。
 **病态信号**（对照 DQN_GUIDE §9 十二陷阱）：
-- `loss` 持续发散 / `q_mean` 指数上涨 → lr 降半或检查 win_bonus；
+- `loss` 持续发散 / `q_mean` 与 `target_q_mean` 指数上涨 → lr 降半、试 `--target-tau 0.001` 或检查 win_bonus；
 - `eval_wr` 突然跳 100% → 大概率 bug（评估泄漏训练状态、奖励重复计入），不是突破；
 - 长期不涨 → 九成在奖励设计与输入归一化，而非算法。
 

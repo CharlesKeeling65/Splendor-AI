@@ -98,7 +98,15 @@ def test_double_dqn_target_selects_online_evaluates_target():
     assert stats["loss"] == pytest.approx(12.5)
     assert stats["q_mean"] == pytest.approx(3.0)
     assert stats["td_abs_mean"] == pytest.approx(13.0)
-    assert set(stats.keys()) == {"loss", "q_mean", "td_abs_mean"}
+    assert set(stats.keys()) == {
+        "loss",
+        "q_mean",
+        "target_q_mean",
+        "target_q_abs_mean",
+        "td_abs_mean",
+        "td_abs_p90",
+        "grad_norm",
+    }
 
 
 def test_bootstrap_uses_masked_argmax():

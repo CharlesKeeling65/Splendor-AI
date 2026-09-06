@@ -47,12 +47,15 @@ from .constants import (
     N_STEP,
     SAVE_EVERY,
     SEED,
+    TARGET_UPDATE_FREQ,
+    TARGET_UPDATE_TAU,
     TOTAL_STEPS,
     WARMUP_STEPS,
     WIN_BONUS,
 )
 from .dqn_agent import DQNAgent
 from .network import QNetwork
+from .opponent_pool import build_opponent_pool
 from .replay_buffer import ReplayBuffer
 from .reward_wrapper import TerminalRewardWrapper
 from .training import DQNParams, collect_one_step, dqn_update, epsilon_at, evaluate
@@ -66,6 +69,8 @@ STATS_HEADERS = (
     "epsilon",
     "loss",
     "q_mean",
+    "target_q_mean",
+    "target_q_abs_mean",
     "train_score",
     "eval_wr",
     "eval_avg_score",
@@ -79,7 +84,11 @@ PROGRESS_HEADERS = (
     "epsilon",
     "loss",
     "q_mean",
+    "target_q_mean",
+    "target_q_abs_mean",
     "td_abs_mean",
+    "td_abs_p90",
+    "grad_norm",
     "train_score",
     "eval_win",
     "eval_draw",
@@ -124,27 +133,33 @@ class DQNArguments(TypedDict):
     seed: Required[int]
     device_name: Required[DeviceName]
     opponent: Required[str]
+    opponent_pool: Required[str | None]
     test_opponent: Required[str]
     total_steps: Required[int]
     buffer_size: Required[int]
     batch_size: Required[int]
     win_bonus: Required[float]
+    target_tau: Required[float]
+    target_update_freq: Required[int]
     save_every: Required[int]
     eval_every: Required[int]
 
 
 # pylint: disable=too-many-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-positional-arguments
-def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
+def train(  # noqa: C901,PLR0912,PLR0913,PLR0915,PLR0917
     working_dir: Path = WORKING_DIR,
     learning_rate: float = LEARNING_RATE,
     seed: int = SEED,
     device_name: DeviceName = "cuda",
     opponent: str = DEFAULT_OPPONENT,
+    opponent_pool: str | None = None,
     test_opponent: str = DEFAULT_TEST_OPPONENT,
     total_steps: int = TOTAL_STEPS,
     buffer_size: int = BUFFER_SIZE,
     batch_size: int = BATCH_SIZE,
     win_bonus: float = WIN_BONUS,
+    target_tau: float = TARGET_UPDATE_TAU,
+    target_update_freq: int = TARGET_UPDATE_FREQ,
     save_every: int = SAVE_EVERY,
     eval_every: int = EVAL_EVERY,
 ) -> QNetwork:
@@ -157,11 +172,17 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
     :param device_name: Name of the device used for mathematical computations.
     :param opponent: Opponent agent name that the DQN would train against
                      ("itself" trains in self-play with a shared network).
+    :param opponent_pool: Optional weighted pool such as
+                          ``"random:0.5,minimax:0.5"``.  One policy is
+                          sampled for each complete game.
     :param test_opponent: Test opponent name that the DQN would be evaluated against.
     :param total_steps: How many environment steps to train for.
     :param buffer_size: The capacity of the replay buffer.
     :param batch_size: How many transitions are sampled per gradient step.
     :param win_bonus: The terminal win/loss reward magnitude.
+    :param target_tau: Soft target-network update coefficient.
+    :param target_update_freq: Positive value switches to hard target copies
+                               every this many updates; zero keeps soft EMA.
     :param save_every: How often (in steps) to store a checkpoint.
     :param eval_every: How often (in steps) to run the greedy evaluation.
     :return: The trained model (DQN agent).
@@ -175,8 +196,20 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
     device = torch.device(
         device_name if getattr(torch, device_name).is_available() else "cpu"
     )
+    if target_tau <= 0 or target_tau > 1:
+        raise ValueError(f"target_tau must be in (0, 1], got {target_tau}")
+    if target_update_freq < 0:
+        raise ValueError(
+            f"target_update_freq must be non-negative, got {target_update_freq}"
+        )
 
-    if opponent in OPPONENTS_AGENTS_FACTORY:
+    if opponent_pool is not None and opponent == SELF_OPPONENT:
+        raise ValueError("opponent_pool cannot be combined with self-play")
+
+    if opponent_pool is not None:
+        pool = build_opponent_pool(opponent_pool, OPPONENTS_AGENTS_FACTORY, 0)
+        opponents: list[Agent] = [pool]
+    elif opponent in OPPONENTS_AGENTS_FACTORY:
         opponents = OPPONENTS_AGENTS_FACTORY[opponent](0)
     elif opponent == SELF_OPPONENT:
         # assume that the DQN is meant to train against itself; the shared
@@ -197,7 +230,7 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
         return [rival]
 
     print(
-        f"Training DQN against opponent: {opponent}"
+        f"Training DQN against opponent: {opponent_pool or opponent}"
         f" and evaluating against test opponent: {test_opponent}"
     )
 
@@ -217,6 +250,8 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
         eps_start=EPS_START,
         eps_end=EPS_END,
         eps_decay_steps=int(EPS_DECAY_FRACTION * total_steps),
+        tau=target_tau,
+        target_update_freq=target_update_freq,
         seed=seed,
         device=device,
     )
@@ -241,10 +276,13 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
         "eps_decay_steps": params.eps_decay_steps,
         "n_step": N_STEP,
         "win_bonus": win_bonus,
+        "target_tau": target_tau,
+        "target_update_freq": target_update_freq,
         "hidden_layers": list(HIDDEN_DIMS),
         "use_input_norm": True,
         "dueling": True,
         "opponent": opponent,
+        "opponent_pool": opponent_pool,
         "test_opponent": test_opponent,
         "seed": seed,
     }
@@ -276,7 +314,15 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
     _write_json(folder / CONFIG_FILE, run_config)
 
     episode = 0
-    latest_update = {"loss": 0.0, "q_mean": 0.0, "td_abs_mean": 0.0}
+    latest_update = {
+        "loss": 0.0,
+        "q_mean": 0.0,
+        "target_q_mean": 0.0,
+        "target_q_abs_mean": 0.0,
+        "td_abs_mean": 0.0,
+        "td_abs_p90": 0.0,
+        "grad_norm": 0.0,
+    }
     latest_eval = {"win": 0.0, "draw": 0.0, "loss": 0.0, "avg_score": 0.0}
 
     train_env.reset(seed=seed)
@@ -322,7 +368,11 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
                     round(epsilon_at(current_step, params), 6),
                     latest_update["loss"],
                     latest_update["q_mean"],
+                    latest_update["target_q_mean"],
+                    latest_update["target_q_abs_mean"],
                     latest_update["td_abs_mean"],
+                    latest_update["td_abs_p90"],
+                    latest_update["grad_norm"],
                     train_score,
                     latest_eval["win"],
                     latest_eval["draw"],
@@ -374,6 +424,8 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
                         round(epsilon_at(step, params), 4),
                         latest_update["loss"],
                         latest_update["q_mean"],
+                        latest_update["target_q_mean"],
+                        latest_update["target_q_abs_mean"],
                         result["final_score"],
                         latest_eval["win"],
                         latest_eval["avg_score"],
@@ -384,7 +436,9 @@ def train(  # noqa: C901,PLR0913,PLR0915,PLR0917
                 write_progress("episode", step + 1, episode, train_score)
 
             if (step + 1) % eval_every == 0:
-                latest_eval = evaluate(q_net, make_eval_opponents, EVAL_GAMES)
+                latest_eval = evaluate(
+                    q_net, make_eval_opponents, EVAL_GAMES, seed=seed
+                )
                 print(
                     f"| Step: {step + 1} | Win: {latest_eval['win']:.2f} | "
                     f"Draw: {latest_eval['draw']:.2f} | Loss: {latest_eval['loss']:.2f} | "
@@ -473,6 +527,15 @@ def parse_args() -> DQNArguments:
         help="Against whom the DQN should train",
     )
     parser.add_argument(
+        "--opponent-pool",
+        default=None,
+        type=str,
+        help=(
+            "Weighted opponent pool, e.g. random:0.5,minimax:0.5. "
+            "One policy is sampled per game."
+        ),
+    )
+    parser.add_argument(
         "--test-opponent",
         type=str,
         default=DEFAULT_TEST_OPPONENT,
@@ -502,6 +565,21 @@ def parse_args() -> DQNArguments:
         default=WIN_BONUS,
         type=float,
         help="The terminal win/loss reward magnitude",
+    )
+    parser.add_argument(
+        "--target-tau",
+        default=TARGET_UPDATE_TAU,
+        type=float,
+        help="Soft target-network update coefficient",
+    )
+    parser.add_argument(
+        "--target-update-freq",
+        default=TARGET_UPDATE_FREQ,
+        type=int,
+        help=(
+            "Hard target-network update interval; zero keeps soft EMA "
+            "(mutually exclusive in effect with --target-tau)."
+        ),
     )
     parser.add_argument(
         "--save-every",

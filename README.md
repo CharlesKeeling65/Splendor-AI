@@ -32,6 +32,7 @@ Some of the features here will require python `3.11` or higher.
 
 ```
 dqn          # DQN 训练（Dueling + Double DQN + n-step replay）
+dqn-evaluate # 固定 seed 的 100 局 checkpoint 验证
 splendor     # 本地对局评测（也可用于加载 checkpoint 观战）
 play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI）
 evolve       # 遗传算法对照
