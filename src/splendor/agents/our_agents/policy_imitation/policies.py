@@ -23,6 +23,8 @@ from splendor.agents.our_agents.ppo.ppo_agent import (
 from splendor.agents.our_agents.ppo.utils import load_saved_ppo
 from splendor.template import Agent
 
+from .bc_agent import build_bc_agent_factory
+from .bc_training import DeviceName, load_bc_checkpoint
 from .dqn_utils import load_dqn_template
 
 AgentFactory = Callable[[int], Agent]
@@ -159,4 +161,21 @@ def build_fixed_baseline(name: str, *, device_name: str = "cpu") -> CandidateSpe
         factory=candidate.factory,
         feature_version=candidate.feature_version,
         snapshot=candidate.snapshot,
+    )
+
+
+def build_bc_candidate(
+    checkpoint: Path,
+    *,
+    device_name: DeviceName = "cpu",
+) -> CandidateSpec:
+    """Expose a trained BC checkpoint through the same evaluation interface."""
+    factory = build_bc_agent_factory(checkpoint, device_name=device_name)
+    model = load_bc_checkpoint(checkpoint, device_name=device_name)
+    return CandidateSpec(
+        name="bc",
+        role="teacher_candidate",
+        factory=factory,
+        feature_version=model.feature_version,
+        snapshot=str(checkpoint),
     )

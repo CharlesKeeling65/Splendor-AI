@@ -3,7 +3,7 @@
 import time
 from collections.abc import Callable, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +169,11 @@ def play_game(  # noqa: PLR0913,PLR0915 - one game owns all audit counters
                 rule.update(decision.action)
 
     final_state = rule.current_game_state
+    if rule.gameEnds() and trajectory:
+        # The opponent may end the game before the focal agent gets another
+        # turn; keep the boundary on the last focal row rather than dropping
+        # it from the dataset.
+        trajectory[-1] = replace(trajectory[-1], terminal=True)
     score = float(rule.calScore(final_state, seat))
     rival_score = float(rule.calScore(final_state, 1 - seat))
     record: dict[str, Any] = {
