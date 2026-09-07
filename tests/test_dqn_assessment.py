@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from splendor.agents.our_agents.dqn.assessment import audit_report
+from splendor.agents.our_agents.dqn.experiment import validation_score
 
 
 def report() -> dict[str, Any]:
@@ -40,3 +41,35 @@ def test_audit_rejects_duplicates_and_wrong_outcome():
     bad["records"][1]["outcome"] = 1
     with pytest.raises(ValueError, match="outcome"):
         audit_report(bad, [10])
+
+
+def test_validation_tie_uses_exact_counts():
+    earlier = {
+        "opponents": {
+            "minimax": {"wins": 19, "games": 40},
+            "heuristic": {"wins": 15, "games": 40},
+        }
+    }
+    later = {
+        "opponents": {
+            "minimax": {"wins": 22, "games": 40},
+            "heuristic": {"wins": 12, "games": 40},
+        }
+    }
+    assert validation_score(earlier) == validation_score(later)
+    assert (
+        max(
+            [(10000, earlier), (15000, later)],
+            key=lambda item: validation_score(item[1]),
+        )[0]
+        == 10000
+    )
+
+
+def test_validation_macro_is_not_pooled_when_denominators_differ():
+    from fractions import Fraction
+
+    assert validation_score(
+        {"opponents": {"a": {"wins": 1, "games": 2}, "b": {"wins": 1, "games": 4}}}
+    ) == Fraction(3, 8)
+    assert validation_score(report()) == Fraction(1, 2)

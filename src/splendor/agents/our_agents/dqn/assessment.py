@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from .benchmark import benchmark
-from .experiment import write_json
+from .experiment import validation_score, write_json
 from .utils import load_saved_dqn
 
 CONFIRMATION_START = 920_000
@@ -93,7 +93,7 @@ def audit_report(report: dict[str, Any], seeds: list[int]) -> None:
         raise ValueError("bad mean score")
 
 
-def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explicit artifact checks
+def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915 - explicit artifact checks
     """Require all runs complete, uniform budgets, finite logs and fresh test seeds."""
     manifest = json.loads((folder / "manifest.json").read_text())
     results = json.loads((folder / "results.json").read_text())
@@ -107,6 +107,7 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
     if set(results) != expected_names:
         raise ValueError("missing or unexpected models")
     runs: dict[str, Any] = {}
+    selection_deviations: list[dict[str, Any]] = []
     for variant in manifest["variants"]:
         for seed in manifest["seeds"]:
             name = f"{variant}-{seed}"
@@ -126,6 +127,14 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
                 raise ValueError(f"incomplete log: {name}")
             if any(not np.isfinite(float(v)) for row in logs for v in row.values()):
                 raise ValueError(f"nonfinite training statistic: {name}")
+            if config.get("guided", False):
+                if any(
+                    float(row["guidance_weight"]) != 0
+                    or float(row["guidance_loss"]) != 0
+                    for row in logs
+                    if int(row["step"]) >= config["demo_decay_steps"]
+                ):
+                    raise ValueError(f"guidance did not exit on schedule: {name}")
             if [int(row["step"]) for row in logs] != sorted(
                 {int(row["step"]) for row in logs}
             ):
@@ -163,6 +172,12 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
             ]
             for _, validation in validations:
                 components = validation.get("opponents", {"single": validation})
+                if {r["opponent"] for r in components.values()} != set(
+                    config.get("validation_opponents", "minimax").split(",")
+                ):
+                    raise ValueError(
+                        "validation opponent population differs from config"
+                    )
                 if not np.isclose(
                     validation["win_rate"],
                     np.mean([r["win_rate"] for r in components.values()]),
@@ -178,9 +193,16 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
                             )
                         ),
                     )
-            if selected != max(validations, key=lambda item: item[1]["win_rate"])[0]:
-                raise ValueError(
-                    f"selected checkpoint disagrees with validation rule: {name}"
+            expected_step = max(
+                validations, key=lambda item: validation_score(item[1])
+            )[0]
+            if selected != expected_step:
+                selection_deviations.append(
+                    {
+                        "model": name,
+                        "selected_step": selected,
+                        "expected_step": expected_step,
+                    }
                 )
             runs[name] = {
                 "selected_step": selected,
@@ -214,7 +236,10 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
                 ),
             }
     return {
-        "assessment": "share with caveats",
+        "assessment": "needs revision"
+        if selection_deviations
+        else "share with caveats",
+        "selection_deviations": selection_deviations,
         "models_checked": len(results),
         "games_checked": sum(
             r["games"] for reports in results.values() for r in reports.values()
@@ -222,13 +247,19 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
         "summary": summary,
         "runs": runs,
         "caveats": [
-            "10k-step pilots, not convergence",
-            "only three trained replicas",
+            f"{manifest['config']['steps']}-step runs, not proof of convergence",
+            f"only {len(manifest['seeds'])} trained replicas per variant",
             "paired/shared deals are not independent Bernoulli trials",
             "archived controls have different budgets and opponent distributions",
-            "later stages inherit frozen normalization; feature contribution not isolated",
-            "search adds compute; no equal-decision-time superiority claim",
-        ],
+            "training guidance and search, when enabled, add computation",
+        ]
+        + (
+            [
+                "later stages inherit frozen normalization; feature contribution not isolated"
+            ]
+            if "public" in manifest["variants"]
+            else []
+        ),
     }
 
 
@@ -251,6 +282,13 @@ def main() -> None:
     torch.set_num_threads(1)
     audit = audit_suite(args.suite)
     write_json(args.suite / "audit.json", audit)
+    print(f"Assessment: {audit['assessment']}")
+    if audit["selection_deviations"]:
+        print("Selection deviations: " + json.dumps(audit["selection_deviations"]))
+        if args.confirm:
+            raise ValueError(
+                "resolve validation selection deviations before confirmation"
+            )
     print(json.dumps(audit["summary"], indent=2))
     if not args.confirm:
         confirmation = args.suite / "confirmation"

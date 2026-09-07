@@ -470,3 +470,14 @@ evolve:main → parse_args → evolve
   最终结论及限制见 [本轮结果报告](docs/DQN_EXPERIMENT_RESULTS_20260907.md)。
 - 全量离线质量门：110 passed / 1 skipped；DQN 与涉及浏览器路径的
   Ruff、mypy 通过；`make parity PYTHON=.venv-p5000/bin/python` 32项通过。
+
+### 7.8 DQN 第二轮 EMA / 训练引导（2026-09-07）
+
+- 新增 public-ema、public-sync、public-demo 可选分支；辅助 margin loss 与 TD
+  共用一次更新，引导探索与损失权重退火，评测仅使用贪心 Q。
+- 12 次 20k 步训练、2400 局测试及 150 局选模纠错重测完成。
+- 发现浮点宏平均破坏同分保留较早权重的约定，改用精确分数并补回归测试；
+  原始审计显式保留偏差，更正结果单独保存，未覆盖旧模型。
+- 纠错后基线 vs minimax 52.7%，引导版 53.3%，但两强对手均值后者更低，
+  不宣称整体提升。120 tests passed / 1 skipped，DQN Ruff/mypy 通过。
+- 详情与参数见 [第二轮报告](docs/DQN_ROUND2_RESULTS_20260907.md)。

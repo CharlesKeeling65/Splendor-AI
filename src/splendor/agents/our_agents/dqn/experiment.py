@@ -15,6 +15,7 @@ from collections import deque
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,6 +54,15 @@ VALIDATION_START = 700_000
 # 900000 was used for the parallel wiring smoke test; formal runs reserve
 # a fresh range before training so no smoke outcome enters the final set.
 TEST_START = 910_000
+
+
+def validation_score(report: dict[str, Any]) -> Fraction:
+    """Exact macro win rate; floating-point roundoff must not break ties."""
+    components = report.get("opponents", {"single": report})
+    return sum(
+        (Fraction(r["wins"], r["games"]) for r in components.values()),
+        Fraction(0),
+    ) / len(components)
 
 
 @dataclass
@@ -207,7 +217,7 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
     }
     write_json(folder / "config.json", metadata)
     episodes = 0
-    best_validation = -1.0
+    best_validation = Fraction(-1)
     started = time.monotonic()
     stats: dict[str, float] = {}
     step = 0
@@ -391,8 +401,9 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                         }
                     )
                     write_json(folder / f"validation-{step}.json", validation)
-                    if validation["win_rate"] > best_validation:
-                        best_validation = validation["win_rate"]
+                    score = validation_score(validation)
+                    if score > best_validation:
+                        best_validation = score
                         save_model(net, folder / "best.pth", step, metadata)
                     save_model(net, folder / f"step-{step}.pth", step, metadata)
                     print(
