@@ -35,6 +35,12 @@ class CountingRuleProxy:
         self._rule = rule
         self.successor_calls = 0
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> "CountingRuleProxy":
+        """Copy the wrapped rule without recursing through ``__getattr__``."""
+        copied = CountingRuleProxy(deepcopy(self._rule, memo))
+        copied.successor_calls = self.successor_calls
+        return copied
+
     def generateSuccessor(
         self, state: SplendorState, action: ActionType, agent_id: int
     ) -> SplendorState:

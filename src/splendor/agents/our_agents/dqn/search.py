@@ -61,7 +61,7 @@ def sample_hidden(
 
 
 @torch.no_grad()
-def search_policy(  # noqa: C901, PLR0913, PLR0915 - bounded PUCT traversal
+def search_policy(  # noqa: C901, PLR0912, PLR0913, PLR0915 - bounded PUCT traversal
     net: QNetwork,
     rule: SplendorGameRule,
     simulations: int,
@@ -69,8 +69,16 @@ def search_policy(  # noqa: C901, PLR0913, PLR0915 - bounded PUCT traversal
     *,
     max_depth: int = 24,
     root_noise: bool = False,
+    stats: dict[str, float | int] | None = None,
 ) -> NDArray[np.float32]:
-    """Return root visits over legal actions with fresh hidden sampling per rollout."""
+    """Return root visits over legal actions with fresh hidden sampling per rollout.
+
+    ``stats`` is optional so existing callers retain the original return type.
+    When supplied, it receives auditable search work counters after the root
+    policy is built; the counters are deliberately separate from engine
+    ``generateSuccessor`` counts because this search advances copied rules via
+    ``update`` during sampled rollouts.
+    """
     if simulations < 1 or max_depth < 1:
         raise ValueError("search budget and depth must be positive")
     if rule.num_of_agent != PLAYERS or not net.auxiliary_heads:
@@ -106,6 +114,7 @@ def search_policy(  # noqa: C901, PLR0913, PLR0915 - bounded PUCT traversal
 
     root_seat = rule.current_agent_index
     _, root, _ = leaf(rule)
+    max_depth_reached = 0
     if root_noise:
         root.prior = 0.75 * root.prior + 0.25 * rng.dirichlet(
             np.full(len(root.prior), 0.3)
@@ -129,6 +138,7 @@ def search_policy(  # noqa: C901, PLR0913, PLR0915 - bounded PUCT traversal
             )
             edge = int(np.argmax(scores))
             path.append((node, edge))
+            max_depth_reached = max(max_depth_reached, len(path))
             state = current.current_game_state
             mapping = create_action_mapping(
                 current.getLegalActions(state, value_seat), state, value_seat
@@ -152,4 +162,14 @@ def search_policy(  # noqa: C901, PLR0913, PLR0915 - bounded PUCT traversal
             node.total[edge] += value if node.seat == value_seat else -value
     pi = np.zeros(ACTION_DIM, dtype=np.float32)
     pi[root.actions] = root.visits / root.visits.sum()
+    if stats is not None:
+        stats.update(
+            {
+                "simulations": simulations,
+                "tree_nodes": len(tree),
+                "root_legal_actions": len(root.actions),
+                "max_depth_reached": max_depth_reached,
+                "visit_mass": float(root.visits.sum()),
+            }
+        )
     return pi

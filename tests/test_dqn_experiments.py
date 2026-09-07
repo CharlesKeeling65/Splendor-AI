@@ -81,10 +81,13 @@ def test_search_legal_reproducible_and_no_mutation():
             np.random.get_state(),
             torch.get_rng_state(),
         )
-        pi = search_policy(net, rule, 8, np.random.default_rng(81))
+        stats: dict[str, float | int] = {}
+        pi = search_policy(net, rule, 8, np.random.default_rng(81), stats=stats)
         repeat = search_policy(net, rule, 8, np.random.default_rng(81))
         np.testing.assert_array_equal(pi, repeat)
         assert float(pi.sum()) == pytest.approx(1)
+        assert stats["simulations"] == 8
+        assert stats["tree_nodes"] >= 1
         mask = create_legal_actions_mask(
             rule.getLegalActions(rule.current_game_state, 0), rule.current_game_state, 0
         )

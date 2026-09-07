@@ -15,6 +15,12 @@ from .manifest import (
     load_manifest,
     require_approved,
 )
+from .mcts_gate import (
+    assess_search_gate,
+    build_mcts_candidate,
+    calibrate_outcome_value,
+    run_search_gate,
+)
 from .policies import (
     CandidateSpec,
     build_bc_candidate,
@@ -366,6 +372,67 @@ def _bc_eval(args: argparse.Namespace) -> None:
     print(f"BC evaluation written to {args.output}")
 
 
+def _mcts_gate(args: argparse.Namespace) -> None:
+    """Run same-weight MCTS budgets, value calibration, and semantic audit."""
+    manifest = load_manifest(args.manifest)
+    require_approved(manifest)
+    seeds = _seed_group(manifest, args.seed_group)
+    opponent_names = [name.strip() for name in args.opponents.split(",") if name.strip()]
+    if not opponent_names:
+        raise ValueError("MCTS gate requires at least one fixed opponent")
+    opponents = [
+        build_fixed_baseline(name, device_name=args.device)
+        for name in opponent_names
+    ]
+    gate = run_search_gate(
+        args.checkpoint,
+        seeds,
+        opponents,
+        args.simulations,
+        device_name=args.device,
+        rng_seed=args.rng_seed,
+        max_depth=args.max_depth,
+    )
+    calibration = calibrate_outcome_value(
+        args.checkpoint,
+        opponents[0],
+        seeds,
+        device_name=args.device,
+    )
+    audit_budget = max(args.simulations)
+    audit_candidate = build_mcts_candidate(
+        args.checkpoint,
+        simulations=audit_budget,
+        device_name=args.device,
+        rng_seed=args.rng_seed,
+        max_depth=args.max_depth,
+    )
+    information_audit = audit_candidate_information(
+        audit_candidate,
+        opponents[0],
+        seeds,
+        max_states=args.audit_max_states,
+    )
+    assessment = assess_search_gate(gate, calibration, information_audit)
+    _write_json(
+        args.output,
+        {
+            "manifest": str(args.manifest),
+            "checkpoint": str(args.checkpoint),
+            "phase": manifest["phase"],
+            "seed_group": args.seed_group,
+            "seeds": seeds,
+            "opponents": opponent_names,
+            "simulations": sorted(set(args.simulations)),
+            "gate": gate,
+            "value_calibration": calibration,
+            "information_audit": information_audit,
+            "assessment": assessment,
+        },
+    )
+    print(f"MCTS gate written to {args.output} ({assessment['status']})")
+
+
 def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are explicit
     parser = argparse.ArgumentParser(prog="policy-imitation")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -491,6 +558,19 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     bc_eval.add_argument("--opponents", default="random,heuristic,minimax")
     bc_eval.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
     bc_eval.set_defaults(handler=_bc_eval)
+
+    mcts = subparsers.add_parser("mcts-gate")
+    mcts.add_argument("manifest", type=Path)
+    mcts.add_argument("--checkpoint", type=Path, required=True)
+    mcts.add_argument("--output", type=Path, required=True)
+    mcts.add_argument("--seed-group", default="teacher_evaluation")
+    mcts.add_argument("--opponents", default="random,heuristic,minimax")
+    mcts.add_argument("--simulations", nargs="+", type=int, default=[0, 1, 4])
+    mcts.add_argument("--max-depth", type=int, default=24)
+    mcts.add_argument("--audit-max-states", type=int, default=12)
+    mcts.add_argument("--rng-seed", type=int, default=1234)
+    mcts.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
+    mcts.set_defaults(handler=_mcts_gate)
     return parser
 
 
