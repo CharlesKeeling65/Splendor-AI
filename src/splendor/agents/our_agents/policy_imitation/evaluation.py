@@ -340,6 +340,7 @@ def collect_teacher_dataset(  # noqa: PLR0913 - provenance fields are explicit
         "games": len(records),
         "completed_games": sum(record["status"] == "completed" for record in records),
         "failed_games": sum(record["status"] == "failed" for record in records),
+        "game_records": records,
     }
     dataset = TrajectoryDataset.from_steps(steps, metadata=metadata)
     dataset.save(output)

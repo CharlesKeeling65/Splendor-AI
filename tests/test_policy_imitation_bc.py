@@ -123,6 +123,7 @@ def test_bc_training_round_trip_and_test_isolation(tmp_path: Path) -> None:
         test_data=splits["test"],
         source_manifest="proposal.json",
     )
+    assert len(collected[0].metadata["game_records"]) == 2
     model = load_bc_checkpoint(Path(result["best"]))
     metrics = evaluate_bc_model(model, splits["validation"])
 
