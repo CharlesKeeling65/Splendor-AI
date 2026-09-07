@@ -27,8 +27,9 @@ from torch.nn import functional as F
 import splendor.splendor.gym  # noqa: F401
 from splendor.splendor.gym.envs.splendor_env import SplendorEnv
 
-from .benchmark import benchmark, isolated_rng
+from .benchmark import FACTORIES, benchmark, isolated_rng
 from .features import extract_observation, observation_dim
+from .guidance import GuidanceBuffer, guidance_fraction, teacher_action_index
 from .network import QNetwork
 from .population import PopulationAgent
 from .replay_buffer import ReplayBuffer
@@ -37,7 +38,16 @@ from .search import outcome, search_policy
 from .training import DQNParams, dqn_update, epsilon_at
 from .utils import load_saved_dqn, save_model
 
-VARIANTS = ("corrected", "frozen", "public", "population", "search")
+VARIANTS = (
+    "corrected",
+    "frozen",
+    "public",
+    "population",
+    "search",
+    "public-ema",
+    "public-sync",
+    "public-demo",
+)
 # Disjoint ranges reserved before any runs. Test seeds never select checkpoints.
 VALIDATION_START = 700_000
 # 900000 was used for the parallel wiring smoke test; formal runs reserve
@@ -63,6 +73,12 @@ class ExperimentConfig:
     simulations: int = 16
     search_every: int = 8
     device: str = "cuda"
+    validation_start: int = VALIDATION_START
+    test_start: int = TEST_START
+    validation_opponents: str = "minimax"
+    demo_decay_steps: int = 16_000
+    demo_weight: float = 0.25
+    demo_explore: float = 0.5
 
 
 def write_json(path: Path, value: object) -> None:
@@ -129,6 +145,8 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
         raise RuntimeError("CUDA requested but unavailable; no silent CPU fallback")
     version = "v1" if variant in {"corrected", "frozen"} else "public-v2"
     search = variant == "search"
+    guided = variant == "public-demo"
+    freeze = variant in {"frozen", "public", "population", "search"}
     population = PopulationAgent(
         0, seed + 100_000, history=variant in {"population", "search"}
     )
@@ -147,12 +165,25 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
         eps_decay_steps=config.eps_decay_steps,
         tau=config.tau,
         device=device,
+        sync_input_norm=variant == "public-sync",
     )
     env = TerminalRewardWrapper(
         gym.make("splendor-v1", agents=[population]), win_bonus=10
     )
     base = cast(SplendorEnv, env.unwrapped)
     env.reset(seed=seed)
+    guidance = (
+        GuidanceBuffer(
+            min(config.buffer_size, 10_000),
+            net.input_dim,
+            net.output_dim,
+            seed + 400_000,
+        )
+        if guided
+        else None
+    )
+    guidance_rng = np.random.default_rng(seed + 500_000)
+    guided_actions = 0
     aux: deque[AuxRow] = deque(maxlen=4096)
     trajectory: list[
         tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32] | None]
@@ -164,8 +195,11 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
         "variant": variant,
         "seed": seed,
         "feature_version": version,
-        "validation_start": VALIDATION_START,
-        "test_start": TEST_START,
+        "validation_start": config.validation_start,
+        "test_start": config.test_start,
+        "normalization": "warmup-frozen" if freeze else "ema",
+        "sync_input_norm": params.sync_input_norm,
+        "guided": guided,
         "torch_version": torch.__version__,
         "git_commit": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], text=True
@@ -192,6 +226,8 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                 "grad_norm",
                 "value_loss",
                 "policy_loss",
+                "guidance_loss",
+                "guidance_weight",
                 "elapsed_seconds",
             ]
             writer = csv.DictWriter(handle, fieldnames=fields)
@@ -200,7 +236,7 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                 obs = extract_observation(base.state, base.my_turn, version)
                 mask = base.get_legal_actions_mask().astype(np.float32)
                 net.observe(torch.from_numpy(obs).to(device))
-                if step == config.warmup and variant != "corrected":
+                if step == config.warmup and freeze:
                     # Estimate from the whole warmup population, not the last
                     # ~10 observations of EMA. Constant/rare features retain
                     # a finite physical scale instead of exploding later.
@@ -221,6 +257,15 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                     target.load_state_dict(net.state_dict())
                     target.normalization_frozen = True
                 pi = None
+                teacher_index = None
+                guide_fraction = (
+                    guidance_fraction(step, config.demo_decay_steps) if guided else 0.0
+                )
+                if guidance is not None and guide_fraction > 0:
+                    teacher_index = teacher_action_index(
+                        base.state, base.game_rule, base.my_turn
+                    )
+                    guidance.add(obs, mask, teacher_index)
                 if search and step > config.warmup and step % config.search_every == 0:
                     pi = search_policy(
                         net,
@@ -231,7 +276,14 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                     )
                     action = int(search_rng.choice(len(pi), p=pi))
                 elif random.random() < epsilon_at(step, params):
-                    action = int(np.random.choice(np.flatnonzero(mask)))
+                    if (
+                        teacher_index is not None
+                        and guidance_rng.random() < config.demo_explore * guide_fraction
+                    ):
+                        action = teacher_index
+                        guided_actions += 1
+                    else:
+                        action = int(np.random.choice(np.flatnonzero(mask)))
                 else:
                     action = net.act(
                         torch.from_numpy(obs).to(device),
@@ -256,7 +308,29 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                         trajectory.clear()
                     env.reset()
                 if step >= config.warmup and len(buffer) >= config.batch_size:
-                    stats = dqn_update(net, target, buffer, optimizer, params, step)
+                    guide_loss = (
+                        guidance.loss(net, config.batch_size)
+                        if guidance is not None and guide_fraction > 0
+                        else None
+                    )
+                    weight = config.demo_weight * guide_fraction
+                    stats = dqn_update(
+                        net,
+                        target,
+                        buffer,
+                        optimizer,
+                        params,
+                        step,
+                        auxiliary_loss=weight * guide_loss
+                        if guide_loss is not None
+                        else None,
+                    )
+                    stats["guidance_loss"] = (
+                        float(guide_loss.detach().item())
+                        if guide_loss is not None
+                        else 0.0
+                    )
+                    stats["guidance_weight"] = weight
                     if search and aux and step % 4 == 0:
                         stats.update(auxiliary_update(net, aux, optimizer, aux_rng))
                 if step % config.snapshot_every == 0:
@@ -283,19 +357,38 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                             "episodes": episodes,
                             "elapsed_seconds": elapsed,
                             "opponent_games": dict(population.counts),
+                            "guided_actions": guided_actions,
                             **stats,
                         },
                     )
                 if step % config.eval_every == 0 or step == config.steps:
-                    validation = benchmark(
-                        net,
-                        "minimax",
-                        list(
-                            range(
-                                VALIDATION_START,
-                                VALIDATION_START + config.validation_deals,
-                            )
-                        ),
+                    validation_reports = {
+                        opponent: benchmark(
+                            net,
+                            opponent,
+                            list(
+                                range(
+                                    config.validation_start,
+                                    config.validation_start + config.validation_deals,
+                                )
+                            ),
+                        )
+                        for opponent in config.validation_opponents.split(",")
+                    }
+                    validation: dict[str, Any] = (
+                        next(iter(validation_reports.values()))
+                        if len(validation_reports) == 1
+                        else {
+                            "win_rate": float(
+                                np.mean(
+                                    [
+                                        report["win_rate"]
+                                        for report in validation_reports.values()
+                                    ]
+                                )
+                            ),
+                            "opponents": validation_reports,
+                        }
                     )
                     write_json(folder / f"validation-{step}.json", validation)
                     if validation["win_rate"] > best_validation:
@@ -316,6 +409,7 @@ def train_variant(  # noqa: C901, PLR0912, PLR0915 - explicit experiment lifecyc
                 "episodes": episodes,
                 "elapsed_seconds": time.monotonic() - started,
                 "opponent_games": dict(population.counts),
+                "guided_actions": guided_actions,
             },
         )
     except BaseException as error:
@@ -351,7 +445,7 @@ def testing_job(
     """Called only after the training barrier; results retain all game records."""
     torch.set_num_threads(1)
     net = load_saved_dqn(path).to(config.device)
-    seeds = list(range(TEST_START, TEST_START + config.test_deals))
+    seeds = list(range(config.test_start, config.test_start + config.test_deals))
     reports = {
         opponent: benchmark(net, opponent, seeds)
         for opponent in ("random", "heuristic", "minimax")
@@ -399,7 +493,7 @@ def main() -> None:  # noqa: C901 - CLI validation and staged orchestration
         parser.error("budgets must be positive")
     if (
         config.warmup >= config.steps
-        or config.validation_deals >= TEST_START - VALIDATION_START
+        or config.validation_deals >= config.test_start - config.validation_start
     ):
         parser.error(
             "warmup must be shorter than training; validation/test ranges must not overlap"
@@ -410,8 +504,20 @@ def main() -> None:  # noqa: C901 - CLI validation and staged orchestration
         parser.error("duplicate seeds/variants")
     if args.workers < 1:
         parser.error("workers must be positive")
-    if any(seed < 0 or seed >= VALIDATION_START for seed in args.seeds):
+    if any(seed < 0 or seed >= config.validation_start for seed in args.seeds):
         parser.error("training seeds must be below reserved evaluation ranges")
+    if (
+        config.demo_decay_steps <= 0
+        or not 0 <= config.demo_explore <= 1
+        or not np.isfinite(config.demo_weight)
+        or config.demo_weight < 0
+    ):
+        parser.error("invalid guidance schedule/weight/probability")
+    validation_opponents = config.validation_opponents.split(",")
+    if len(set(validation_opponents)) != len(validation_opponents) or any(
+        o not in FACTORIES for o in validation_opponents
+    ):
+        parser.error("validation opponents must be unique registered policies")
     torch.set_num_threads(1)
     args.output.mkdir(parents=True, exist_ok=False)
     write_json(
@@ -422,7 +528,7 @@ def main() -> None:  # noqa: C901 - CLI validation and staged orchestration
             "seeds": args.seeds,
             "workers": args.workers,
             "baseline": [str(p) for p in args.baseline],
-            "selection": "best greedy minimax validation win rate; ties keep earliest",
+            "selection": f"best mean greedy validation win rate against {config.validation_opponents}; ties keep earliest",
             "test_protocol": "same deal seeds in both seats; all training completes before test",
         },
     )

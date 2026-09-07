@@ -162,15 +162,22 @@ def audit_suite(folder: Path) -> dict[str, Any]:  # noqa: C901, PLR0912 - explic
                 for step in validation_steps
             ]
             for _, validation in validations:
-                audit_report(
-                    validation,
-                    list(
-                        range(
-                            config["validation_start"],
-                            config["validation_start"] + config["validation_deals"],
-                        )
-                    ),
-                )
+                components = validation.get("opponents", {"single": validation})
+                if not np.isclose(
+                    validation["win_rate"],
+                    np.mean([r["win_rate"] for r in components.values()]),
+                ):
+                    raise ValueError("validation macro average is incorrect")
+                for component in components.values():
+                    audit_report(
+                        component,
+                        list(
+                            range(
+                                config["validation_start"],
+                                config["validation_start"] + config["validation_deals"],
+                            )
+                        ),
+                    )
             if selected != max(validations, key=lambda item: item[1]["win_rate"])[0]:
                 raise ValueError(
                     f"selected checkpoint disagrees with validation rule: {name}"

@@ -71,6 +71,18 @@ class DQNParams:
     max_grad_norm: float = MAX_GRADIENT_NORM
     seed: int = SEED
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
+    sync_input_norm: bool = False
+
+
+@torch.no_grad()
+def synchronize_normalization(q_net: QNetwork, target_net: QNetwork) -> None:
+    """Share the observation coordinate system, not the learned target weights."""
+    if q_net.input_norm is None and target_net.input_norm is None:
+        return
+    if q_net.input_norm is None or target_net.input_norm is None:
+        raise ValueError("online/target normalization architectures differ")
+    target_net.input_norm.running_mean.copy_(q_net.input_norm.running_mean)
+    target_net.input_norm.running_var.copy_(q_net.input_norm.running_var)
 
 
 def epsilon_at(step: int, params: DQNParams) -> float:
@@ -125,6 +137,8 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
     optimizer: Optimizer,
     params: DQNParams,
     step: int = 0,
+    *,
+    auxiliary_loss: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """
     Perform one Double DQN gradient step.
@@ -154,6 +168,8 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
     dones = dones.to(params.device)
 
     with torch.no_grad():
+        if params.sync_input_norm:
+            synchronize_normalization(q_net, target_net)
         # Double DQN: the online network selects the bootstrap action, the
         # target network evaluates it. Masks inside forward make the argmax
         # land on a legal action by construction.
@@ -173,6 +189,8 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
     q_pred = q_net(obs, current_masks).gather(1, actions.unsqueeze(1)).squeeze(1)
 
     loss = F.smooth_l1_loss(q_pred, targets)
+    if auxiliary_loss is not None:
+        loss = loss + auxiliary_loss
 
     optimizer.zero_grad()
     loss.backward()
@@ -180,6 +198,8 @@ def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signatur
     optimizer.step()
 
     _update_target_network(q_net, target_net, params, step)
+    if params.sync_input_norm:
+        synchronize_normalization(q_net, target_net)
 
     td_errors = q_pred.detach() - targets
     td_abs = td_errors.abs()
