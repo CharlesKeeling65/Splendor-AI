@@ -448,3 +448,25 @@ evolve:main → parse_args → evolve
 | `Makefile` | 修改 | `test` / `parity`（部署前强制质量门）/ `train-dqn` / `play-web`，PYTHON 变量优先 venv |
 | 文档 | 修改 | 本文件 §7、AGENTS.md（进度/命令/测试矩阵/浏览器实测事实）、README（命令闭环）、ALGORITHM_COMPARISON（DQN 行） |
 | 全量质量门 | — | **83 tests 全绿**（离线，~6s）；ruff/mypy 对全部新代码路径通过 |
+
+### 7.6 DQN 训练正确性与搜索消融（2026-09-07）
+
+用户授权重新开启 P4 公共特征实验；不变更 PPO/GA/minimax、不执行真实网页对局。
+实现及复现协议见 [DQN_SEARCH_EXPERIMENTS](docs/DQN_SEARCH_EXPERIMENTS.md)。
+
+- 修复 n-step bootstrap 折扣、终局尾部样本丢失；手算目标回归。
+- DQN 专用 `public-v2`（312维），旧 v1（265维）仍为默认并兼容历史权重；
+  checkpoint 保存输入维度、特征版本、归一化与辅助头配置。
+- 浏览器伪状态保留对手公开资源面板，`play-web` 按模型版本选择观测。
+  奇偶测试改为保存真实决策点快照，避免重复比较被原地修改的终局状态。
+- `population.py`：规则启发式与最多四个冻结历史快照，整局选择对手。
+- `search.py`：有预算上限的隐藏牌重采样 PUCT，独立胜负价值与策略头；
+  搜索蒸馏为本地实验功能，并非完整 AlphaZero，也不用于浏览器伪状态搜索。
+- `experiment.py` / `benchmark.py`：独立进程、固定预算、多训练种子、
+  成对牌局双座次；全部训练完成后才开启独立测试集；不自动部署。
+- `assessment.py`：从逐局记录重算指标，拒绝重复/缺失牌局、错误分母、
+  非有限训练统计；额外新牌局复核保留所有修正版训练种子，避免挑赢家。
+- 已完成五版本×三种子×一万步短程消融；此结果不等于 M1–M3 课程验收。
+  最终结论及限制见 [本轮结果报告](docs/DQN_EXPERIMENT_RESULTS_20260907.md)。
+- 全量离线质量门：110 passed / 1 skipped；DQN 与涉及浏览器路径的
+  Ruff、mypy 通过；`make parity PYTHON=.venv-p5000/bin/python` 32项通过。

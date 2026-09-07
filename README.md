@@ -42,6 +42,7 @@ make parity  # 特征/掩码奇偶质量门（改引擎掩码/features/浏览器
 
 - 环境要求：**Python 3.12+**（引擎使用 `typing.override`，3.11 会 ImportError）；GUI 评测命令需要 **tkinter**（macOS + Homebrew：`brew install python-tk@3.13`）。
 - **训练实操指导手册**：[docs/TRAINING_GUIDE.md](./docs/TRAINING_GUIDE.md)（课程安排/参数全解/监控/验收）。
+- **DQN 五阶段实验**：[实施与复现](./docs/DQN_SEARCH_EXPERIMENTS.md) · [2026-09-07 训练结果](./docs/DQN_EXPERIMENT_RESULTS_20260907.md)（含未获提升的消融，不自动替换部署模型）。
 - **浏览器部署与可视化手册**：[docs/WEB_DEPLOYMENT_GUIDE.md](./docs/WEB_DEPLOYMENT_GUIDE.md)（人机对战/挂机/双开自博弈/旁观/回流）。
 - 网页规则实测记录（E1-E6 + 规则差异 ADR）：[docs/web_experiments.md](./docs/web_experiments.md)。
 - sim-to-real 对照报告模板：[docs/s2r_report.md](./docs/s2r_report.md)。
