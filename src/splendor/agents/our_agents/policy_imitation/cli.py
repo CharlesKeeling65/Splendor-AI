@@ -21,6 +21,13 @@ from .policies import (
     build_builtin_candidate,
     build_fixed_baseline,
 )
+from .ppo_selfplay import (
+    OpponentPoolEntry,
+    PPOConfig,
+    build_policy_candidate,
+    load_ppo_checkpoint,
+    train_ppo_selfplay,
+)
 from .trajectory import TrajectoryDataset, split_by_seed
 
 DEFAULT_CANDIDATES = ("ga", "minimax", "ppo", "corrected-dqn", "heuristic")
@@ -242,6 +249,95 @@ def _dagger_aggregate(args: argparse.Namespace) -> None:
     print(f"DAgger aggregate written to {args.output}")
 
 
+def _pool_entries(args: argparse.Namespace, initial_bc: Path) -> list[OpponentPoolEntry]:
+    """Build fixed pool entries; ``current`` is supplied by the PPO trainer."""
+    entries: list[OpponentPoolEntry] = []
+    for raw in args.opponent_pool.split(","):
+        name, separator, raw_weight = raw.strip().partition(":")
+        if not name or name == "current":
+            continue
+        weight = float(raw_weight) if separator else 1.0
+        if name == "bc":
+            candidate = build_bc_candidate(initial_bc, device_name=args.device)
+        else:
+            candidate = build_fixed_baseline(name, device_name=args.device)
+        entries.append(OpponentPoolEntry(name, candidate, weight))
+    return entries
+
+
+def _ppo_selfplay(args: argparse.Namespace) -> None:
+    """Train imitation PPO with one complete-game policy-pool choice."""
+    manifest = load_manifest(args.manifest)
+    require_approved(manifest)
+    initial_bc = args.initial_bc
+    pool = _pool_entries(args, initial_bc)
+    validation_opponents = [
+        build_fixed_baseline(name.strip(), device_name=args.device)
+        for name in args.validation_opponents.split(",")
+        if name.strip()
+    ]
+    config = PPOConfig(
+        feature_version=args.feature_version,
+        hidden_layers=tuple(args.hidden_layers),
+        learning_rate=args.learning_rate,
+        discount_factor=args.discount_factor,
+        gae_lambda=args.gae_lambda,
+        clip_epsilon=args.clip_epsilon,
+        entropy_coefficient=args.entropy_coefficient,
+        value_coefficient=args.value_coefficient,
+        minibatch_size=args.minibatch_size,
+        update_epochs=args.update_epochs,
+        updates=args.updates,
+        games_per_update=args.games_per_update,
+        terminal_value=args.terminal_value,
+        seed=args.seed,
+        device_name=args.device,
+    )
+    result = train_ppo_selfplay(
+        initial_bc,
+        args.output,
+        _seed_group(manifest, "training"),
+        pool,
+        config=config,
+        validation_seeds=_seed_group(manifest, "validation"),
+        validation_opponents=validation_opponents,
+        source_manifest=str(args.manifest),
+    )
+    print(f"PPO self-play written to {result['best']}")
+
+
+def _ppo_eval(args: argparse.Namespace) -> None:
+    """Evaluate an imitation-PPO checkpoint on one declared seed group."""
+    manifest = load_manifest(args.manifest)
+    require_approved(manifest)
+    model = load_ppo_checkpoint(args.checkpoint, device_name=args.device)
+    candidate = build_policy_candidate(
+        model,
+        name="ppo-selfplay",
+        snapshot=str(args.checkpoint),
+        device_name=args.device,
+    )
+    opponents = [
+        build_fixed_baseline(name.strip(), device_name=args.device)
+        for name in args.opponents.split(",")
+        if name.strip()
+    ]
+    seeds = _seed_group(manifest, args.seed_group)
+    results = evaluate_matrix([candidate], opponents, seeds)[candidate.name]
+    _write_json(
+        args.output,
+        {
+            "manifest": str(args.manifest),
+            "checkpoint": str(args.checkpoint),
+            "phase": manifest["phase"],
+            "seed_group": args.seed_group,
+            "seeds": seeds,
+            "results": results,
+        },
+    )
+    print(f"PPO evaluation written to {args.output}")
+
+
 def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are explicit
     parser = argparse.ArgumentParser(prog="policy-imitation")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -326,6 +422,38 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     aggregate.add_argument("--output", type=Path, required=True)
     aggregate.add_argument("--round", type=int, required=True)
     aggregate.set_defaults(handler=_dagger_aggregate)
+
+    ppo = subparsers.add_parser("ppo-selfplay")
+    ppo.add_argument("manifest", type=Path)
+    ppo.add_argument("--initial-bc", type=Path, required=True)
+    ppo.add_argument("--output", type=Path, required=True)
+    ppo.add_argument("--opponent-pool", default="ga:1,heuristic:1,current:1")
+    ppo.add_argument("--validation-opponents", default="random,heuristic,minimax")
+    ppo.add_argument("--feature-version", choices=("v1", "public-v2"), default="v1")
+    ppo.add_argument("--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128])
+    ppo.add_argument("--learning-rate", type=float, default=3e-4)
+    ppo.add_argument("--discount-factor", type=float, default=0.99)
+    ppo.add_argument("--gae-lambda", type=float, default=0.95)
+    ppo.add_argument("--clip-epsilon", type=float, default=0.2)
+    ppo.add_argument("--entropy-coefficient", type=float, default=0.005)
+    ppo.add_argument("--value-coefficient", type=float, default=0.5)
+    ppo.add_argument("--minibatch-size", type=int, default=256)
+    ppo.add_argument("--update-epochs", type=int, default=4)
+    ppo.add_argument("--updates", type=int, default=10)
+    ppo.add_argument("--games-per-update", type=int, default=4)
+    ppo.add_argument("--terminal-value", type=float, default=10.0)
+    ppo.add_argument("--seed", type=int, default=1234)
+    ppo.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
+    ppo.set_defaults(handler=_ppo_selfplay)
+
+    ppo_eval = subparsers.add_parser("ppo-eval")
+    ppo_eval.add_argument("manifest", type=Path)
+    ppo_eval.add_argument("--checkpoint", type=Path, required=True)
+    ppo_eval.add_argument("--output", type=Path, required=True)
+    ppo_eval.add_argument("--seed-group", default="final_test")
+    ppo_eval.add_argument("--opponents", default="random,heuristic,minimax")
+    ppo_eval.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
+    ppo_eval.set_defaults(handler=_ppo_eval)
     return parser
 
 
