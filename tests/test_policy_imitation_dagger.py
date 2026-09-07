@@ -70,6 +70,7 @@ def test_dagger_labels_student_visited_states(tmp_path: Path) -> None:
 
 def test_dagger_aggregate_retains_round_hashes(tmp_path: Path) -> None:
     source = tmp_path / "round.npz"
+    base = tmp_path / "base.npz"
     aggregate = tmp_path / "aggregate.npz"
     collect_dagger_dataset(
         _candidate("teacher", _LastActionAgent),
@@ -80,9 +81,32 @@ def test_dagger_aggregate_retains_round_hashes(tmp_path: Path) -> None:
         feature_version="v1",
         round_index=1,
     )
+    source_dataset = TrajectoryDataset.load(source)
+    base_dataset = TrajectoryDataset(
+        source_dataset.observations,
+        source_dataset.legal_masks,
+        source_dataset.actions,
+        source_dataset.deal_seeds,
+        source_dataset.seats,
+        source_dataset.plies,
+        source_dataset.steps_in_episode,
+        source_dataset.rewards,
+        source_dataset.terminals,
+        {
+            "feature_version": "v1",
+            "game_records": [
+                {
+                    "status": "completed",
+                    "candidate_queries": 1,
+                    "candidate_illegal_actions": 0,
+                }
+            ],
+        },
+    )
+    base_dataset.save(base)
 
     result = aggregate_dagger_datasets(
-        [source, source],
+        [base, source],
         aggregate,
         round_index=2,
         source_manifest="dagger.json",
@@ -91,4 +115,9 @@ def test_dagger_aggregate_retains_round_hashes(tmp_path: Path) -> None:
     assert result["samples"] == 2 * TrajectoryDataset.load(source).size
     assert len(dataset.metadata["source_hashes"]) == 2
     assert dataset.metadata["dagger_round"] == 2
-    assert len(dataset.metadata["game_records"]) == 4
+    assert len(dataset.metadata["game_records"]) == 3
+    assert result["record_formats"] == {
+        "all_records": 3,
+        "dagger_records": 2,
+        "base_records": 1,
+    }

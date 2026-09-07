@@ -367,6 +367,7 @@ def aggregate_dagger_datasets(
         for dataset in loaded
         for record in dataset.metadata.get("game_records", [])
     ]
+    dagger_records = [record for record in records if "teacher_queries" in record]
     return {
         "dataset": str(output),
         "dataset_hash": aggregate.content_hash(),
@@ -374,6 +375,13 @@ def aggregate_dagger_datasets(
         "source_datasets": [str(path) for path in paths],
         "source_hashes": [dataset.content_hash() for dataset in loaded],
         "round_index": round_index,
-        "summary": summarize_dagger_records(records) if records else None,
+        "summary": summarize_dagger_records(dagger_records)
+        if dagger_records
+        else None,
+        "record_formats": {
+            "all_records": len(records),
+            "dagger_records": len(dagger_records),
+            "base_records": len(records) - len(dagger_records),
+        },
         "metadata": aggregate.metadata,
     }
