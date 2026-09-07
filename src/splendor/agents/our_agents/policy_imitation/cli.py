@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .bc_training import BCConfig, train_bc
+from .dagger import aggregate_dagger_datasets, collect_dagger_dataset
 from .evaluation import collect_teacher_dataset, evaluate_matrix
 from .information_audit import audit_candidate_information
 from .manifest import (
@@ -14,7 +15,12 @@ from .manifest import (
     load_manifest,
     require_approved,
 )
-from .policies import CandidateSpec, build_builtin_candidate, build_fixed_baseline
+from .policies import (
+    CandidateSpec,
+    build_bc_candidate,
+    build_builtin_candidate,
+    build_fixed_baseline,
+)
 from .trajectory import TrajectoryDataset, split_by_seed
 
 DEFAULT_CANDIDATES = ("ga", "minimax", "ppo", "corrected-dqn", "heuristic")
@@ -200,6 +206,42 @@ def _train_bc(args: argparse.Namespace) -> None:
     print(f"BC training written to {result['best']}")
 
 
+def _dagger_round(args: argparse.Namespace) -> None:
+    """Collect one student-visited round and query the approved teacher."""
+    manifest = load_manifest(args.manifest)
+    require_approved(manifest)
+    teacher = _candidate(args.teacher, args)
+    student = build_bc_candidate(args.student_checkpoint, device_name=args.device)
+    opponent = build_fixed_baseline(args.opponent, device_name=args.device)
+    seeds = _seed_group(manifest, args.seed_group)
+    result = collect_dagger_dataset(
+        teacher,
+        student,
+        opponent,
+        seeds,
+        args.output,
+        feature_version=args.feature_version or student.feature_version,
+        round_index=args.round,
+        source_manifest=str(args.manifest),
+    )
+    _write_json(args.output.with_suffix(".result.json"), result)
+    print(f"DAgger round written to {args.output}")
+
+
+def _dagger_aggregate(args: argparse.Namespace) -> None:
+    """Aggregate base demonstrations and one or more DAgger rounds."""
+    manifest = load_manifest(args.manifest)
+    require_approved(manifest)
+    result = aggregate_dagger_datasets(
+        args.inputs,
+        args.output,
+        round_index=args.round,
+        source_manifest=str(args.manifest),
+    )
+    _write_json(args.output.with_suffix(".result.json"), result)
+    print(f"DAgger aggregate written to {args.output}")
+
+
 def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are explicit
     parser = argparse.ArgumentParser(prog="policy-imitation")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -265,6 +307,25 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     train.add_argument("--seed", type=int, default=1234)
     train.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
     train.set_defaults(handler=_train_bc)
+
+    dagger = subparsers.add_parser("dagger-round")
+    dagger.add_argument("manifest", type=Path)
+    dagger.add_argument("--output", type=Path, required=True)
+    dagger.add_argument("--teacher", choices=DEFAULT_CANDIDATES, required=True)
+    dagger.add_argument("--student-checkpoint", type=Path, required=True)
+    dagger.add_argument("--opponent", choices=DEFAULT_OPPONENTS, default="random")
+    dagger.add_argument("--seed-group", default="training")
+    dagger.add_argument("--feature-version", choices=("v1", "public-v2"), default=None)
+    dagger.add_argument("--round", type=int, required=True)
+    _add_snapshot_arguments(dagger)
+    dagger.set_defaults(handler=_dagger_round)
+
+    aggregate = subparsers.add_parser("dagger-aggregate")
+    aggregate.add_argument("manifest", type=Path)
+    aggregate.add_argument("--inputs", type=Path, nargs="+", required=True)
+    aggregate.add_argument("--output", type=Path, required=True)
+    aggregate.add_argument("--round", type=int, required=True)
+    aggregate.set_defaults(handler=_dagger_aggregate)
     return parser
 
 

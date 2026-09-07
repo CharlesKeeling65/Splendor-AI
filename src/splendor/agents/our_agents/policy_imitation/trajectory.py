@@ -246,3 +246,49 @@ def split_by_seed(
         name: dataset.select(np.isin(dataset.deal_seeds, sorted(seeds)), name)
         for name, seeds in groups.items()
     }
+
+
+def concatenate_datasets(
+    datasets: list[TrajectoryDataset],
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> TrajectoryDataset:
+    """Concatenate trajectory versions while retaining every provenance record.
+
+    DAgger deliberately revisits the same training seeds across rounds.  Seed
+    overlap is therefore allowed here; leakage is still rejected later by
+    :func:`split_by_seed`, which keeps validation and final-test groups
+    separate from the aggregate.
+    """
+    if not datasets:
+        raise ValueError("cannot concatenate an empty dataset list")
+    versions = {dataset.feature_version for dataset in datasets}
+    if len(versions) != 1:
+        raise ValueError("cannot concatenate different feature schemas")
+    base = datasets[0]
+    merged_metadata: dict[str, Any] = {
+        **base.metadata,
+        "feature_version": base.feature_version,
+        "source_hashes": [dataset.content_hash() for dataset in datasets],
+    }
+    if metadata:
+        merged_metadata.update(metadata)
+    records = [
+        record
+        for dataset in datasets
+        for record in dataset.metadata.get("game_records", [])
+    ]
+    if records:
+        merged_metadata["game_records"] = records
+    return TrajectoryDataset(
+        np.concatenate([dataset.observations for dataset in datasets]),
+        np.concatenate([dataset.legal_masks for dataset in datasets]),
+        np.concatenate([dataset.actions for dataset in datasets]),
+        np.concatenate([dataset.deal_seeds for dataset in datasets]),
+        np.concatenate([dataset.seats for dataset in datasets]),
+        np.concatenate([dataset.plies for dataset in datasets]),
+        np.concatenate([dataset.steps_in_episode for dataset in datasets]),
+        np.concatenate([dataset.rewards for dataset in datasets]),
+        np.concatenate([dataset.terminals for dataset in datasets]),
+        merged_metadata,
+    )

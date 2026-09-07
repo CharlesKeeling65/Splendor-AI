@@ -2,6 +2,12 @@
 
 from .bc_network import BehaviorCloningNetwork
 from .bc_training import BCConfig, evaluate_bc_model, load_bc_checkpoint, train_bc
+from .dagger import (
+    aggregate_dagger_datasets,
+    collect_dagger_dataset,
+    play_dagger_game,
+    summarize_dagger_records,
+)
 from .manifest import (
     DEFAULT_FORBIDDEN_SEED_RANGES,
     approve_manifest,
@@ -22,7 +28,12 @@ from .protocol import (
     isolated_seed,
     seed_everything,
 )
-from .trajectory import TrajectoryDataset, TrajectoryStep, split_by_seed
+from .trajectory import (
+    TrajectoryDataset,
+    TrajectoryStep,
+    concatenate_datasets,
+    split_by_seed,
+)
 
 __all__ = [
     "DEFAULT_FORBIDDEN_SEED_RANGES",
@@ -32,19 +43,24 @@ __all__ = [
     "RuntimeSnapshot",
     "TrajectoryDataset",
     "TrajectoryStep",
+    "aggregate_dagger_datasets",
     "approve_manifest",
     "build_bc_candidate",
     "build_builtin_candidate",
     "build_fixed_baseline",
     "capture_code_revision",
+    "collect_dagger_dataset",
+    "concatenate_datasets",
     "create_manifest",
     "evaluate_bc_model",
     "isolated_seed",
     "load_bc_checkpoint",
     "load_manifest",
+    "play_dagger_game",
     "require_approved",
     "seed_everything",
     "split_by_seed",
+    "summarize_dagger_records",
     "train_bc",
     "validate_manifest",
 ]
