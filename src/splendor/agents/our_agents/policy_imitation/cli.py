@@ -338,6 +338,34 @@ def _ppo_eval(args: argparse.Namespace) -> None:
     print(f"PPO evaluation written to {args.output}")
 
 
+def _bc_eval(args: argparse.Namespace) -> None:
+    """Evaluate a BC or DAgger checkpoint without querying a teacher."""
+    manifest = load_manifest(args.manifest)
+    require_approved(manifest)
+    candidate = build_bc_candidate(args.checkpoint, device_name=args.device)
+    opponents = [
+        build_fixed_baseline(name.strip(), device_name=args.device)
+        for name in args.opponents.split(",")
+        if name.strip()
+    ]
+    seeds = _seed_group(manifest, args.seed_group)
+    results = evaluate_matrix([candidate], opponents, seeds)[candidate.name]
+    _write_json(
+        args.output,
+        {
+            "manifest": str(args.manifest),
+            "checkpoint": str(args.checkpoint),
+            "phase": manifest["phase"],
+            "seed_group": args.seed_group,
+            "seeds": seeds,
+            "teacher_queries": 0,
+            "opponents": [opponent.name for opponent in opponents],
+            "results": results,
+        },
+    )
+    print(f"BC evaluation written to {args.output}")
+
+
 def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are explicit
     parser = argparse.ArgumentParser(prog="policy-imitation")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -454,6 +482,15 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     ppo_eval.add_argument("--opponents", default="random,heuristic,minimax")
     ppo_eval.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
     ppo_eval.set_defaults(handler=_ppo_eval)
+
+    bc_eval = subparsers.add_parser("bc-eval")
+    bc_eval.add_argument("manifest", type=Path)
+    bc_eval.add_argument("--checkpoint", type=Path, required=True)
+    bc_eval.add_argument("--output", type=Path, required=True)
+    bc_eval.add_argument("--seed-group", default="final_test")
+    bc_eval.add_argument("--opponents", default="random,heuristic,minimax")
+    bc_eval.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
+    bc_eval.set_defaults(handler=_bc_eval)
     return parser
 
 
