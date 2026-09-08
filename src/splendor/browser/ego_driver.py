@@ -11,8 +11,11 @@ invocation whose script re-uses the logged-in task space and prints a single
   for the executor's human-paced clicks and the env's turn polling (which is
   throttled to etiquette intervals anyway); a CDP/playwright adapter is the
   drop-in fast path when latency ever matters.
-* **JS transport**: caller-supplied JS travels via a temp file (read inside
-  the node script), so no escaping layer can corrupt it.
+* **JS transport**: caller JS is embedded as an ensure_ascii JSON string
+  literal inside a fixed ``(() => eval(...))()`` wrapper - ``js()`` returns
+  ``undefined`` for some verbatim multi-line sources (see ``_run_js``), and
+  the wrapper is the measured-safe passthrough. The ``js_files`` temp-file
+  channel remains available in ``_run`` for node-side payloads.
 * The click helpers (``click_labelled`` / ``click_card_button``) mirror the
   MockBrowserDriver's matching semantics in page-side JS, so offline and
   live behaviour stay aligned.
@@ -103,15 +106,26 @@ class EgoBrowserDriver:
 
         The whole body is wrapped in an async IIFE: piped stdin scripts are
         evaluated without top-level-await support (unlike interactive runs).
+
+        The caller JS travels as a JSON string literal inside a fixed
+        ``(() => eval(...))()`` wrapper rather than being handed to ``js()``
+        verbatim. Measured 2026-09-08: ``js()`` returns ``undefined`` for some
+        multi-line sources (EXTRACT_SNAPSHOT_JS reproduces it 100%), which
+        then explodes node-side as "Cannot convert undefined or null to
+        object" - while the identical script through this wrapper, and its
+        identical result object, both pass. The wrapper shape is the only
+        form js() ever sees; the literal is ensure_ascii JSON, so no
+        character of the caller JS can break out of the string.
         """
+        wrapper = f"(() => eval({json.dumps(page_js)}))()"
         body = (
             "(async () => {\n"
             + self._select_task_space()
             + prologue
-            + self._emit("await js(JS)")
+            + self._emit(f"await js({json.dumps(wrapper)})")
             + "})()\n"
         )
-        return self._run(body, js_files={"JS": page_js})
+        return self._run(body)
 
     # ----- BrowserDriver protocol --------------------------------------------
     def evaluate(self, js: str) -> Any:  # noqa: ANN401  # JSON payload by design
