@@ -116,6 +116,24 @@ def test_noble_fixture_exposes_choice_ui() -> None:
     assert snapshot["noble_options"][0]["requirements"] == {"green": 4, "red": 4}
 
 
+def test_claimed_noble_in_panel_is_dropped() -> None:
+    """
+    A claimed noble tile re-renders inside its owner's panel with the same
+    .ccbs-noble class but no .ccbs-rect pips (measured live 2026-09-09:
+    its empty requirement dict used to crash lookup_noble in the state
+    builder). Only the board nobles with real requirement pips survive.
+    """
+    snapshot = extract_snapshot(_driver_for("noble_claimed_in_panel.html"))
+    requirements = [noble["requirements"] for noble in snapshot["nobles"]]
+    assert {"green": 3, "red": 3, "black": 3} in requirements  # board noble 2
+    assert all(requirements)  # no empty dict survived the filter
+    assert len(requirements) == 3  # the claimed panel noble added nothing
+    # The full fixture pipeline (snapshot -> pseudo state -> obs) must run:
+    # build_pseudo_state resolves every noble through the registry.
+    pseudo_state = build_pseudo_state(snapshot, snapshot["my_seat"] - 1, turns=3)
+    assert pseudo_state is not None
+
+
 # ---------------------------------------------------------------------------
 # Payment pills: parsing, env accessor, and the greedy strategy
 # ---------------------------------------------------------------------------

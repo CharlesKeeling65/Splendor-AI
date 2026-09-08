@@ -393,8 +393,17 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         return _room_page_snapshot(raw)
     dealt, deck_counts = _interpret_rows(rows)
 
+    # Board nobles always render 3-5 requirement pips, so their requirement
+    # dict is never empty. A *claimed* noble tile is re-rendered with the
+    # same .ccbs-noble class (in its owner's panel area) but without
+    # .ccbs-rect pips - such a reading yields an empty requirement dict that
+    # no registry entry matches (measured live 2026-09-09: KeyError on {}).
+    # Drop empty readings; keep the global query so the board area needs no
+    # container assumption.
     nobles: list[NobleInfo] = [
-        {"requirements": _counts_to_dict(noble["rects"])} for noble in raw["nobles"]
+        {"requirements": requirements}
+        for noble in raw["nobles"]
+        if (requirements := _counts_to_dict(noble["rects"]))
     ]
 
     supply = dict.fromkeys(COLOR_INDEX_TO_NAME, 0)
