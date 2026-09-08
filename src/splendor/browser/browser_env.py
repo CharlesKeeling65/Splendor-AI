@@ -18,6 +18,7 @@ Design rulings (IMPLEMENTATION_SPEC §0.3-1, plan phase-2 §3.6):
 
 import random
 import time
+from collections.abc import Callable
 
 import gymnasium as gym
 import numpy as np
@@ -68,6 +69,7 @@ class BrowserSplendorEnv(gym.Env):
         game_over_markers: tuple[str, ...] = DEFAULT_GAME_OVER_MARKERS,
         click_delay: tuple[float, float] = HUMAN_CLICK_DELAY,
         feature_version: str = "v1",
+        snapshot_listener: Callable[[Snapshot], None] | None = None,
     ) -> None:
         """
         :param driver: the browser abstraction to drive the page with.
@@ -79,6 +81,10 @@ class BrowserSplendorEnv(gym.Env):
             pass rescue (once) and then a TimeoutError.
         :param game_over_markers: terminal-text markers; E3 pending, hence
             configurable instead of hard-coded.
+        :param snapshot_listener: optional callback fired with every freshly
+            extracted snapshot inside the wait loops (game start / opponent
+            turns) - the observation seam for live reporting without touching
+            the turn-waiting logic itself.
         """
         super().__init__()
         self.feature_version = feature_version
@@ -93,6 +99,7 @@ class BrowserSplendorEnv(gym.Env):
         self._step_timeout = step_timeout
         self._monitor = monitor if monitor is not None else MaskParityMonitor()
         self._game_over_markers = game_over_markers
+        self._snapshot_listener = snapshot_listener
         self._executor = ActionExecutor(driver, click_delay=click_delay)
 
         self._my_seat = 0
@@ -249,6 +256,8 @@ class BrowserSplendorEnv(gym.Env):
         deadline = time.monotonic() + self._step_timeout
         while True:
             snapshot = extract_snapshot(self._driver)
+            if self._snapshot_listener is not None:
+                self._snapshot_listener(snapshot)
             if is_my_turn(snapshot["status"]) and self._board_present(snapshot):
                 return snapshot
             if time.monotonic() > deadline:
@@ -273,6 +282,8 @@ class BrowserSplendorEnv(gym.Env):
         rescued = False
         while True:
             snapshot = extract_snapshot(self._driver)
+            if self._snapshot_listener is not None:
+                self._snapshot_listener(snapshot)
             if self._my_index in range(len(snapshot["panels"])):
                 # Remember the newest in-game panel score: on game over the
                 # board (and the panels with it) vanishes, and the final
