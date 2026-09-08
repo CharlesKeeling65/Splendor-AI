@@ -14,3 +14,6 @@ docs/_build/
 !src/splendor/agents/our_agents/ppo/ppo_rnn/gru/ppo_gru_model.pth
 !src/splendor/agents/our_agents/ppo/ppo_rnn/lstm/ppo_lstm_model.pth
 !src/splendor/agents/our_agents/ppo/self_attn/ppo_model.pth
+
+# WorkBuddy session data (agent memory, not project artifacts)
+.workbuddy/
