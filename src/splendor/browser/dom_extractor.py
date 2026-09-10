@@ -661,15 +661,46 @@ def _parse_score(score_text: str, panel_text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+_MY_TURN_RE = re.compile(r"等待你操作")
+_DISCARD_RE = re.compile(r"请丢弃\s*(\d+)\s*个宝石")
+_PAYMENT_HEADING = "请选择支付方式"
+
+# Fallback status compactness budget: transitional-page dumps (the pre-fix
+# behaviour returned the *whole* body text - dozens of lines, mostly bare
+# numbers) leaked into every log line and exception that embeds a status.
+_FALLBACK_STATUS_MAX_CHARS = 120
+
+
 def _status_from_body(body_text: str) -> str:
-    # Fallback when the JS-side status scan came up empty (e.g. game over):
-    # fish the measured status phrases out of the whole page text.
-    if MY_TURN_TEXT in body_text:
+    """
+    Compact status fallback for pages whose status leaf is absent.
+
+    The JS-side scan only matches 等待(你|玩家N)操作 leaves; transitional
+    sub-flows replace that leaf entirely (measured E2: the discard step
+    renders 请丢弃 N 个宝石; payment renders 请选择支付方式). The pre-fix
+    behaviour returned the raw body text - dozens of newline-separated
+    numbers (gem counts, card scores) - which garbled every log line and
+    TimeoutError message carrying a status. Known transitional phrases now
+    map to short labels; anything unknown is whitespace-collapsed and
+    truncated so it can never flood a log again.
+    """
+    if _MY_TURN_RE.search(body_text):
         return MY_TURN_TEXT
     match = _WAITING_RE.search(body_text)
     if match:
         return match.group(0)
-    return body_text.strip()
+    discard = _DISCARD_RE.search(body_text)
+    if discard:
+        return f"等待丢弃{discard.group(1)}个宝石"
+    if _PAYMENT_HEADING in body_text:
+        return "等待选择支付方式"
+    for marker in DEFAULT_GAME_OVER_MARKERS:
+        if marker in body_text:
+            return marker
+    collapsed = " ".join(body_text.split())
+    if len(collapsed) > _FALLBACK_STATUS_MAX_CHARS:
+        return collapsed[: _FALLBACK_STATUS_MAX_CHARS - 3] + "..."
+    return collapsed
 
 
 # --- raw-reading validation ------------------------------------------------

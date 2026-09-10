@@ -56,6 +56,9 @@ scripts.dqn-evaluate = "splendor.agents.our_agents.dqn.evaluate:main"
 scripts.dqn-monitor = "splendor.agents.our_agents.dqn.monitor:main"
 scripts.policy-imitation = "splendor.agents.our_agents.policy_imitation.cli:main"
 scripts.play-web = "splendor.play_web:main"
+scripts.play-web-remote = "splendor.play_remote:main"
+scripts.inference-server = "splendor.remote.server:main"
+scripts.play-dashboard = "splendor.remote.dashboard:main"
 gui-scripts.splendor = "splendor.general_game_runner:main"
 
 [tool.setuptools]

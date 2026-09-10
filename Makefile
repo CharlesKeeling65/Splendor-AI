@@ -58,3 +58,19 @@ train-dqn:
 play-web:
 	$(PYTHON) -m splendor.play_web --help && \
 	echo "usage: play-web --checkpoint <path> --games 50 [see plan/phase-3]"
+
+# Phase-6: browser control local, inference remote (see docs/REMOTE_DEPLOYMENT_GUIDE.md).
+.PHONY: serve-inference
+serve-inference:
+	$(PYTHON) -m splendor.remote.server --help && \
+	echo "usage: inference-server --model <name>=<path.pth> [--model ...] [--port 8765]"
+
+.PHONY: play-web-remote
+play-web-remote:
+	$(PYTHON) -m splendor.play_remote --help && \
+	echo "usage: play-web-remote --server <host>:<port> --model <name> --bots 1 [see docs/REMOTE_DEPLOYMENT_GUIDE.md]"
+
+.PHONY: dashboard
+dashboard:
+	$(PYTHON) -m splendor.remote.dashboard --help && \
+	echo "usage: play-dashboard --events-dir web_events --port 8899"

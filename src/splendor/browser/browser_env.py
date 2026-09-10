@@ -227,6 +227,15 @@ class BrowserSplendorEnv(gym.Env):
         return self._driver
 
     @property
+    def session(self) -> SessionManager:
+        """
+        The room lifecycle manager (harness-level introspection, same tier
+        as :attr:`driver`: deployment harnesses coordinate rooms across bot
+        processes; normal environment users never need this).
+        """
+        return self._session
+
+    @property
     def _my_index(self) -> int:
         """Agent index of my seat (page seats are 1-based, panels in order)."""
         return self._my_seat - 1
