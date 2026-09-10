@@ -15,6 +15,8 @@ This class drives only "my" seat; the opposing seat belongs to another
 process / driver instance running its own SessionManager + env.
 """
 
+import time
+
 from .driver import BrowserDriver
 
 # Measured page facts (BROWSER_RL_MAPPING §2 + T0.4 experiments 2026-09-05).
@@ -34,6 +36,11 @@ LABEL_RECONNECT = "重连"  # shown when the server flags a cookie problem
 
 # Waiting game start needs the same patience class as any UI migration.
 _START_TIMEOUT = 30.0
+
+# The SPA pushes the room URL asynchronously after 创建房间 (measured
+# 2026-09-11: an immediate location.href read returned the lobby URL,
+# poisoning the published room file). Poll this long before giving up.
+_CREATE_ROOM_TIMEOUT = 10.0
 
 
 class SessionManager:
@@ -69,14 +76,30 @@ class SessionManager:
         the game can start. Only the owner sees the 2人/3人/4人 toggle, and
         2 is the default - the click is skipped for it.
         """
-        if seats not in (2, 3, 4):
+        if seats not in {2, 3, 4}:
             raise ValueError(f"unsupported seat count {seats}")
         self._driver.navigate(self._base_url)
         self._driver.click_labelled(LABEL_CREATE_ROOM, exact=False)
         if seats != DEFAULT_SEATS:
             self._driver.click_labelled(f"{seats}人")
-        self._room_url = str(self._driver.evaluate("location.href"))
-        return self._room_url
+        base = self._base_url.rstrip("/")
+        deadline = time.monotonic() + _CREATE_ROOM_TIMEOUT
+        url = str(self._driver.evaluate("location.href"))
+        while time.monotonic() < deadline and url.rstrip("/") == base:
+            time.sleep(0.5)
+            url = str(self._driver.evaluate("location.href"))
+        if url.rstrip("/") == base:
+            # Loud failure beats a poisoned room file: the second bot would
+            # otherwise "join" the lobby and wait for a game that never
+            # starts. Common cause: the identity is still seated in an old
+            # room server-side, so the create is silently refused.
+            raise TimeoutError(
+                "room URL did not appear after clicking 创建房间 "
+                f"(still on {url!r}); the create may have been refused - "
+                "check for a stale identity in an old room and re-run"
+            )
+        self._room_url = url
+        return url
 
     def join_seat(self, seat: int) -> None:
         """

@@ -512,11 +512,16 @@ _LOBBY_PAGE = """
 </body></html>
 """
 
+_ROOM_URL = f"{BASE_URL}/gt01"
+
 
 class _NavigatingDriver(MockBrowserDriver):
     def __init__(self) -> None:
         super().__init__()
         self.nav_log: list[str] = []
+        # create_room polls location.href until the SPA pushes the room URL;
+        # the mock cannot navigate client-side, so pin the settled URL.
+        self.register_evaluate_override("location.href", _ROOM_URL)
 
     def navigate(self, url: str) -> None:
         self.nav_log.append(url)
@@ -529,7 +534,7 @@ def test_session_room_lifecycle_clicks() -> None:
     session = SessionManager(driver)
 
     room_url = session.create_room(seats=4)
-    assert room_url == BASE_URL  # the mock cannot navigate client-side
+    assert room_url == _ROOM_URL  # polled until the room URL appeared
     assert ("label:创建房间", 0) in driver.click_log
     assert ("label:4人", 0) in driver.click_log
 
