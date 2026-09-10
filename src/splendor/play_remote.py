@@ -174,20 +174,32 @@ def _driver_for(bot_id: int, options: dict[str, Any]) -> BrowserDriver:
 
 
 def _list_ego_profiles() -> list[dict[str, Any]]:
-    """One ego-browser roundtrip listing browser profiles for isolation."""
+    """One ego-browser roundtrip listing browser profiles for isolation.
+
+    ``console.log`` inside the ego-browser node runtime lands on stderr
+    (the CLI banners go to stdout), so both streams are scanned for the
+    JSON array line.
+    """
     script = "(async () => console.log(JSON.stringify(await profiles())))()"
     completed = subprocess.run(
         ["ego-browser", "nodejs", "-e", script],
         capture_output=True, text=True, timeout=60.0, check=False,
     )
-    try:
-        profiles = json.loads(completed.stdout.strip().splitlines()[-1])
-    except (json.JSONDecodeError, IndexError) as error:
-        raise SystemExit(
-            "could not list ego-browser profiles "
-            f"(exit {completed.returncode}): {completed.stderr[-300:]}"
-        ) from error
-    return profiles
+    combined = (completed.stdout + "\n" + completed.stderr).splitlines()
+    json_lines = [
+        line for line in combined if line.lstrip().startswith("[")
+    ]
+    for line in reversed(json_lines):
+        try:
+            profiles = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(profiles, list) and profiles:
+            return profiles
+    raise SystemExit(
+        "could not list ego-browser profiles "
+        f"(exit {completed.returncode}): {completed.stderr[-300:]}"
+    )
 
 
 def _resolve_profile_ids(options: dict[str, Any]) -> list[str]:
