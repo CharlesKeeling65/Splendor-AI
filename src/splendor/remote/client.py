@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
+
 from .protocol import (
     MAX_FRAME_BYTES,
     OP_ACT,

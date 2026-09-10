@@ -127,6 +127,21 @@ lint.ignore = [
   "ANN101", # ignore ANN101 - Missing type annotation for self in method.
   "COM812", # ignore COM812 - Trailing comma missing.
   "F722",   # ignore F722   - Syntax error in forward annotation due to lack of integration between jaxtyping and ruff.
+  # PLC2701 (private-name import) is a deliberate, repo-wide test idiom: the
+  # offline suites reach for module-private helpers on purpose
+  # (_status_from_body, _coordinate_room, _index_of, ...) because those are the
+  # units under test. Ignoring it here replaces the scattered inline noqas -
+  # which ruff reports as "unused" outside preview mode, making the directive
+  # simultaneously required and dead depending on the invocation.
+  "PLC2701",
+  # RUF001/002/003 flag CJK full-width punctuation as "ambiguous" (， vs ,,
+  # （ vs (). In this repo those characters are load-bearing content, not
+  # typos: the web game's turn-status grammar is literally
+  # "等待你丢弃多余宝石（每人最多持有10个）", and the extractor must match it
+  # byte-for-byte. Disabling the rule here is the only correct fix.
+  "RUF001",
+  "RUF002",
+  "RUF003",
 ]
 lint.unfixable = [ "F401" ]
 lint.flake8-builtins.builtins-allowed-modules = [ "random", "types" ]
@@ -135,6 +150,16 @@ lint.flake8-builtins.builtins-allowed-modules = [ "random", "types" ]
 # lengths) and skip boilerplate return annotations.
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [ "ANN201", "ANN202", "PLR2004", "PLC0415" ]
+# PLR0914 ("too many locals") and PLR0917 ("too many positional arguments") are
+# preview-gated: `ruff check --select PLR0917` answers "no effect because
+# preview is not enabled", so they can NOT be turned on for the stable CI
+# invocation. The deployment harness nonetheless suppresses them, per repo
+# style, which makes its `# noqa` simultaneously required (under `--preview`)
+# and dead (under the gate) - and RUF100 then reports the dead half.
+# Rather than police comment hygiene on a line whose right answer depends on
+# how ruff was invoked, RUF100 is off for this one file. Add a file here only
+# if a stable-invocation lint error would otherwise be unfixable.
+"src/splendor/play_remote.py" = [ "RUF100" ]
 
 [tool.mypy]
 plugins = [ "numpy.typing.mypy_plugin" ]

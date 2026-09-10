@@ -319,7 +319,7 @@ def generate_initial_population(population_size: int) -> list[GeneAlgoAgent]:
     ]
 
 
-def evolve(  # noqa: PLR0913,PLR0917
+def evolve(  # noqa: PLR0913
     population_size: int = POPULATION_SIZE,
     generations: int = GENERATIONS,
     mutation_rate: float = MUTATION_RATE,

@@ -26,7 +26,7 @@ class PpoLstm(RecurrentPPO):
 
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(  # noqa: PLR0913,PLR0917
+    def __init__(  # noqa: PLR0913
         self,
         input_dim: int,
         output_dim: int,

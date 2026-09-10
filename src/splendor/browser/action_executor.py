@@ -12,19 +12,24 @@ Every click is surrounded by two safeguards:
 
 Selector constants are centralised here: when the page is redesigned, this
 module is the single place to fix. Selectors marked ``[B3.1]`` were measured
-on the real page; ``[ASSUMED]`` ones are pending the T0.4 experiments.
+on the real page; the multi-noble and discard-row selectors were read out of
+the shipped ccbs bundle on 2026-09-11 (the page is a static SPA, so the
+bundle is a reliable source of truth for classes and labels).
 """
 
+import copy
 import random
 import re
 import time
+from collections.abc import Mapping
 
 from splendor.splendor.constants import MAX_TIER_CARDS, NUMBER_OF_TIERS, RESERVED
 from splendor.splendor.gym.envs.actions import ALL_ACTIONS, Action, ActionEnum
-from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
+from splendor.splendor.splendor_model import Card, SplendorGameRule, SplendorState
 
 from .dom_extractor import (
     COLOR_NAME_TO_INDEX,
+    DISCARD_SELECTION_RE,
     Snapshot,
     extract_snapshot,
 )
@@ -64,14 +69,26 @@ LABEL_CONFIRM_PASS = "确认放弃"
 LABEL_CONFIRM_DISCARD = "确认丢弃"
 SELECTOR_GRAY_BAR = "div.mt-2.p-2.bg-gray-400"
 
-# Discard/return unit chips (E2 measured): in the discard sub flow each held
-# gem renders as an individual textless button.ccbs-circle.ccbs-color-{c};
-# supply chips are plain <div>s at that moment, so this selector is unambiguous.
-SELECTOR_DISCARD_CHIP_TEMPLATE = "button.ccbs-circle.ccbs-color-{color_index}"
+# Discard/return unit chips (E2 measured 2026-09-05; selector re-derived from
+# the ccbs bundle 2026-09-11). In the discard sub flow each held gem renders
+# as an individual textless button.ccbs-circle.ccbs-color-{c} - and those
+# chips share their class family with the *take-gems* confirm bar's held
+# chips, which survive the take (hidden, `-mt-12 opacity-0`) and precede the
+# discard UI in document order. An unscoped query therefore toggled the
+# hidden chips and left 已选 at 0, so 确认丢弃 stayed disabled. Scoping to the
+# discard chip row fixes it: div.mt-2.space-x-2.p-2.bg-gray-400 is the only
+# element with that class combination.
+SELECTOR_DISCARD_BAR = "div.space-x-2.p-2.bg-gray-400"
+SELECTOR_DISCARD_CHIP_TEMPLATE = (
+    SELECTOR_DISCARD_BAR + " button.ccbs-circle.ccbs-color-{color_index}"
+)
 
-# Multi-noble choice UI. [ASSUMED][E1 pending] - the official announcement
-# confirms the feature exists; its DOM is unmeasured, hence still class-based.
-SELECTOR_NOBLE_CHOICE = ".ccbs-noble-options .ccbs-noble-choice"
+# Multi-noble choice UI (measured from the ccbs bundle 2026-09-11, replacing
+# the earlier [ASSUMED] class guess): while two or more nobles are
+# simultaneously satisfied, the page marks each *candidate* bank noble with
+# ccbs-candidate and wraps it in a clickable button. There is no
+# .ccbs-noble-options container - that selector never matched.
+SELECTOR_NOBLE_CANDIDATE = ".ccbs-noble.ccbs-candidate"
 
 # --- etiquette ----------------------------------------------------------------
 HUMAN_CLICK_DELAY: tuple[float, float] = (0.2, 0.5)
@@ -188,18 +205,51 @@ class ActionExecutor:
     def _return_gems_if_needed(self, action: Action) -> None:
         """
         The >10-gems return sub flow (E2 measured, 2026-09-05): after the take
-        confirm the page enters a discard step ("请丢弃 N 个宝石"); each held
-        gem is an individual textless chip button, toggled by clicking, and
-        确认丢弃 settles the step.
+        confirm the page enters a discard step ("请丢弃 N 个宝石，已选 M 个");
+        each held gem is an individual textless chip button, toggled by
+        clicking, and 确认丢弃 settles the step.
         """
         returned = action.returned_gems or {}
         if not returned:
             return
         for colour, count in returned.items():
             selector = _discard_chip_selector(colour)
-            for _ in range(count):
-                self._click_confirmed(selector, 0)
+            # Each held gem is its own toggle chip: clicking the SAME chip
+            # twice cancels the selection, so the i-th gem of a colour needs
+            # the i-th chip - not index 0 repeatedly.
+            for position in range(count):
+                self._click_confirmed(selector, position)
+        self._verify_discard_selection(sum(returned.values()))
         self._click_labelled(LABEL_CONFIRM_DISCARD)
+
+    def _verify_discard_selection(self, expected: int) -> None:
+        """
+        Fail loudly when the unit-chip clicks did not land.
+
+        确认丢弃 is ``disabled`` until 已选 M == 请丢弃 N, and clicking a
+        disabled button is a silent no-op - the pre-fix failure mode looked
+        like "the confirm button cannot be clicked" while the real cause was a
+        chip selector that hit the hidden take-gems chips. The extractor folds
+        the prompt's 已选 M/N pair into ``status`` precisely so this check can
+        exist; a page that renders no such prompt skips it.
+        """
+        progress = DISCARD_SELECTION_RE.search(
+            extract_snapshot(self._driver)["status"]
+        )
+        if progress is None:
+            return
+        selected, required = int(progress.group(1)), int(progress.group(2))
+        if required != expected:
+            raise ActionExecutionError(
+                f"discard sub-flow asks for {required} gem(s) but this action "
+                f"returns {expected}: the pseudo state disagrees with the page"
+            )
+        if selected != expected:
+            raise ActionExecutionError(
+                f"discard sub-flow shows 已选{selected}/{required} after "
+                f"clicking {expected} unit chip(s): the clicks did not land "
+                f"(check {SELECTOR_DISCARD_BAR!r} against the live page)"
+            )
 
     def _execute_reserve(self, action: Action, snapshot: Snapshot) -> None:
         # RESERVE: reserve mode -> target card's reserve overlay (2 steps; the
@@ -283,10 +333,22 @@ class ActionExecutor:
 
     def _pick_noble(self, action: Action, pseudo_state: SplendorState | None) -> None:
         """
-        Claim the noble this action selected when the choice UI is up (E1
-        pending). The UI is assumed to list the *eligible* nobles; eligibility
-        is engine code (``noble_visit``), so the click index is derived by
-        engine rule reuse instead of assuming board order.
+        Claim the noble this action selected - only when the page asks.
+
+        Measured page behaviour (ccbs bundle, 2026-09-11): the engine attaches
+        a noble to an action whenever at least one noble is satisfied *after*
+        the action, but the page renders a choice UI only when TWO OR MORE
+        nobles are simultaneously satisfied and otherwise grants the lone
+        candidate automatically. Eligibility therefore has to be judged on the
+        post-action card counts (exactly as ``getLegalActions`` does for buys) -
+        the pre-fix check ran ``noble_visit`` against the pre-action agent and
+        reported ``noble ... is not eligible to visit agent N`` for every buy
+        that *created* the eligibility.
+
+        The candidate is located by its cost vector rather than by bank order:
+        the page's candidate order is the bank order, but matching on cost
+        keeps the executor correct under any re-ordering (noble cost vectors
+        are pairwise distinct - card_registry fact).
         """
         if pseudo_state is None:
             raise ValueError("noble claim needs the pseudo state (eligibility)")
@@ -296,15 +358,52 @@ class ActionExecutor:
                 f"noble_index {action.noble_index} outside the "
                 f"{len(nobles)} board nobles"
             )
-        noble = nobles[action.noble_index]
-        agent = pseudo_state.agents[pseudo_state.agent_to_move]
-        eligible = [n for n in nobles if self._rule.noble_visit(agent, n)]
-        if noble not in eligible:
-            raise ValueError(
-                f"noble {noble[0]} is not eligible to visit agent "
-                f"{agent.id} (engine rule says no)"
-            )
-        self._click_confirmed(SELECTOR_NOBLE_CHOICE, eligible.index(noble))
+        chosen = nobles[action.noble_index]
+        expected = _cost_key(chosen[1])
+        if not self._noble_choices_expected(action, pseudo_state):
+            return  # 0 or 1 satisfied noble: the page grants it without a click
+        deadline = time.monotonic() + self._wait_timeout
+        while True:
+            options = extract_snapshot(self._driver)["noble_options"] or []
+            for index, option in enumerate(options):
+                if _cost_key(option["requirements"]) == expected:
+                    self._click_confirmed(SELECTOR_NOBLE_CANDIDATE, index)
+                    return
+            if options:
+                raise ActionExecutionError(
+                    f"noble {chosen[0]} is not among the {len(options)} "
+                    "candidate(s) the page highlights (engine/page mismatch)"
+                )
+            if time.monotonic() >= deadline:
+                raise ActionExecutionError(
+                    "noble choice UI did not appear within "
+                    f"{self._wait_timeout}s (expected a choice between the "
+                    "satisfied nobles)"
+                )
+            time.sleep(0.2)
+
+    def _noble_choices_expected(
+        self, action: Action, pseudo_state: SplendorState
+    ) -> bool:
+        """
+        Whether the page will block this action on a noble choice.
+
+        Mirrors the page's post-action handler: it re-derives the satisfied
+        noble set from the acting player's permanent cards and, when that set
+        holds 2+ nobles, waits for a pick; a single satisfied noble is granted
+        automatically. Buying a card adds it to a copy of the agent first,
+        because eligibility is a post-action property.
+        """
+        probe = copy.deepcopy(pseudo_state.agents[pseudo_state.agent_to_move])
+        if action.type_enum in (ActionEnum.BUY_AVAILABLE, ActionEnum.BUY_RESERVE):
+            card = self._bought_card(action, pseudo_state)
+            probe.cards[card.colour].append(card)
+        satisfied = [
+            noble
+            for noble in pseudo_state.board.nobles
+            if self._rule.noble_visit(probe, noble)
+        ]
+        return len(satisfied) > 1
 
     # ----- payment strategy -----------------------------------------------------
     def select_payment_greedy(
@@ -352,6 +451,12 @@ class ActionExecutor:
         self, action: Action, pseudo_state: SplendorState | None
     ) -> dict[str, int]:
         """Cost dict of the card a buy action targets."""
+        return dict(self._bought_card(action, pseudo_state).cost)
+
+    def _bought_card(
+        self, action: Action, pseudo_state: SplendorState | None
+    ) -> Card:
+        """The card a buy action targets (raises for non-buy actions)."""
         position = action.position
         if position is None:
             raise ValueError(f"buy action without a position: {action}")
@@ -363,17 +468,16 @@ class ActionExecutor:
                 raise ValueError(
                     f"buy_reserve index {position.reserved_index} has no card"
                 )
-            card = my.cards[RESERVED][position.reserved_index]
-        else:
-            valid_position = position.tier in range(
-                NUMBER_OF_TIERS
-            ) and position.card_index in range(MAX_TIER_CARDS)
-            if not valid_position:  # pragma: no cover - guarded in execute()
-                raise ValueError(f"buy position outside the board: {action}")
-            card = pseudo_state.board.dealt[position.tier][position.card_index]
-            if card is None:
-                raise ValueError(f"no card at {action.position} to buy")
-        return dict(card.cost)
+            return my.cards[RESERVED][position.reserved_index]
+        valid_position = position.tier in range(
+            NUMBER_OF_TIERS
+        ) and position.card_index in range(MAX_TIER_CARDS)
+        if not valid_position:  # pragma: no cover - guarded in execute()
+            raise ValueError(f"buy position outside the board: {action}")
+        card = pseudo_state.board.dealt[position.tier][position.card_index]
+        if card is None:
+            raise ValueError(f"no card at {action.position} to buy")
+        return card
 
     # ----- click plumbing --------------------------------------------------------
     def _click_confirmed(self, selector: str, index: int) -> None:
@@ -462,7 +566,20 @@ def _supply_chip_selector(colour: str) -> str:
 def _discard_chip_selector(colour: str) -> str:
     if colour not in COLOR_NAME_TO_INDEX:
         raise ValueError(f"unknown gem colour {colour!r}")
-    return SELECTOR_DISCARD_CHIP_TEMPLATE.format(color_index=COLOR_NAME_TO_INDEX[colour])
+    return SELECTOR_DISCARD_CHIP_TEMPLATE.format(
+        color_index=COLOR_NAME_TO_INDEX[colour]
+    )
+
+
+def _cost_key(cost: Mapping[str, int]) -> tuple[tuple[str, int], ...]:
+    """
+    Order-insensitive identity of a cost vector.
+
+    Noble cost vectors are pairwise distinct (card_registry fact), so the
+    sorted item tuple identifies a noble across the engine and the DOM
+    without depending on either side's ordering.
+    """
+    return tuple(sorted((colour, int(count)) for colour, count in cost.items()))
 
 
 def _row_of_deck_id(deck_id: int) -> int:

@@ -6,8 +6,8 @@ import pytest
 
 from splendor.browser.ego_driver import EgoBrowserDriver
 from splendor.play_remote import (
-    _model_for,  # noqa: PLC2701
-    _resolve_profile_ids,  # noqa: PLC2701
+    _model_for,
+    _resolve_profile_ids,
 )
 
 

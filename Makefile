@@ -10,7 +10,11 @@ format:
 
 .PHONY: lint
 lint:
-	ruff check --preview .
+	# No --preview here: CI runs plain `ruff check`, and preview rules change
+	# between ruff releases. When the two disagree, a `# noqa: <preview rule>`
+	# is simultaneously "required" (preview) and "unused" (CI), so `ruff --fix`
+	# and `make lint` undo each other. Keep local == CI.
+	ruff check .
 	mypy .
 	pylint src/
 

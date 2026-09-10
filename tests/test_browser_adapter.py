@@ -21,6 +21,8 @@ from splendor.browser.action_executor import (
     LABEL_MODE_TAKE_GEMS,
     LABEL_OVERLAY_BUY,
     LABEL_OVERLAY_RESERVE,
+    SELECTOR_DISCARD_BAR,
+    SELECTOR_NOBLE_CANDIDATE,
     ActionExecutionError,
     ActionExecutor,
     parse_pill,
@@ -28,18 +30,21 @@ from splendor.browser.action_executor import (
 from splendor.browser.browser_env import BrowserSplendorEnv
 from splendor.browser.dom_extractor import (
     DEFAULT_GAME_OVER_MARKERS,
+    EXTRACT_SNAPSHOT_JS,
+    Snapshot,
     SnapshotSchemaError,
     extract_snapshot,
     is_my_turn,
     looks_like_game_over,
     snapshot_from_raw,
 )
-from splendor.browser.driver import MockBrowserDriver
+from splendor.browser.driver import SNAPSHOT_JS_MARKER, MockBrowserDriver
 from splendor.browser.session import SessionManager
 from splendor.browser.state_builder import build_pseudo_state
 from splendor.splendor.features import extract_metrics_with_cards
 from splendor.splendor.gym.base import SplendorEnvBase
 from splendor.splendor.gym.envs.actions import ALL_ACTIONS, ActionEnum
+from splendor.splendor.splendor_model import Card, SplendorGameRule, SplendorState
 
 FIXTURES = Path(__file__).parent.parent / "src" / "splendor" / "browser" / "fixtures"
 ALL_FIXTURES = sorted(FIXTURES.glob("*.html"))
@@ -132,6 +137,85 @@ def test_claimed_noble_in_panel_is_dropped() -> None:
     # build_pseudo_state resolves every noble through the registry.
     pseudo_state = build_pseudo_state(snapshot, snapshot["my_seat"] - 1, turns=3)
     assert pseudo_state is not None
+
+
+def _fake_cards(colour: str, count: int) -> list[Card]:
+    """Synthetic permanent cards - noble_visit only reads len(cards[colour])."""
+    return [
+        Card(colour=colour, code=9000 + index, cost={}, deck_id=0, points=0)
+        for index in range(count)
+    ]
+
+
+def _buy_action_index(tier: int, card_index: int, noble_index: int) -> int:
+    """ALL_ACTIONS index of a BUY_AVAILABLE at ``(tier, card_index)`` picking ``noble_index``."""
+    return next(
+        index
+        for index, action in enumerate(ALL_ACTIONS)
+        if action.type_enum is ActionEnum.BUY_AVAILABLE
+        and action.position is not None
+        and (action.position.tier, action.position.card_index) == (tier, card_index)
+        and action.noble_index == noble_index
+    )
+
+
+def _hand_one_short_of_noble_zero() -> tuple[
+    MockBrowserDriver, Snapshot, SplendorState
+]:
+    """
+    ``noble_available.html`` with the acting hand one red card short of 4g4r.
+
+    The board nobles are 4g4r / 4b4g / 3g3r3B (fixture order) and tier-0 slot 0
+    is a red card, so buying it completes exactly the first noble.
+    """
+    driver = _driver_for("noble_available.html")
+    snapshot = extract_snapshot(driver)
+    state = build_pseudo_state(snapshot, snapshot["my_seat"] - 1, turns=3)
+    my = state.agents[state.agent_to_move]
+    my.cards["green"].extend(_fake_cards("green", 4))
+    my.cards["red"].extend(_fake_cards("red", 3))
+    return driver, snapshot, state
+
+
+def test_buy_creating_noble_eligibility_is_not_rejected() -> None:
+    """
+    Pins the live failure "noble 3g3r3B is not eligible to visit agent 2".
+
+    The executor used to run ``noble_visit`` against the *pre-action* agent, so
+    every buy that *created* the eligibility was rejected - including the
+    common case where the page silently grants the lone noble and never shows
+    a choice UI at all. Eligibility is a post-action property (the bought card
+    is appended to a copy of the acting agent first).
+    """
+    driver, snapshot, state = _hand_one_short_of_noble_zero()
+    rule = SplendorGameRule(2)
+    my = state.agents[state.agent_to_move]
+    # pre-action the hand does NOT qualify - the old check raised right here
+    assert not rule.noble_visit(my, state.board.nobles[0])
+    assert state.board.dealt[0][0].colour == "red"
+
+    ActionExecutor(driver, click_delay=(0, 0)).execute(
+        _buy_action_index(0, 0, noble_index=0), snapshot, state
+    )
+
+    # exactly one noble is satisfied after the buy, so the page grants it
+    # without asking: no candidate was clicked, and nothing was raised
+    assert not [entry for entry in driver.click_log if entry[0] == SELECTOR_NOBLE_CANDIDATE]
+
+
+def test_two_satisfied_nobles_make_the_executor_pick_the_right_candidate() -> None:
+    """With 2+ satisfied nobles the page does ask, and the pick is by cost."""
+    driver, snapshot, state = _hand_one_short_of_noble_zero()
+    my = state.agents[state.agent_to_move]
+    my.cards["blue"].extend(_fake_cards("blue", 4))  # also completes 4b4g
+
+    ActionExecutor(driver, click_delay=(0, 0)).execute(
+        _buy_action_index(0, 0, noble_index=0), snapshot, state
+    )
+
+    # the fixture highlights two candidates in bank order (4g4r, 4b4g); the
+    # chosen noble is 4g4r, so the click must land on candidate 0
+    assert (SELECTOR_NOBLE_CANDIDATE, 0) in driver.click_log
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +335,9 @@ def test_executor_collect_sequence() -> None:
     )  # click order follows the action's dict order, which is not semantic
 
 
-def test_executor_collect_with_return_clicks_discard_units() -> None:
-    """E2 measured flow: take confirm -> textless unit chips -> 确认丢弃."""
-    driver = _driver_for("empty_deck.html")
-    snapshot = extract_snapshot(driver)
-    executor = ActionExecutor(driver, click_delay=(0, 0))
-
-    # collect 2 red while returning 1 white (hand already at the limit)
-    collect_index = next(
+def _collect_with_return_index() -> int:
+    """Index of the COLLECT_SAME action: take 2 red while returning 1 white."""
+    return next(
         index
         for index, action in enumerate(ALL_ACTIONS)
         if action.type_enum is ActionEnum.COLLECT_SAME
@@ -266,16 +345,85 @@ def test_executor_collect_with_return_clicks_discard_units() -> None:
         and action.returned_gems == {"white": 1}
         and action.noble_index is None
     )
-    executor.execute(collect_index, snapshot, None)
 
-    # two clicks on the textless red unit chip + the measured discard confirm
-    red_unit_clicks = [
-        entry for entry in driver.click_log if entry[0] == "button.ccbs-circle.ccbs-color-3"
-    ]
-    assert len(red_unit_clicks) == 2
+
+def _pin_discard_prompt(
+    driver: MockBrowserDriver, replacements: dict[str, str]
+) -> None:
+    """
+    Pin the offline discard prompt text.
+
+    The fixture is a static render: the mock never mutates it, so the prompt's
+    已选 M count stays at its rendered value however many unit chips are
+    clicked. The live page *does* advance it, and the executor's post-click
+    verification reads exactly that - so a test that expects 确认丢弃 to fire
+    has to state the post-click reading explicitly (``已选 0 个`` -> ``已选 1 个``).
+    """
+    raw = dict(driver.evaluate(EXTRACT_SNAPSHOT_JS))
+    for old, new in replacements.items():
+        raw["body_text"] = raw["body_text"].replace(old, new)
+    driver.register_evaluate_override(SNAPSHOT_JS_MARKER, raw)
+
+
+def test_executor_collect_with_return_clicks_discard_units() -> None:
+    """E2 measured flow: take confirm -> textless unit chips -> 确认丢弃."""
+    driver = _driver_for("empty_deck.html")
+    snapshot = extract_snapshot(driver)
+    executor = ActionExecutor(driver, click_delay=(0, 0))
+    # the page accepts the one returning click, so the confirm is enabled
+    _pin_discard_prompt(driver, {"已选 0 个": "已选 1 个"})
+
+    executor.execute(_collect_with_return_index(), snapshot, None)
+
+    # take-mode supply chips: the plain take selector, twice for 2 red
+    assert driver.click_log.count(("button.ccbs-circle.ccbs-color-3", 0)) == 2
+    # the returning chip is the one *inside the discard bar*. The hidden
+    # take-bar chips share the class family (button.ccbs-circle.ccbs-color-N)
+    # and precede the discard bar in document order, so the unscoped query
+    # toggled an invisible chip and left 已选 at 0 - the live "确认丢弃
+    # cannot be clicked" failure this selector scoping fixes.
+    discard_chip = f"{SELECTOR_DISCARD_BAR} button.ccbs-circle.ccbs-color-0"
+    assert driver.click_log.count((discard_chip, 0)) == 1
+    # the take confirm precedes the discard sub flow, which the discard
+    # confirm closes (click_labelled resolves the innermost match - the button
+    # inside its text-identical <div class="mt-4"> wrapper, not the wrapper)
     assert driver.click_log[-1] == (f"label:{LABEL_CONFIRM_DISCARD}", 0)
-    # the take confirm precedes the discard sub flow
-    assert (f"label:{LABEL_CONFIRM_TAKE}", 0) in driver.click_log
+    assert driver.click_log.index((f"label:{LABEL_CONFIRM_TAKE}", 0)) < len(
+        driver.click_log
+    ) - 1
+
+
+def test_executor_refuses_discard_confirm_when_chips_missed() -> None:
+    """
+    The 已选 verification catches a selection the page denies.
+
+    Without it the executor clicked 确认丢弃 on a *disabled* button: a silent
+    no-op that looked like a page bug while the real fault was the chip
+    selector. Failing loudly hands the seat back to a human instead.
+    """
+    driver = _driver_for("empty_deck.html")
+    snapshot = extract_snapshot(driver)
+    executor = ActionExecutor(driver, click_delay=(0, 0))
+    # no pinning: the static page keeps reporting 已选 0/1
+
+    with pytest.raises(ActionExecutionError, match="已选0/1"):
+        executor.execute(_collect_with_return_index(), snapshot, None)
+
+    # and nothing was clicked into a disabled confirm button
+    assert (f"label:{LABEL_CONFIRM_DISCARD}", 0) not in driver.click_log
+
+
+def test_executor_refuses_discard_when_page_asks_for_another_count() -> None:
+    """Page/pseudo-state drift on the discard count fails before any confirm."""
+    driver = _driver_for("empty_deck.html")
+    snapshot = extract_snapshot(driver)
+    executor = ActionExecutor(driver, click_delay=(0, 0))
+    _pin_discard_prompt(driver, {"请丢弃 1 个宝石": "请丢弃 2 个宝石"})
+
+    with pytest.raises(ActionExecutionError, match="asks for 2"):
+        executor.execute(_collect_with_return_index(), snapshot, None)
+
+    assert (f"label:{LABEL_CONFIRM_DISCARD}", 0) not in driver.click_log
 
 
 def test_executor_buy_sequence_clicks_card_overlay() -> None:
@@ -639,7 +787,7 @@ def test_session_pinned_room_rejoins_and_tolerates_non_owner() -> None:
     room_page = (
         "<html><body>"
         "<button>加入</button>"
-        "<button>离开座位，观战</button>"  # noqa: RUF001 - real page label
+        "<button>离开座位，观战</button>"
         "<button>开始游戏</button>"
         "</body></html>"
     )

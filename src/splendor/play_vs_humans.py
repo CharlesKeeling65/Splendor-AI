@@ -300,7 +300,7 @@ def _format_estimates(estimates: list[SeatEstimate]) -> str:
 # ---------------------------------------------------------------------------
 # My own decision point
 # ---------------------------------------------------------------------------
-def select_action(  # noqa: PLR0913, PLR0917 - logging payload needs them
+def select_action(  # noqa: PLR0913 - logging payload needs them
     env: BrowserSplendorEnv,
     actor: QNetwork,
     obs: NDArray,
@@ -344,7 +344,7 @@ def select_action(  # noqa: PLR0913, PLR0917 - logging payload needs them
 # ---------------------------------------------------------------------------
 # One game
 # ---------------------------------------------------------------------------
-def run_game(  # noqa: PLR0913, PLR0917 - one glue point per concern
+def run_game(  # noqa: PLR0913 - one glue point per concern
     env: BrowserSplendorEnv,
     actor: QNetwork,
     analyzer: SeatAnalyzer,

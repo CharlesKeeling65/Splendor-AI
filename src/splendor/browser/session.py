@@ -33,14 +33,50 @@ LABEL_CREATE_ROOM = "创建房间"  # lobby link (exact text)
 LABEL_JOIN_SEAT = "加入"  # one button per free seat, document order = seat order
 LABEL_START_GAME = "开始游戏"
 LABEL_RECONNECT = "重连"  # shown when the server flags a cookie problem
+LABEL_LEAVE_SEAT = "离开座位，观战"  # only shown to a seated player
+
+# Seat map of the room page (measured 2026-09-11, self-created room):
+# every seat is ``div#userseat<i>`` (i = seat - 1) holding the occupant's
+# avatar; the *my* badge there is the only signal that this browser actually
+# holds a seat. A spectator renders under the 观战中 heading instead - and a
+# stale page can still show a 加入 button for a seat somebody else just took,
+# which is how a click can end up swapping the seat instead of taking it.
+MY_SEAT_JS = """(() => {
+  for (const index of [0, 1, 2, 3]) {
+    const seat = document.getElementById('userseat' + index);
+    if (!seat) continue;
+    const mine = [...seat.querySelectorAll('*')].some(
+      (el) => (el.textContent || '').trim() === '我');
+    if (mine) return index + 1;
+  }
+  return 0;
+})()"""
 
 # Waiting game start needs the same patience class as any UI migration.
 _START_TIMEOUT = 30.0
 
-# The SPA pushes the room URL asynchronously after 创建房间 (measured
-# 2026-09-11: an immediate location.href read returned the lobby URL,
-# poisoning the published room file). Poll this long before giving up.
+# The lobby link already carries the server-allocated room path *at page
+# load* (measured 2026-09-11: ``<a href="/ccbs/c496">👥 创建房间</a>``), so
+# following it is a plain navigation - not an asynchronous SPA push. The poll
+# below therefore only absorbs the page load; it exists because a URL read
+# taken too early returned the lobby URL and poisoned the published room file
+# (the second bot then "joined" a lobby and waited for a game that never
+# started).
 _CREATE_ROOM_TIMEOUT = 10.0
+
+
+def _entered_room(url: str, room_prefix: str) -> bool:
+    """
+    Whether ``url`` left the lobby for an actual room path.
+
+    A room URL is ``<base>/<room id>`` (page-measured ``/ccbs/c496``); the
+    lobby itself is ``<base>``. Anything else - the lobby again, a trailing
+    slash, an unrelated page - is not a room and must keep the poll running.
+    """
+    if not url.startswith(room_prefix):
+        return False
+    tail = url[len(room_prefix):].split("#", 1)[0].split("?", 1)[0]
+    return bool(tail.strip("/"))
 
 
 class SessionManager:
@@ -68,6 +104,18 @@ class SessionManager:
     def room_url(self) -> str | None:
         return self._room_url
 
+    def pin_room(self, room_url: str) -> None:
+        """
+        Adopt ``room_url`` as *this session's* room for every later game.
+
+        A bot that created a room keeps playing in it (measured E3: after a
+        game the page returns to the same room with both seats still taken),
+        so re-creating a room per game would strand every peer that resolved
+        the published room file once, at driver construction - multi-game
+        self-play would then run two different rooms in parallel.
+        """
+        self._room_url = room_url
+
     def create_room(self, seats: int = 2) -> str:
         """
         Create a room with ``seats`` seats and return its URL.
@@ -82,21 +130,25 @@ class SessionManager:
         self._driver.click_labelled(LABEL_CREATE_ROOM, exact=False)
         if seats != DEFAULT_SEATS:
             self._driver.click_labelled(f"{seats}人")
-        base = self._base_url.rstrip("/")
+        room_prefix = self._base_url.rstrip("/") + "/"
         deadline = time.monotonic() + _CREATE_ROOM_TIMEOUT
         url = str(self._driver.evaluate("location.href"))
-        while time.monotonic() < deadline and url.rstrip("/") == base:
+        while time.monotonic() < deadline and not _entered_room(url, room_prefix):
             time.sleep(0.5)
             url = str(self._driver.evaluate("location.href"))
-        if url.rstrip("/") == base:
+        if not _entered_room(url, room_prefix):
             # Loud failure beats a poisoned room file: the second bot would
             # otherwise "join" the lobby and wait for a game that never
-            # starts. Common cause: the identity is still seated in an old
-            # room server-side, so the create is silently refused.
+            # starts. Measured causes, in the order they were hit live:
+            # the label click landed on an ancestor (``<html>``) instead of
+            # the link, so nothing navigated (see driver.labelled_matches);
+            # or the identity is still seated in an old room server-side, so
+            # the create is silently refused.
             raise TimeoutError(
                 "room URL did not appear after clicking 创建房间 "
-                f"(still on {url!r}); the create may have been refused - "
-                "check for a stale identity in an old room and re-run"
+                f"(still on {url!r}); the click missed the lobby link or the "
+                "create was refused - check that the anchor was the click "
+                "target, then for a stale identity in an old room, and re-run"
             )
         self._room_url = url
         return url
@@ -122,8 +174,24 @@ class SessionManager:
         This is the robust entry for scripted play: on a fresh room it takes
         seat 1 (ownership); in a room where a human or another process
         already sits lower, it takes the next free seat automatically.
+
+        "Free" is what *this page* last rendered, so the caller must load the
+        room after every other player has settled - otherwise the click can
+        address a seat somebody already took (measured 2026-09-11: the second
+        bot's click displaced the first one's seat, leaving one bot
+        spectating and a room that could never start). :meth:`my_seat` is the
+        verification for exactly that.
         """
         self._driver.click_labelled(LABEL_JOIN_SEAT, index=0)
+
+    def my_seat(self) -> int:
+        """
+        The 1-based seat this browser holds, or 0 while it only watches.
+
+        Read from the seat map (measurement in ``MY_SEAT_JS``); the room view
+        offers no other way to tell "seated" from "spectating".
+        """
+        return int(self._driver.evaluate(MY_SEAT_JS))
 
     def start_game(self) -> None:
         """Start the game; requires at least two occupied seats (owner only)."""

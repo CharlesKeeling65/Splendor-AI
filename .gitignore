@@ -17,3 +17,10 @@ docs/_build/
 
 # WorkBuddy session data (agent memory, not project artifacts)
 .workbuddy/
+
+# Runtime output: play-web-remote's default --events-dir (per-bot JSONL event
+# streams plus room_url.txt / seatN.ready handshake files)
+web_events/
+
+# Scratch directory of the offline room-coordination tests
+tests/_tmp_room_coordination/

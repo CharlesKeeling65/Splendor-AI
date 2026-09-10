@@ -35,7 +35,7 @@ def estimator() -> WinRateEstimator:
 
 
 def test_unseen_cards_exclude_visible_faces(snapshot: Snapshot) -> None:
-    from splendor.remote.rollout import _unseen_cards  # noqa: PLC2701
+    from splendor.remote.rollout import _unseen_cards
 
     unseen = _unseen_cards(snapshot)
     visible_keys = {
@@ -84,13 +84,45 @@ def test_deterministic_under_seed(
     assert first.draw_rate == second.draw_rate
 
 
-def test_rejects_non_two_player_boards(
+def _board_with_seats(snapshot: Snapshot, seats: int) -> Snapshot:
+    """Synthetic board: cycle the fixture's seat panels up to ``seats`` seats."""
+    base = list(snapshot["panels"])
+    panels = [base[index % len(base)] for index in range(seats)]
+    return {**snapshot, "panels": panels}
+
+
+def test_accepts_two_to_four_player_boards(
     snapshot: Snapshot, estimator: WinRateEstimator
 ) -> None:
-    three = dict(snapshot)
-    three["panels"] = list(snapshot["panels"]) * 2  # synthetic 4 panels
-    with pytest.raises(ValueError, match="seats"):
-        estimator.estimate(three, actor_seat=1, n_rollouts=1, max_steps=5)
+    """
+    v1's metric block reserves MAX_RIVALS (=3) rival-score slots on each side
+    of the observer, so 2-4 seats all vectorize; the public-v2 schema is the
+    one that encodes exactly two.
+
+    The previous check hard-required exactly 2 seats, so a 3-player self-play
+    run aborted with "supports 2 seats, got 3" and the dashboard never got a
+    win-rate point at all. Values above 2 seats are an out-of-distribution
+    proxy (local DQN training is 2-player) but structurally sound.
+    """
+    for seats in (3, 4):
+        result = estimator.estimate(
+            _board_with_seats(snapshot, seats),
+            actor_seat=1,
+            n_rollouts=1,
+            max_steps=400,
+            seed=7,
+        )
+        assert len(result.win_rates) == seats
+
+
+def test_rejects_boards_beyond_the_rival_block(
+    snapshot: Snapshot, estimator: WinRateEstimator
+) -> None:
+    # 5 seats: the observer's rival-score block runs out at MAX_RIVALS + 1 = 4
+    with pytest.raises(ValueError, match=r"supports 2\.\.4 seats"):
+        estimator.estimate(
+            _board_with_seats(snapshot, 5), actor_seat=1, n_rollouts=1, max_steps=5
+        )
 
 
 def test_actor_seat_mismatch_fails_loudly(

@@ -51,7 +51,7 @@ class QNetwork(nn.Module):
            normalize with identical running statistics.
     """
 
-    def __init__(  # noqa: PLR0913, PLR0917 - versioned architecture options
+    def __init__(  # noqa: PLR0913 - versioned architecture options
         self,
         input_dim: int = OBS_DIM,
         output_dim: int = ACTION_DIM,

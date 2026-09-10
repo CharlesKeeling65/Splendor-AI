@@ -196,8 +196,14 @@ class EgoBrowserDriver:
     : document;
   if (!scope) return {{ __error__: 'container not found: ' + containerSelector }};
   const trimmed = el => (el.textContent || '').trim();
-  const matches = [...scope.querySelectorAll('*')].filter(el =>
+  const all = [...scope.querySelectorAll('*')].filter(el =>
     exact ? trimmed(el) === label : trimmed(el).includes(label));
+  // Innermost-match rule (measured 2026-09-11): the discard step renders
+  // <div class="mt-4"><button>确认丢弃</button></div>, so the wrapper - first
+  // in document order - has the same textContent as the button and would
+  // absorb the click. Only matches containing no other match are clickable.
+  const matches = all.filter(el =>
+    !all.some(other => other !== el && el.contains(other)));
   if (!matches.length) return {{ __error__: 'label not found: ' + label }};
   if (index >= matches.length)
     return {{ __error__: 'label index ' + index + ' of ' + matches.length }};

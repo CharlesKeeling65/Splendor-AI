@@ -27,14 +27,14 @@ jobs:
           uv venv
           uv pip install -e ".[dev]" pytest
 
-      - name: Lint (ruff)
-        run: |
-          uv pip install ruff
-          .venv/bin/ruff check src/ tests/
+      # Note: ruff and mypy come from `.[dev]` (= requirements/development.txt).
+      # Re-installing them here unpinned silently overrode that pin and red-ed
+      # the gate repo-wide when a new ruff minor shipped extra default rules.
+      - name: Lint (ruff) - same command as `make lint`
+        run: .venv/bin/ruff check .
 
       - name: Type check (mypy, new code paths)
         run: |
-          uv pip install mypy
           .venv/bin/python -m mypy src/splendor/browser \
             src/splendor/agents/our_agents/dqn \
             src/splendor/splendor/gym/base.py \

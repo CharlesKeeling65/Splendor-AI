@@ -7,6 +7,14 @@ Definition (dashboard + docs use the same wording):
     DQN 策略为所有座位自对弈模拟 N 局至终局, 玩家 i 以最高分终局的频率
     (同分按终局卡数 tie-break, 仍并列各计 0.5 胜)。
 
+Seat counts: the v1 metric block carries MAX_RIVALS (=3) rival-score slots on
+each side of the observer, so the reconstruction and the observation cover
+2-4 seats and the estimator accepts all of them. The ``public-v2`` schema
+hard-codes exactly two seats. Note the honesty caveat: a checkpoint trained
+on 2-player self-play still produces a well-defined value on 3-4 seats, but
+that value is an out-of-distribution *proxy* for strength, not a calibrated
+win probability.
+
 Unknown information is filled by uniform sampling from the card registry
 (the 90-card library minus visible faces): remaining deck compositions and
 rivals' reserved-card faces. This makes the estimate an approximation of
@@ -42,7 +50,7 @@ from splendor.agents.our_agents.dqn.network import QNetwork
 from splendor.browser.card_registry import CARD_REGISTRY, lookup_card
 from splendor.browser.dom_extractor import Snapshot
 from splendor.browser.state_builder import build_pseudo_state
-from splendor.splendor.constants import WINNING_SCORE_TRESHOLD
+from splendor.splendor.constants import MAX_RIVALS, WINNING_SCORE_TRESHOLD
 from splendor.splendor.gym.envs.utils import (
     create_action_mapping,
     create_legal_actions_mask,
@@ -56,6 +64,11 @@ from splendor.splendor.splendor_model import (
 # A rollout that has not ended after this many *actions* is aborted (credit
 # 0 for every seat) - only pathological stalls (all-pass loops) hit it.
 DEFAULT_MAX_STEPS = 400
+
+# Supported seat counts: 2 players up to the engine's rival-slot capacity
+# (MAX_RIVALS rival slots per side of the observer => MAX_RIVALS + 1 seats).
+MIN_SEATS = 2
+MAX_SEATS = MAX_RIVALS + 1
 
 
 @dataclass(frozen=True)
@@ -110,11 +123,17 @@ class WinRateEstimator:
             np.random.seed(seed)
         start = time.monotonic()
         n_players = len(snapshot["panels"])
-        # v1/public-v2 features are two-player schemas (features.py PLAYERS);
-        # web deployments are 2-seat self-play, so fail loudly otherwise.
-        if n_players != PLAYERS:
+        # v1's metric block reserves MAX_RIVALS score slots on each side of the
+        # observer, so 2-4 seats all vectorize; public-v2 encodes exactly two.
+        if not MIN_SEATS <= n_players <= MAX_SEATS:
             raise ValueError(
-                f"win-rate estimation supports {PLAYERS} seats, got {n_players}"
+                f"win-rate estimation supports {MIN_SEATS}..{MAX_SEATS} seats, "
+                f"got {n_players}"
+            )
+        if self._feature_version != "v1" and n_players != PLAYERS:
+            raise ValueError(
+                f"feature schema {self._feature_version!r} encodes exactly "
+                f"{PLAYERS} seats, got {n_players}"
             )
         if actor_seat not in range(1, n_players + 1):
             raise ValueError(

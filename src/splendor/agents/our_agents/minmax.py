@@ -40,7 +40,7 @@ class MiniMaxAgent(Agent):
         assert selected_action is not None
         return selected_action
 
-    def _select_action_recursion(  # noqa: PLR0913,PLR0917
+    def _select_action_recursion(  # noqa: PLR0913
         self,
         game_state: SplendorState,
         game_rule: SplendorGameRule,

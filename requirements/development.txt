@@ -1,3 +1,7 @@
 pre-commit>=4.0.1,<5
 mypy>=1.11.2,<2
-ruff>=0.7.0,<1
+# Pinned to the minor line: ruff ships new default rules in minor releases, and
+# an unpinned bump once turned the CI lint gate red repo-wide with no code
+# change (RUF001/002/003 on CJK punctuation, RUF100 on now-dead noqa).
+# Widen deliberately, then re-run `make lint`.
+ruff>=0.15,<0.16

@@ -80,7 +80,7 @@ class ReplayBuffer:
         self.size = 0
         self._pending: list[PendingTransition] = []
 
-    def _store(  # noqa: PLR0913, PLR0917 - one argument per stored tuple field
+    def _store(  # noqa: PLR0913 - one argument per stored tuple field
         self,
         obs: NDArray[np.float32],
         action: int,
@@ -103,7 +103,7 @@ class ReplayBuffer:
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def add(  # noqa: PLR0913, PLR0917 - one argument per transition field
+    def add(  # noqa: PLR0913 - one argument per transition field
         self,
         obs: NDArray[np.float32],
         action: int,

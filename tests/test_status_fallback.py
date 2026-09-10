@@ -12,7 +12,7 @@ import pytest
 from splendor.browser.dom_extractor import (
     DEFAULT_GAME_OVER_MARKERS,
     MY_TURN_TEXT,
-    _status_from_body,  # noqa: PLC2701 - regression target is the private path
+    _status_from_body,
 )
 
 

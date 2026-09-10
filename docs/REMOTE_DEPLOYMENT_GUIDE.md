@@ -70,6 +70,13 @@ play-dashboard --events-dir web_events --port 8899
 - **胜率定义**：当前局面重建完整引擎状态 → 当前策略自对弈 N 局至终局
   （未知牌库/对手预留按注册表均匀抽样）→ 该座位最高分终局频率；同分按卡数
   tie-break，仍并列各计 0.5。
+- **支持的座位数 = 2~4**：v1 的指标块为观察者两侧各留 `MAX_RIVALS`(=3) 个对手分数槽，
+  结构上容得下 4 席，估算器因此接受 2~4 人局；超过 4 席或使用 `public-v2` 特征（只编码 2 席）
+  会显式报 `supports 2..4 seats`。
+  **但要注意 3~4 人局是分布外代理值**——本地 DQN 训练全部是 2 人局，所以 3~4 人局的数字
+  可用于看趋势/相对变化，不等于策略在 3~4 人局的真实胜率。
+  （2026-09-10 之前此处硬性要求恰好 2 席，于是 3 人局自对弈每次估计都失败、
+  仪表盘永远打不出胜率点；现已修正，`--bots 3`/`--bots 4` 的房间可正常出点。）
 - **累计战绩**：各座位已完成对局的 胜/平/负 与累计胜率。
 - **实时日志**：🤖/🧑 动作、🗑️ 弃宝石（红底，含颜色×数量）、⚠️ 掩码奇偶、🏁/🏆 对局起止。
 
@@ -80,7 +87,12 @@ play-dashboard --events-dir web_events --port 8899
 | `connection refused` | Z8 服务未起 / 端口被校园网阻断 → 用 §一 的 SSH 隧道转发 |
 | `unknown model_id` | 服务端未注册该名字；`--model 名字=路径` 或 `--models-dir` |
 | bot 卡在等房间 | 双 bot 模式下 bot0 需先建房（`events_dir/room_url.txt` 出现即已就绪）；120s 超时说明 bot0 未起来 |
+| bot 从不建房：`room URL did not appear after clicking 创建房间` | 已修（2026-09-11）：大厅链接是 `<a href="/ccbs/xxxx">👥 创建房间</a>`（emoji 前缀→contains 匹配），而 contains 在文档序里先命中 `HTML`/`BODY`/`#root` 等祖先，取第 0 个命中＝点 `<html>`，不会导航。已改为**只保留最内层命中**。若复现：先确认点击目标是那个 `<a>`，再查该身份是否还占着旧房间（页面只剩 `重连` 时点它即可，`recover()` 已自动处理） |
+| 房主点了 `开始游戏` 但开局不了 | 需要每个座位都已入座；owner 现在会按人类节奏重试并在 `等待…` 状态出现后记录 `table live after N …click(s)`。若只有 1 个 bot（`--bots 1`），2 人房永远开不了——这是预期 |
 | 胜率点缺失（stale） | 估计失败（超时/页面无面板），看 bot jsonl 里的 `log` 事件；可调小 `--n-rollouts` |
+| 报 `supports 2..4 seats, got N` | N>4（房间开多了）或该模型是 `public-v2` 特征（只支持 2 席）；换 v1 模型或减座 |
+| `确认丢弃按钮点不动` | 已修（2026-09-10）：scoping 到 `div.space-x-2.p-2.bg-gray-400` + 最内层匹配 + `已选 M/N` 前置校验。若复现，附 jsonl 与 `docs/web_experiments.md` 的 §勘误 1/2 一并回报 |
+| `noble ... is not eligible to visit agent N` | 已修（2026-09-10）：贵族归属按**动作后**卡数判定。若复现，说明 bundle 版本已变，按 §勘误 3 重下 chunk 复核 |
 | 推理很慢 | 降低 `--n-rollouts`；Z8 上确认走的是预期 device（`ping` 返回里有 `device` 字段） |
 | 日志出现乱码数字墙 | phase-6 已修复（`_status_from_body`）；若复现请附 status 原文并回报 |
 

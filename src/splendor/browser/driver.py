@@ -40,23 +40,29 @@ CURRENT_URL_JS = "location.href"
 # confirm/cancel buttons sharing the gray bar.
 _PILL_TEXT_RE = re.compile(r"^(?:[0-9]+[白蓝绿红黑金])+$")
 
-# Measured turn-status texts (T0.4): a leaf element flips between these while
-# the game runs; both vanish on game over. Kept here because the module must
-# not import dom_extractor (import cycle).
-_STATUS_TEXT_RE = re.compile(r"等待(你|玩家[0-9]+)操作")
+# Measured turn-status texts (T0.4 + ccbs bundle 2026-09-11): a leaf element
+# flips between these while the game runs; all vanish on game over. Kept here
+# because the module must not import dom_extractor (import cycle).
+_STATUS_TEXT_RE = re.compile(
+    r"等待(你|玩家[0-9]+)"
+    r"(?:操作|丢弃多余宝石（每人最多持有10个）|选择要获得的贵族卡)"
+)
 
 
 def _read_status_text(root: _Element) -> str:
     """
-    Text of the turn-status leaf (等待你操作 / 等待玩家N操作), or "".
+    Text of the turn-status leaf, or "".
 
-    The status element has no stable class (measured T0.4: a bare
-    ``div.mt-4`` inside ``div.text-center``), so the reading keys on the
-    measured *texts* instead: the unique childless element matching them.
+    The status element has no stable class (measured T0.4: a bare ``div.mt-4``
+    inside ``div.text-center``), so the reading keys on the measured *texts*
+    instead: the unique childless element matching them. Matching is anchored
+    at the start because the page appends 【最后一回合】 on the final round.
     """
     for element in root.iter_tree():
+        if any(isinstance(child, _Element) for child in element.children):
+            continue  # leaves only, mirroring the JS children.length === 0
         text = element.text_content().strip()
-        if _STATUS_TEXT_RE.fullmatch(text):
+        if _STATUS_TEXT_RE.match(text):
             return text
     return ""
 
@@ -109,11 +115,21 @@ class BrowserDriver(Protocol):
         ccbs-* class** - text is their only stable identity, so the protocol
         must expose text-based clicking.
 
+        **Innermost-match rule** (measured 2026-09-11 on the ccbs chunk): a
+        text-identical wrapper swallows the click. The discard step renders
+        ``<div class="mt-4"><button>确认丢弃</button></div>`` - both elements
+        have textContent ``确认丢弃``, and document order puts the *div*
+        first, so clicking "the first match" hit a non-interactive div and
+        the button was never pressed. Only matches that contain no other
+        match in the same scope are candidates, which also keeps ``index``
+        meaningful for repeated plain buttons (``加入``, ``预定``).
+
         :param label: the text to match (trimmed comparison).
         :param exact: when False, any element whose text *contains* the label
                       matches (for emoji-prefixed labels where the emoji glyph
                       may vary across font renders).
-        :param index: which match to click (document order within container).
+        :param index: which match to click (document order within container,
+                      after the innermost-match filter).
         :param container_selector: optional CSS scope (e.g. the gray confirm
                                    bar for payment pills).
         :param container_index: which container match to scope into.
@@ -275,6 +291,42 @@ def _label_matches(element: _Element, label: str, exact: bool) -> bool:
     return text == label if exact else label in text
 
 
+def _is_descendant(element: _Element, ancestor: _Element) -> bool:
+    """Whether ``element`` sits anywhere below ``ancestor`` in the tree."""
+    parent = element.parent
+    while parent is not None:
+        if parent is ancestor:
+            return True
+        parent = parent.parent
+    return False
+
+
+def _innermost_matches(matches: list[_Element]) -> list[_Element]:
+    """
+    Keep only matches that contain no other match (``click_labelled`` rule).
+
+    Mirrors the JS side: a wrapper whose textContent is identical to the
+    label (e.g. ``<div class="mt-4"><button>确认丢弃</button></div>``) precedes
+    its own button in document order and would otherwise absorb the click.
+
+    The same rule is what makes the *contains* mode usable at all. Measured
+    2026-09-11 on the live lobby: ``<a href="/ccbs/c496">👥 创建房间</a>``
+    (emoji prefix, hence contains mode) has eight matches - ``HTML``, ``BODY``,
+    ``#root``, three layout ``DIV``s and finally the ``A``. ``matches[0]`` is
+    therefore ``<html>``, whose ``click()`` is a no-op: no navigation, and
+    ``SessionManager.create_room`` timed out with a bogus "the create may
+    have been refused" hint (web_events/bot0.jsonl).
+    """
+    return [
+        element
+        for element in matches
+        if not any(
+            other is not element and _is_descendant(other, element)
+            for other in matches
+        )
+    ]
+
+
 def query_selector_all(root: _Element, selector: str) -> list[_Element]:
     """
     Evaluate the mock's selector subset, returning document-order matches.
@@ -394,11 +446,13 @@ class MockBrowserDriver:
                 )
             scope = containers[container_index]
 
-        matches = [
-            element
-            for element in scope.iter_tree()
-            if _label_matches(element, label, exact)
-        ]
+        matches = _innermost_matches(
+            [
+                element
+                for element in scope.iter_tree()
+                if _label_matches(element, label, exact)
+            ]
+        )
         if index not in range(len(matches)):
             raise ValueError(
                 f"label {label!r} matched {len(matches)} element(s); "
@@ -633,14 +687,14 @@ def read_raw_snapshot(root: _Element) -> dict:
             if _PILL_TEXT_RE.match(el.text_content().strip())
         ]
 
-    noble_area = query_selector_all(root, ".ccbs-noble-options")
+    # Multi-noble choice UI (measured 2026-09-11 from the ccbs bundle): when
+    # 2+ nobles are simultaneously satisfied the page wraps each *candidate*
+    # bank noble in a clickable button and tags the noble tile itself with
+    # ccbs-candidate. There is no .ccbs-noble-options container.
+    noble_candidates = query_selector_all(root, ".ccbs-noble.ccbs-candidate")
     noble_options = (
-        [
-            _read_counts(choice, ".ccbs-rect")
-            for choice in query_selector_all(noble_area[0], ".ccbs-noble-choice")
-        ]
-        if noble_area
-        else None
+        [_read_counts(choice, ".ccbs-rect") for choice in noble_candidates]
+        or None
     )
 
     return {

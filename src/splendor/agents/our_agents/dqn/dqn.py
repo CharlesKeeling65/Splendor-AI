@@ -146,7 +146,7 @@ class DQNArguments(TypedDict):
 
 
 # pylint: disable=too-many-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-positional-arguments
-def train(  # noqa: C901,PLR0912,PLR0913,PLR0915,PLR0917
+def train(  # noqa: C901, PLR0912, PLR0913, PLR0915
     working_dir: Path = WORKING_DIR,
     learning_rate: float = LEARNING_RATE,
     seed: int = SEED,

@@ -29,7 +29,7 @@ spot.
 """
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, TypedDict
 
 from splendor.splendor.constants import MAX_TIER_CARDS, NUMBER_OF_TIERS
@@ -51,9 +51,25 @@ COLOR_NAME_TO_INDEX: dict[str, int] = {
     name: index for index, name in enumerate(COLOR_INDEX_TO_NAME)
 }
 
-# Turn status texts (measured, BROWSER_RL_MAPPING §3.1/§5.2).
+# Turn status texts (measured, BROWSER_RL_MAPPING §3.1/§5.2 + ccbs bundle
+# read 2026-09-11). The status line is always the page's turn owner followed
+# by the phase:
+#   等待(你|玩家N)操作                         - ordinary decision point
+#   等待(你|玩家N)丢弃多余宝石（每人最多持有10个） - >10-gem discard sub-flow
+#   等待(你|玩家N)选择要获得的贵族卡           - multi-noble choice sub-flow
+# and may carry a 【最后一回合】 suffix.
 MY_TURN_TEXT = "等待你操作"
-_WAITING_RE = re.compile(r"等待玩家(\d+)操作")
+MY_TURN_PREFIX = "等待你"
+WAITING_PLAYER_PREFIX = "等待玩家"
+PHASE_OPERATE_TEXT = "操作"
+PHASE_DISCARD_TEXT = "丢弃多余宝石（每人最多持有10个）"
+PHASE_NOBLE_TEXT = "选择要获得的贵族卡"
+_WAITING_RE = re.compile(r"等待玩家(\d+)")
+_TURN_STATUS_RE = re.compile(
+    "等待(?:你|玩家[0-9]+)(?:"
+    + "|".join((PHASE_OPERATE_TEXT, PHASE_DISCARD_TEXT, PHASE_NOBLE_TEXT))
+    + ")"
+)
 
 # Terminal-state text markers (E3 experiment still pending - BROWSER_RL_MAPPING
 # §5.3 lists candidate signals but the settled DOM feature is unmeasured).
@@ -155,7 +171,7 @@ class Snapshot(TypedDict):
     my_reserved: list[CardInfo]  # <= 3 face-up reserved cards
     status: str  # 等待你操作 / 等待玩家N操作 / terminal copy (E3 pending)
     payment_options: list[str] | None  # pending payment pill texts
-    noble_options: list[NobleInfo] | None  # multi-noble choice UI (E1 pending)
+    noble_options: list[NobleInfo] | None  # satisfied-noble choices the page offers
 
 
 # ---------------------------------------------------------------------------
@@ -267,18 +283,29 @@ EXTRACT_SNAPSHOT_JS: str = (
   // [MEASURED 2026-09-05] the turn-status element has no stable class (a
   // bare div.mt-4 inside div.text-center); the *texts* 等待你操作 /
   // 等待玩家N操作 are the stable identity - pick the unique leaf matching.
+  // [MEASURED 2026-09-11 from the ccbs bundle] the status line is
+  // 等待(你|玩家N) + one of 操作 / 丢弃多余宝石（每人最多持有10个） /
+  // 选择要获得的贵族卡, optionally suffixed with 【最后一回合】.
   const statusEl = Array.from(document.querySelectorAll("*")).find(
     (el) =>
       el.children.length === 0 &&
-      /^等待(你|玩家[0-9]+)操作$/.test((el.textContent || "").trim())
+      /^等待(你|玩家[0-9]+)(操作|丢弃多余宝石（每人最多持有10个）|选择要获得的贵族卡)/.test(
+        (el.textContent || "").trim()
+      )
   );
   // [MEASURED 2026-09-05] pending payment pills render inside the gray
   // confirm bar next to a 请选择支付方式 heading; pill buttons are plain
   // <button> elements whose text is a digit+colour-character sequence.
   const paymentArea = document.querySelector("div.mt-2.p-2.bg-gray-400");
   const pillRe = /^(?:[0-9]+[白蓝绿红黑金])+$/;
-  // [ASSUMED][E1 pending] multi-noble choice UI.
-  const nobleArea = document.querySelector(".ccbs-noble-options");
+  // [MEASURED 2026-09-11 from the ccbs bundle] the multi-noble choice UI has
+  // no container class: while 2+ nobles are simultaneously satisfied the page
+  // re-renders each *candidate* bank noble with the ccbs-candidate marker
+  // (and wraps it in a clickable button). A lone candidate is granted
+  // automatically and never carries the marker.
+  const nobleOptionRects = Array.from(
+    document.querySelectorAll(".ccbs-noble.ccbs-candidate")
+  ).map((choice) => readCounts(choice, ".ccbs-rect"));
   return {
     rows: rows,
     nobles: nobles,
@@ -294,11 +321,7 @@ EXTRACT_SNAPSHOT_JS: str = (
             .map((el) => (el.textContent || "").trim())
             .filter((text) => pillRe.test(text))
         : null,
-    noble_option_rects: nobleArea
-      ? Array.from(nobleArea.querySelectorAll(".ccbs-noble-choice")).map(
-          (choice) => readCounts(choice, ".ccbs-rect")
-        )
-      : null,
+    noble_option_rects: nobleOptionRects,
   };
 })();
 """
@@ -450,6 +473,7 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         my_reserved.append(info)
 
     status = raw["status_text"] or _status_from_body(raw["body_text"])
+    status += _discard_progress_suffix(raw["body_text"])
 
     payment_options = raw["payment_pill_texts"] or None
     raw_noble_rects = raw["noble_option_rects"]
@@ -567,8 +591,16 @@ def validate_snapshot(snapshot: Mapping[str, Any]) -> None:
 # Status classification helpers (page-text semantics, consumed by the env)
 # ---------------------------------------------------------------------------
 def is_my_turn(status: str) -> bool:
-    """Whether the status text says it is my turn to act."""
-    return MY_TURN_TEXT in status
+    """
+    Whether the status text says the page is waiting on *my* input.
+
+    Every "awaiting me" status starts with 等待你 - the ordinary decision
+    point (等待你操作) and the two sub-flows (丢弃多余宝石…, 选择要获得的
+    贵族卡). Counting the sub-flows as my turn keeps the env's timeout rescue
+    honest: it force-passes instead of misreporting "opponents did not
+    finish" when a step aborted mid-selection.
+    """
+    return status.startswith(MY_TURN_PREFIX)
 
 
 def waiting_seat(status: str) -> int | None:
@@ -662,8 +694,34 @@ def _parse_score(score_text: str, panel_text: str) -> int:
 
 
 _MY_TURN_RE = re.compile(r"等待你操作")
-_DISCARD_RE = re.compile(r"请丢弃\s*(\d+)\s*个宝石")
+# 请丢弃 N 个宝石，已选 M 个 - the M half only renders inside the discard
+# sub-flow, and it is the only live feedback that the unit-chip clicks landed
+# (the confirm button stays disabled until M == N).
+_DISCARD_RE = re.compile(r"请丢弃\s*(\d+)\s*个宝石(?:，已选\s*(\d+)\s*个)?")
 _PAYMENT_HEADING = "请选择支付方式"
+
+# ``status`` carries the discard progress as a "；已选M/N" suffix (see
+# :func:`_discard_progress_suffix`). The executor reads it back to verify its
+# chip clicks landed - a disabled 确认丢弃 is a silent no-op, so the only way
+# to tell "clicks missed" from "click refused" is this reading. Public: the
+# action executor imports it.
+DISCARD_SELECTION_RE = re.compile(r"已选(\d+)/(\d+)")
+
+
+def _discard_progress_suffix(body_text: str) -> str:
+    """
+    ``已选 M/N`` suffix for the discard sub-flow, or "" when it is not up.
+
+    The unit-chip selection count lives in the prompt text ("请丢弃 1 个宝石，
+    已选 0 个"), not in the status leaf - folding it into ``status`` gives the
+    executor something to verify against after clicking chips (the 确认丢弃
+    button is disabled until the counts match, and a disabled click is a
+    silent no-op).
+    """
+    match = _DISCARD_RE.search(body_text)
+    if match is None or match.group(2) is None:
+        return ""
+    return f"；已选{match.group(2)}/{match.group(1)}"
 
 # Fallback status compactness budget: transitional-page dumps (the pre-fix
 # behaviour returned the *whole* body text - dozens of lines, mostly bare
@@ -671,32 +729,50 @@ _PAYMENT_HEADING = "请选择支付方式"
 _FALLBACK_STATUS_MAX_CHARS = 120
 
 
+def _status_candidates(body_text: str) -> Iterator[str]:
+    """
+    Ordered short-label candidates for :func:`_status_from_body`.
+
+    Order is semantic: the full turn-status leaf outranks the bare my-turn
+    signal, which outranks the waiting seat, which outranks each transitional
+    phrase. The first yielded label wins.
+    """
+    turn = _TURN_STATUS_RE.search(body_text)
+    if turn:
+        yield turn.group(0)
+    if _MY_TURN_RE.search(body_text):
+        yield MY_TURN_TEXT
+    waiting = _WAITING_RE.search(body_text)
+    if waiting:
+        yield waiting.group(0)
+    discard = _DISCARD_RE.search(body_text)
+    if discard:
+        yield f"等待丢弃{discard.group(1)}个宝石"
+    if _PAYMENT_HEADING in body_text:
+        yield "等待选择支付方式"
+    if PHASE_NOBLE_TEXT in body_text:
+        yield "等待选择贵族卡"
+    yield from (
+        marker for marker in DEFAULT_GAME_OVER_MARKERS if marker in body_text
+    )
+
+
 def _status_from_body(body_text: str) -> str:
     """
     Compact status fallback for pages whose status leaf is absent.
 
-    The JS-side scan only matches 等待(你|玩家N)操作 leaves; transitional
-    sub-flows replace that leaf entirely (measured E2: the discard step
-    renders 请丢弃 N 个宝石; payment renders 请选择支付方式). The pre-fix
+    The JS-side scan matches the full turn-status grammar (see
+    ``_TURN_STATUS_RE``), but transitional screens can render without it - the
+    raw discard prompt, the payment pills, the noble hint. The pre-fix
     behaviour returned the raw body text - dozens of newline-separated
     numbers (gem counts, card scores) - which garbled every log line and
     TimeoutError message carrying a status. Known transitional phrases now
     map to short labels; anything unknown is whitespace-collapsed and
     truncated so it can never flood a log again.
     """
-    if _MY_TURN_RE.search(body_text):
-        return MY_TURN_TEXT
-    match = _WAITING_RE.search(body_text)
-    if match:
-        return match.group(0)
-    discard = _DISCARD_RE.search(body_text)
-    if discard:
-        return f"等待丢弃{discard.group(1)}个宝石"
-    if _PAYMENT_HEADING in body_text:
-        return "等待选择支付方式"
-    for marker in DEFAULT_GAME_OVER_MARKERS:
-        if marker in body_text:
-            return marker
+    known = next(_status_candidates(body_text), None)
+    if known is not None:
+        return known
     collapsed = " ".join(body_text.split())
     if len(collapsed) > _FALLBACK_STATUS_MAX_CHARS:
         return collapsed[: _FALLBACK_STATUS_MAX_CHARS - 3] + "..."

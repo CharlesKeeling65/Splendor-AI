@@ -48,7 +48,7 @@ play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI�
 
 1. **非法动作直接崩溃**：`SplendorEnv.step()` 先查 `mapping[action]`，非法索引 KeyError 无兜底（`splendor_env.py:146-153`）。任何采样/argmax 前必须过合法掩码；ε-greedy 随机动作用 `np.random.choice(np.flatnonzero(mask))`。
 2. **掩码获取**：训练路径 `env.unwrapped.get_legal_actions_mask()` → shape `(3510,)` 的 0/1 数组，每次 reset/step 后必须重新获取；对局路径 `create_legal_actions_mask(actions, game_state, agent_id)`。
-3. **观测 265 维**（`Box(float32)`）= 70 维指标 + 15 张牌 × 13 维（12 桌面 + **自己的** 3 张预留）。**未归一化**（env 不调用 `normalize_metrics`）；**不含公共宝石供给**（`extract_metrics` 从不读 `board.gems`）；对手只暴露分数。
+3. **观测 265 维**（`Box(float32)`）= 70 维指标 + 15 张牌 × 13 维（12 桌面 + **自己的** 3 张预留）。**未归一化**（env 不调用 `normalize_metrics`）；**不含公共宝石供给**（`extract_metrics` 从不读 `board.gems`）；对手只暴露分数。指标块每侧各留 `MAX_RIVALS`(=3) 个对手分数槽，因此**观测结构支持 2–4 人局**（远程胜率估算器据此接受 2..4 席；>4 席或 `public-v2` 特征才报错。注意本地训练均为 2 人局，所以 3–4 人局胜率是分布外代理值）。
 4. **动作空间 `Discrete(3510)`**：固定枚举 `ALL_ACTIONS`（`gym/envs/actions.py:222-237`）；`Action`/`CardPosition` 是含 dict 字段的 dataclass，**不可哈希**，`Card` 也不可哈希。
 5. **奖励只有分数增量**（`Δscore`，`splendor_env.py:142-161`），无终局胜负信号——DQN 类 TD 算法必须加终局奖励包装（plan/phase-1 §3.4）。
 6. **`env.reset(seed=)` 不固定发牌**：发牌走全局 `random`、座次走全局 numpy RNG。可复现必须三件套：`random.seed(s)` + `np.random.seed(s)` + `torch.manual_seed(s)`。
@@ -57,6 +57,10 @@ play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI�
 9. **性能**：动作索引查找已缓存化（P0-T0.1：`ACTION_INDEX` 查表，×75 提速）。热路径**禁止**再写 `ALL_ACTIONS.index()`——一律走 `create_legal_actions_mask` / `create_action_mapping`（内部 O(1)）；引擎动作若不在 `ALL_ACTIONS` 中会抛带细节的 ValueError（旧版为静默行为）。`getLegalActions` 内仍有 deepcopy。
 10. `build_action()`（`gym/envs/utils.py:43`）不处理黄金通配，**不可**用于构造买卡动作；一律走 `create_action_mapping`。
 11. **浏览器层实测事实**（T0.4，全部经真实页面验证，详见 `docs/web_experiments.md`）：覆盖按钮无任何 ccbs 类（纯 Tailwind+文本），必须走 `click_labelled`/`click_card_button`；供给筹码仅在取宝石模式是 `<button>`，全局查 `.ccbs-circle` 会先命中卡面费用；同步连点会丢点击（执行器逐颗慢速点击）；网页允许少拿宝石与丢弃刚拿色（引擎更严，方向安全）；终局=棋盘 DOM 消失回房间页。
+12. **`click_labelled` 必须取"最内层匹配"**：页面存在 `<div class="mt-4"><button>确认丢弃</button></div>` 这类**文本与子按钮相同、且在文档序中在前**的包裹层，"取第一个匹配"会点到不可交互的 div。协议两个实现（mock/ego）均已过滤"含其它匹配"的元素。`加入`/`预定` 这类重复纯文本按钮的 `index` 语义不变。
+13. **丢弃子流程的单位筹码必须按容器 scoping**：`div.mt-2.p-2.bg-gray-400`（取宝石确认条）的"持有"筹码在成交后以 `-mt-12 opacity-0` 隐藏但**仍在 DOM 中**，且早于丢弃 UI——未 scoping 的 `button.ccbs-circle.ccbs-color-{c}` 会点到它，导致"已选"恒为 0、`确认丢弃` 保持 disabled（现场表现="确认丢弃按钮点不动"）。正确选择器 = 丢弃条 `div.space-x-2.p-2.bg-gray-400` 内的同名筹码，**且同色第 i 颗要点第 i 个**（同筹码点两次=取消）。
+14. **贵族归属是"动作之后"的性质**：动作后满足数 =1 → 网页自动颁发、无选择 UI；≥2 → 出现选择 UI，候选带 `.ccbs-noble.ccbs-candidate` 并以 `<button class="cursor-pointer">` 包裹（**不存在** `.ccbs-noble-options`）。executor 必须先给动作后卡数补上买到的卡再判归属，否则**每一笔"买卡才凑成贵族"的购买都会自我拒掉**（报 `noble ... is not eligible to visit agent N`）。候选按 cost 向量定位（`_cost_key`），不按序号。
+15. **选择器事实源 = ccbs bundle**：网页是静态 SPA，`fe-1255520126.file.myqcloud.com/game/static/js/*.js` 的 51 个 chunk 就是源码，可下载 + 解码 `\uXXXX` 后 grep。**"选择器不确定"先查 bundle 再上网页；但 bundle 会随线上发版过期**——出现"选择器失效"类报错时第一动作是重下 chunk。回合状态文本是三分支语法：`等待(你|玩家N)(操作|丢弃多余宝石（每人最多持有10个）|选择要获得的贵族卡)`，可带 `【最后一回合】` 后缀；`is_my_turn` 用 `startswith("等待你")` 判定，否则丢弃/贵族子流程会被误判为"不是我的回合"。
 
 ## 代码修改纪律
 
@@ -72,6 +76,12 @@ play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI�
 
 测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）。
 CI（GitHub Actions）：ruff + mypy（新代码路径）+ pytest，Python 3.12/3.13 矩阵。
+lint 工具链只从 `.[dev]`（= `requirements/development.txt`）来，CI **不得**再 `uv pip install ruff` 覆盖 pin
+（无 pin 的 ruff 曾在无代码变更时因新增默认规则把整个仓库的 lint 门刷红）。
+`make lint` 与 CI 跑**同一条** `ruff check .`（不再用 `--preview`——preview 规则集与 CI 不一致时，
+同一行 `# noqa: <preview 规则>` 会同时被判"必需"和"多余"，让 `ruff --fix` 与 `make lint` 互相打架）。
+CJK 全角标点（`，（）；`）是本仓库的**内容而非笔误**（状态文案必须逐字节匹配网页），故 `RUF001/002/003` 在
+`pyproject.toml` 全局 ignore；测试广泛导入私有名（`PLC2701`）同理全局 ignore。
 **改动 `utils.py` 掩码逻辑、`features.py`、或浏览器抽取层后必须跑 `make parity`。**
 
 ## 文档地图

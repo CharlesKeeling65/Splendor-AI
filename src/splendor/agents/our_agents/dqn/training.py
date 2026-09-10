@@ -130,7 +130,7 @@ def _update_target_network(
             )
 
 
-def dqn_update(  # noqa: PLR0913, PLR0917 - mirrors the spec's function signature
+def dqn_update(  # noqa: PLR0913 - mirrors the spec's function signature
     q_net: QNetwork,
     target_net: QNetwork,
     buffer: ReplayBuffer,
