@@ -13,9 +13,12 @@ only the two model touchpoints for remote calls:
 Multi-bot: ``--bots N`` forks N worker processes - each owns one browser
 task space and one seat (the session layer's one-process-per-seat contract),
 and all share the same remote inference server through separate
-connections. Without ``--room-url`` bot 0 creates the room and publishes
-its URL; the rest join and the owner starts the game (self-play), or a
-pinned ``--room-url`` puts bots alongside humans (etiquette still applies).
+connections. Models can differ per worker: ``--model`` takes one id for
+every bot or a comma-separated list mapped to bots in order (checkpoint
+matches between bot0 and bot1). Without ``--room-url`` bot 0 creates the
+room and publishes its URL; the rest join and the owner starts the game
+(self-play), or a pinned ``--room-url`` puts bots alongside humans
+(etiquette still applies).
 
 Event stream: every bot appends JSONL events (actions with per-seat win
 rates before/after, gem-discard detections, parity anomalies, game ends) to
@@ -30,6 +33,7 @@ import argparse
 import json
 import multiprocessing
 import random
+import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -108,12 +112,21 @@ def _actor_seat_of(snapshot: Mapping[str, Any], my_seat: int) -> int:
 
 
 # ----- per-bot worker ---------------------------------------------------------------
+def _model_for(bot_id: int, options: dict[str, Any]) -> str:
+    """Resolve this bot's model: one shared id, or per-slot comma-separated."""
+    ids = [part.strip() for part in options["model"].split(",") if part.strip()]
+    return ids[0] if len(ids) == 1 else ids[bot_id]
+
+
 def run_bot(bot_id: int, options: dict[str, Any]) -> None:
     """
     One seat, one browser task space, one remote connection. Runs in a child
     process (multiprocessing spawn): the ego-browser adapter shells out per
     call and the isolation keeps one bot's crash from the others.
     """
+    # Each worker pins its own model (per-bot ids allow checkpoint matches);
+    # the child's options dict is a private pickle copy, safe to specialize.
+    options = {**options, "model": _model_for(bot_id, options)}
     events = EventWriter(Path(options["events_dir"]), bot_id)
     client = InferenceClient(
         options["server_host"], options["server_port"], timeout=options["timeout"]
@@ -154,8 +167,51 @@ def run_bot(bot_id: int, options: dict[str, Any]) -> None:
 def _driver_for(bot_id: int, options: dict[str, Any]) -> BrowserDriver:
     room_url = _room_for(bot_id, options)
     return EgoBrowserDriver(
-        f"{options['task_space']}-bot{bot_id}", room_url=room_url
+        f"{options['task_space']}-bot{bot_id}",
+        room_url=room_url,
+        profile_id=options["profile_ids"][bot_id],
     )
+
+
+def _list_ego_profiles() -> list[dict[str, Any]]:
+    """One ego-browser roundtrip listing browser profiles for isolation."""
+    script = "(async () => console.log(JSON.stringify(await profiles())))()"
+    completed = subprocess.run(
+        ["ego-browser", "nodejs", "-e", script],
+        capture_output=True, text=True, timeout=60.0, check=False,
+    )
+    try:
+        profiles = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as error:
+        raise SystemExit(
+            "could not list ego-browser profiles "
+            f"(exit {completed.returncode}): {completed.stderr[-300:]}"
+        ) from error
+    return profiles
+
+
+def _resolve_profile_ids(options: dict[str, Any]) -> list[str]:
+    """
+    One isolated browser profile per bot: cookies live at profile level, so
+    this is what lets two bots hold two accounts in the same room.
+    """
+    explicit = options.get("explicit_profile_ids") or []
+    if explicit:
+        if len(explicit) != options["bots"]:
+            raise SystemExit(
+                f"--profile-ids takes exactly {options['bots']} id(s), "
+                f"got {len(explicit)}"
+            )
+        return explicit
+    profiles = _list_ego_profiles()
+    if len(profiles) < options["bots"]:
+        raise SystemExit(
+            f"{options['bots']} bots need {options['bots']} browser profiles "
+            f"for separate logins, found {len(profiles)}: "
+            f"{[p['id'] for p in profiles]}; import more with "
+            "`ego-browser import --browser chrome --profile <dir>`"
+        )
+    return [str(profile["id"]) for profile in profiles[: options["bots"]]]
 
 
 def _room_for(bot_id: int, options: dict[str, Any]) -> str | None:
@@ -362,6 +418,7 @@ def _result_of(last_scores: dict[int, float], my_seat: int) -> str:
 def main() -> None:
     """Entry point of the ``play-web-remote`` console script."""
     options = _parse_args()
+    options["profile_ids"] = _resolve_profile_ids(options)
     if options["bots"] > 1 and options["room_url"]:
         # Pinned-room self-play with several identities would fight over the
         # same seats; multi-bot self-play needs a bot-owned room.
@@ -390,7 +447,10 @@ def _parse_args() -> dict[str, Any]:
     )
     parser.add_argument("--server", required=True,
                         help="Inference server host:port (e.g. 10.0.0.8:8765).")
-    parser.add_argument("--model", required=True, help="model_id registered server-side.")
+    parser.add_argument("--model", required=True,
+                        help="model_id served remotely; one id for every bot, "
+                             "or comma-separated ids mapped to bots in order "
+                             "(e.g. --model bot1,bot2).")
     parser.add_argument("--games", type=int, default=10)
     parser.add_argument("--bots", type=int, default=1,
                         help="Number of concurrent bot workers (seats).")
@@ -403,15 +463,32 @@ def _parse_args() -> dict[str, Any]:
     parser.add_argument("--n-rollouts", type=int, default=16,
                         help="Monte-Carlo rollouts per win-rate estimate.")
     parser.add_argument("--task-space", default="splendor-play-web")
+    parser.add_argument(
+        "--profile-ids", default=None,
+        help="Comma-separated ego-browser profile ids, one per bot (default: "
+             "auto-assign the first N profiles). Isolates cookies per bot.",
+    )
     parser.add_argument("--events-dir", default="web_events",
                         help="Directory for bot<i>.jsonl events (dashboard input).")
     options = vars(parser.parse_args())
+
+    model_ids = [part.strip() for part in options["model"].split(",") if part.strip()]
+    if len(model_ids) not in {1, options["bots"]}:
+        raise SystemExit(
+            "--model takes one id for all bots, or one comma-separated id per "
+            f"bot (got {len(model_ids)} id(s) for {options['bots']} bot(s))"
+        )
 
     host_text, _, port_text = options["server"].rpartition(":")
     if not host_text or not port_text.isdigit():
         raise SystemExit("--server expects host:port")
     options["server_host"] = host_text
     options["server_port"] = int(port_text)
+    options["explicit_profile_ids"] = (
+        [part.strip() for part in options["profile_ids"].split(",") if part.strip()]
+        if options["profile_ids"]
+        else []
+    )
     return options
 
 

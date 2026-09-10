@@ -33,11 +33,26 @@ _DEFAULT_CALL_TIMEOUT = 90.0
 
 
 class EgoBrowserDriver:
-    """BrowserDriver over one ego-browser task space."""
+    """BrowserDriver over one ego-browser task space.
 
-    def __init__(self, task_space: str, room_url: str | None = None) -> None:
+    ``profile_id`` pins the task space to an ego-browser browser profile
+    (id from ``profiles()``). Task spaces inside one profile share cookies
+    and localStorage; distinct profiles give distinct logins, which is how
+    multi-bot deployments hold two accounts at once. The profile only takes
+    effect at space creation, so the space name embeds it - a profile
+    change then addresses a fresh space instead of silently reusing one
+    created under the old profile.
+    """
+
+    def __init__(
+        self,
+        task_space: str,
+        room_url: str | None = None,
+        profile_id: str | None = None,
+    ) -> None:
         self._task_space = task_space
         self._room_url = room_url
+        self._profile_id = profile_id
 
     # ----- plumbing -----------------------------------------------------------
     def _run(
@@ -97,8 +112,19 @@ class EgoBrowserDriver:
         )
 
     def _select_task_space(self) -> str:
-        space = json.dumps(self._task_space)
-        return f"await useOrCreateTaskSpace({space});\n"
+        space = json.dumps(self._space_name())
+        if self._profile_id is None:
+            return f"await useOrCreateTaskSpace({space});\n"
+        profile = json.dumps(self._profile_id)
+        # taskSpace() reuses an existing space by name (profileId applies to
+        # creation only) and js() follows the most recent taskSpace call -
+        # measured 2026-09-10 with distinct newtab fingerprints per profile.
+        return f"await taskSpace({space}, {{ profileId: {profile} }});\n"
+
+    def _space_name(self) -> str:
+        if self._profile_id is None:
+            return self._task_space
+        return f"{self._task_space}@{self._profile_id}"
 
     def _run_js(self, page_js: str, prologue: str = "") -> Any:  # noqa: ANN401
         """

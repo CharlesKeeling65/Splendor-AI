@@ -83,3 +83,20 @@ play-dashboard --events-dir web_events --port 8899
 | 胜率点缺失（stale） | 估计失败（超时/页面无面板），看 bot jsonl 里的 `log` 事件；可调小 `--n-rollouts` |
 | 推理很慢 | 降低 `--n-rollouts`；Z8 上确认走的是预期 device（`ping` 返回里有 `device` 字段） |
 | 日志出现乱码数字墙 | phase-6 已修复（`_status_from_body`）；若复现请附 status 原文并回报 |
+
+## 五、多账号 Cookie 隔离（per-bot profile）
+
+两个 bot 各登录一个账号，靠的是 **ego-browser 浏览器 profile 级隔离**：
+cookie/localStorage 属于 profile，同一 profile 下的所有 task space 共享登录态，
+不同 profile 互不相通（2026-09-10 实测：两空间 localStorage 35 vs 0）。
+
+- **默认行为**：`play-web-remote` 启动时查询 `profiles()`，按顺序把
+  bot0→第 1 个 profile、bot1→第 2 个 profile……bot 数超过 profile 数会直接报错。
+- **显式指定**：`--profile-ids "Profile 1,Default"`（逗号分隔，数量必须等于 bot 数）。
+- **空间命名**：启用 profile 后 task space 名带后缀（如 `splendor-play-web-bot0@Profile 1`），
+  旧的无 profile 空间不会被复用，避免继承已污染的登录态。
+- **首次登录**：每个 profile 需要手动登录一次 ccbs（在 ego-browser 界面里
+  打开对应空间登录即可，cookie 持久保存，之后 bot 自动带着登录态跑）。
+- **加 profile**：机器上只有 2 个 profile 时最多跑 2 账号；更多账号先导入：
+  `ego-browser import --browser chrome --profile <目录名>`，再用
+  `--profile-ids` 指定。
