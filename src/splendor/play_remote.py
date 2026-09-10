@@ -16,8 +16,12 @@ and all share the same remote inference server through separate
 connections. Models can differ per worker: ``--model`` takes one id for
 every bot or a comma-separated list mapped to bots in order (checkpoint
 matches between bot0 and bot1). Without ``--room-url`` bot 0 creates the
-room and publishes its URL; the rest join and the owner starts the game
-(self-play), or a pinned ``--room-url`` puts bots alongside humans
+room once, publishes its URL (``events_dir/room_url.txt``) and owns the
+start; the rest join and report their seat through
+``events_dir/seat<i>.ready``, then the owner starts and verifies the table
+went live. One room is reused for every game of the run, matching the
+measured end-of-game reality (the page returns to the room with the seats
+still taken), or a pinned ``--room-url`` puts bots alongside humans
 (etiquette still applies).
 
 Event stream: every bot appends JSONL events (actions with per-seat win
@@ -41,7 +45,11 @@ from pathlib import Path
 from typing import Any
 
 from splendor.browser.browser_env import BrowserSplendorEnv
-from splendor.browser.dom_extractor import extract_snapshot, waiting_seat
+from splendor.browser.dom_extractor import (
+    extract_snapshot,
+    is_my_turn,
+    waiting_seat,
+)
 from splendor.browser.driver import BrowserDriver
 from splendor.browser.ego_driver import EgoBrowserDriver
 from splendor.browser.monitor import _describe_action
@@ -51,8 +59,16 @@ from splendor.splendor.gym.envs.actions import ALL_ACTIONS
 
 REST_SECONDS = (5.0, 15.0)
 ROOM_FILE = "room_url.txt"
+READY_FILE_FORMAT = "seat{bot}.ready"
 JOIN_WAIT_SECONDS = 120.0
-START_DELAY_SECONDS = 20.0
+# The owner retries 开始游戏 at human pace until the table is live: the seat
+# count it depends on is not readable from the DOM, so a single click (the
+# old fixed-sleep design) silently produced rooms that never started.
+START_RETRY_SECONDS = 5.0
+START_WAIT_SECONDS = 60.0
+# A seat click is only believed after the seat map shows this browser in a
+# seat (SessionManager.my_seat); the server needs a beat to render the badge.
+SEAT_VERIFY_SECONDS = 8.0
 
 
 # ----- event stream -------------------------------------------------------------
@@ -234,34 +250,230 @@ def _room_for(bot_id: int, options: dict[str, Any]) -> str | None:
     room_file = Path(options["events_dir"]) / ROOM_FILE
     deadline = time.monotonic() + JOIN_WAIT_SECONDS
     while time.monotonic() < deadline:
-        if room_file.exists():
+        if _fresh_marker(room_file, options):  # never a previous run's room
             return room_file.read_text(encoding="utf-8").strip()
         time.sleep(1.0)
     raise TimeoutError("room URL never published by bot 0")
 
 
-def _coordinate_room(
-    bot_id: int, session: SessionManager, options: dict[str, Any], events: EventWriter
+def _fresh_marker(path: Path, options: dict[str, Any]) -> bool:
+    """
+    Whether ``path`` was written by *this* run.
+
+    The coordination files live at fixed names so the dashboard and the human
+    reader keep their familiar layout, which means a previous run's leftovers
+    are still on disk when a new one starts. Measured 2026-09-11: a stale
+    ``room_url.txt`` sent the peer into the *previous* room (it even reached
+    ``game_start`` there while the owner was still creating a new room), and a
+    stale seat marker satisfied the seat chain before the owner had done
+    anything. Freshness is therefore decided by mtime against the run's start
+    timestamp - ignoring an old file beats deleting it (no destructive step,
+    and two runs in one directory stay harmless to each other).
+    """
+    try:
+        return path.stat().st_mtime >= float(options["run_started"])
+    except FileNotFoundError:
+        return False
+
+
+def _wait_for_predecessor_seat(bot_id: int, options: dict[str, Any]) -> None:
+    """
+    Chain the seat taking: bot N loads the room only after bot N-1 sits.
+
+    Measured 2026-09-11 (the reason self-play could never start a game): both
+    bots clicked 加入 on pages rendered *before* the other's join, so both
+    clicks addressed seat 1 - the later one displaced the first bot into the
+    spectator row, leaving a room with one player (``开始游戏`` refused) and
+    one 观战中. Loading the room after the predecessor is seated makes every
+    click land on the next genuinely free seat.
+    """
+    if options["room_url"] or bot_id == 0:
+        return  # pinned human rooms keep their own seat order
+    path = _ready_path(options, bot_id - 1)
+    deadline = time.monotonic() + JOIN_WAIT_SECONDS
+    while not _fresh_marker(path, options):
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"bot{bot_id} waited {JOIN_WAIT_SECONDS:.0f}s for bot{bot_id - 1} "
+                f"to sit down ({path.name} missing)"
+            )
+        time.sleep(1.0)
+
+
+def _ready_path(options: dict[str, Any], bot_id: int) -> Path:
+    return Path(options["events_dir"]) / READY_FILE_FORMAT.format(bot=bot_id)
+
+
+def _announce_seated(options: dict[str, Any], bot_id: int, events: EventWriter) -> None:
+    """Publish this bot's seat so the owner can wait for a full room."""
+    _ready_path(options, bot_id).write_text(str(bot_id), encoding="utf-8")
+    events.emit({"type": "log", "level": "info",
+                 "message": f"bot{bot_id} took a seat; told the room owner"})
+
+
+def _wait_for_seats(options: dict[str, Any], events: EventWriter) -> None:
+    """
+    Wait until every other bot has taken its seat.
+
+    The seat handshake travels through the event directory rather than the
+    DOM: the room *does* render a seat map (``div#userseat<i>``, see
+    ``SessionManager.my_seat``), but a peer's occupancy there is only visible
+    after the server pushes it, so the owner would be polling a picture it
+    cannot trust. A file written by the peer itself, after its own seat click
+    was verified, is the unambiguous signal.
+    """
+    deadline = time.monotonic() + JOIN_WAIT_SECONDS
+    for bot_id in range(1, options["bots"]):
+        path = _ready_path(options, bot_id)
+        while not _fresh_marker(path, options):
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"bot{bot_id} never reported a seat ({path.name} missing "
+                    f"after {JOIN_WAIT_SECONDS:.0f}s); refusing to start an "
+                    "empty room"
+                )
+            time.sleep(1.0)
+    events.emit({"type": "log", "level": "info",
+                 "message": f"all {options['bots']} seats are taken"})
+
+
+def _game_running(snapshot: Mapping[str, Any]) -> bool:
+    """
+    Whether the room view has become a live table.
+
+    The room page carries no turn-status sentence at all, so *any* measured
+    等待(你|玩家N)… status - my decision point or a peer's - means the game is
+    on. That is the only honest signal available before reset() starts its
+    own, stricter (my-turn-only) wait.
+    """
+    status = snapshot["status"]
+    return is_my_turn(status) or waiting_seat(status) is not None
+
+
+def _start_until_running(
+    env: BrowserSplendorEnv, events: EventWriter
 ) -> None:
-    """Bot 0 creates + publishes the room; every bot joins a free seat."""
-    if options["room_url"]:
-        pass  # SessionManager already pins the room; just take a seat below
-    elif bot_id == 0:
+    """Press 开始游戏 until the table is live, bounded and human-paced."""
+    deadline = time.monotonic() + START_WAIT_SECONDS
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            env.session.start_game()
+        except ValueError as error:
+            # Owner-only button, or the room is not full yet: the page
+            # refuses silently, so retrying is the only way to observe it.
+            events.emit({"type": "log", "level": "info",
+                         "message": f"开始游戏 not clickable yet: {error}"})
+        if _game_running(extract_snapshot(env.driver)):
+            events.emit({"type": "log", "level": "info",
+                         "message": f"table live after {attempts} 开始游戏 click(s)"})
+            return
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"the room never started after {attempts} 开始游戏 click(s) in "
+                f"{START_WAIT_SECONDS:.0f}s; check that every seat is taken"
+            )
+        time.sleep(START_RETRY_SECONDS)
+
+
+def _seated_within(session: SessionManager, budget: float) -> int:
+    """Poll :meth:`SessionManager.my_seat` until the seat badge shows up."""
+    deadline = time.monotonic() + budget
+    while True:
+        seat = session.my_seat()
+        if seat or time.monotonic() > deadline:
+            return seat
+        time.sleep(1.0)
+
+
+def _take_seat(
+    session: SessionManager,
+    bot_id: int,
+    game_index: int,
+    options: dict[str, Any],
+    events: EventWriter,
+) -> None:
+    """
+    Click 加入 and *verify* the seat was actually taken.
+
+    Two live-measured failure modes are handled here (2026-09-11):
+
+    * a room entered with a rotated identity renders only 重连 - the seat
+      click then finds nothing, and ``recover()`` (navigate + dismiss 重连)
+      is the recipe that brings the 加入 buttons back;
+    * a page rendered before a peer's join still offers 加入 for an occupied
+      seat, and clicking it leaves the clicker spectating. Hence the seat map
+      read afterwards: no 我 badge means no seat, whatever the click returned.
+    """
+    try:
+        session.join_first_free_seat()
+    except ValueError as error:
+        if game_index != 0 or options["room_url"]:
+            # Steady state from game 2 on (and in pinned rooms): the seat is
+            # already held, so the room page renders no 加入 button at all.
+            events.emit({"type": "log", "level": "info",
+                         "message": f"bot{bot_id} already holds a seat"})
+            return
+        events.emit({"type": "log", "level": "warn",
+                     "message": f"room offers no 加入 seat yet ({error}); "
+                                "recovering the session"})
+        session.recover()
+        session.join_first_free_seat()
+
+    if _seated_within(session, SEAT_VERIFY_SECONDS):
+        return
+    events.emit({"type": "log", "level": "warn",
+                 "message": f"bot{bot_id} is still spectating after the 加入 click; "
+                            "reloading the room for a fresh seat map"})
+    session.recover()
+    session.join_first_free_seat()
+    if not _seated_within(session, SEAT_VERIFY_SECONDS):
+        raise TimeoutError(
+            f"bot{bot_id} never took a seat (still 观战中); the room may be "
+            "full, or another player holds the same seat"
+        )
+
+
+def _coordinate_room(
+    bot_id: int,
+    game_index: int,
+    env: BrowserSplendorEnv,
+    options: dict[str, Any],
+    events: EventWriter,
+) -> None:
+    """
+    Get this bot onto the room page, seated, and let the owner start the game.
+
+    Bot 0 owns the room (create + publish + start); every other bot reads the
+    published URL and joins. The old design slept a fixed 20s and clicked
+    开始游戏 once - both halves failed silently when a peer's browser start-up
+    ran long, which is exactly how self-play dead-locked.
+    """
+    session = env.session
+    room_url = session.room_url or options["room_url"]
+    if room_url is not None:
+        # Seats are chained (see _wait_for_predecessor_seat) so this page is
+        # loaded *after* the previous bot sat: its 加入 click then addresses
+        # the next genuinely free seat instead of a seat taken a moment ago.
+        _wait_for_predecessor_seat(bot_id, options)
+        env.driver.navigate(room_url)  # reconnection is automatic on load
+    else:
         room_url = session.create_room(seats=max(2, options["bots"]))
-        room_file = Path(options["events_dir"]) / ROOM_FILE
-        room_file.write_text(room_url, encoding="utf-8")
+        session.pin_room(room_url)
+        Path(options["events_dir"], ROOM_FILE).write_text(room_url, encoding="utf-8")
         events.emit({"type": "log", "level": "info",
                      "message": f"room created: {room_url}"})
-    else:
-        _room_for(bot_id, options)  # already resolved by _driver_for; no-op
-    session.join_first_free_seat()
+    _take_seat(session, bot_id, game_index, options, events)
+    _announce_seated(options, bot_id, events)
     if bot_id == 0 and not options["room_url"]:
-        # Let the other bots join before the owner starts the game.
-        time.sleep(START_DELAY_SECONDS)
-    try:
-        session.start_game()
-    except ValueError:
-        pass  # not the owner, or already started
+        _wait_for_seats(options, events)
+        _start_until_running(env, events)
+    else:
+        try:
+            session.start_game()
+        except ValueError:
+            pass  # not the owner (or already started) - the owner starts
 
 
 @dataclass
@@ -334,7 +546,7 @@ class _GameContext:
             })
 
 
-def _run_game(  # noqa: PLR0913, PLR0917, PLR0914 - deployment harness surface (repo noqa style)
+def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
     env: BrowserSplendorEnv,
     client: InferenceClient,
     events: EventWriter,
@@ -343,7 +555,7 @@ def _run_game(  # noqa: PLR0913, PLR0917, PLR0914 - deployment harness surface (
     options: dict[str, Any],
 ) -> None:
     """One game: the play_web loop with remote inference + event emission."""
-    _coordinate_room(bot_id, env.session, options, events)
+    _coordinate_room(bot_id, game_index, env, options, events)
 
     obs, info = env.reset()
     start_snapshot = extract_snapshot(env.driver)
@@ -430,6 +642,10 @@ def _result_of(last_scores: dict[int, float], my_seat: int) -> str:
 def main() -> None:
     """Entry point of the ``play-web-remote`` console script."""
     options = _parse_args()
+    # Freshness stamp for the coordination files: every worker ignores
+    # markers older than this (see _fresh_marker), which is what keeps a
+    # previous run's room URL and seat markers from being believed.
+    options["run_started"] = time.time()
     options["profile_ids"] = _resolve_profile_ids(options)
     if options["bots"] > 1 and options["room_url"]:
         # Pinned-room self-play with several identities would fight over the
