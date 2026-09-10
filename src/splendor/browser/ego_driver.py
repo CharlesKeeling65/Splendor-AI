@@ -116,10 +116,16 @@ class EgoBrowserDriver:
         if self._profile_id is None:
             return f"await useOrCreateTaskSpace({space});\n"
         profile = json.dumps(self._profile_id)
-        # taskSpace() reuses an existing space by name (profileId applies to
-        # creation only) and js() follows the most recent taskSpace call -
-        # measured 2026-09-10 with distinct newtab fingerprints per profile.
-        return f"await taskSpace({space}, {{ profileId: {profile} }});\n"
+        # profileId only applies at creation: reusing by name while passing
+        # it raises "already exists" (measured 2026-09-10), so find first
+        # and create only when absent. listTaskSpaces exposes ``id``.
+        return (
+            "const existing = (await listTaskSpaces())"
+            f".find((s) => s.name === {space});\n"
+            "await (existing"
+            " ? taskSpace(existing.id)"
+            f" : taskSpace({space}, {{ profileId: {profile} }}));\n"
+        )
 
     def _space_name(self) -> str:
         if self._profile_id is None:

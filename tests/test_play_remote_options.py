@@ -39,6 +39,7 @@ def test_driver_profile_space_name_and_script() -> None:
     pinned = EgoBrowserDriver("space", profile_id="Default")
     assert pinned._space_name() == "space@Default"  # noqa: SLF001
     script = pinned._select_task_space()  # noqa: SLF001
+    assert "listTaskSpaces" in script  # find-or-create: profileId only at creation
     assert "taskSpace" in script
     assert '"Default"' in script
     assert "profileId" in script
