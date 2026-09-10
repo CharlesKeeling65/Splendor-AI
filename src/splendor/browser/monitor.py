@@ -17,6 +17,26 @@ sets must agree, and every disagreement is either
 Without this attribution, differences are debugged by hand through logs; with
 it, only a *new* category needs human attention (phase-3 acceptance: zero
 unexplained differences over 10 games).
+
+How to read a report, in one place, because two fields invite misreading:
+
+* ``engine-only`` is the safety-critical count and must be 0. The policy
+  samples the *engine* mask, so a non-zero value means it could be handed an
+  action the page cannot execute today.
+* ``dom-only`` is expected to be large and is *not* a problem list. The DOM
+  affordance collector is rule-free by design (see :func:`dom_affordances`), so
+  it never knows affordability, the >=4 same-colour stack rule, the reservation
+  limit or the 7-card cap. It therefore counts *reachable-but-illegal*
+  candidates, which the policy can never select.
+* The ``E5``/``E6`` buckets are matched by **action type** (every collect /
+  every buy), not by the specific divergence they name, so their counts are
+  candidate-class sizes rather than confirmed divergence counts. Measured on
+  the ``opening.html`` fixture (empty hand, full board): of 3465 dom-only
+  actions, 89% carry a ``returned_gems`` combo and 84% carry a ``noble_index``
+  - both invisible to the collector - while only 0.43% have the genuine
+  "voluntary partial take" shape. The triage signal is therefore not these
+  counts but *whether a dom-only action's type belongs to no registered class
+  at all*.
 """
 
 from collections.abc import Callable, Iterable
@@ -46,7 +66,11 @@ def dom_affordances(snapshot: Snapshot) -> set[int]:
     (that is the engine's monopoly) and it intentionally over-approximates:
     affordability, the >=4 same-colour stack rule, the reservation limit and
     the 7-cards-per-colour cap are engine knowledge a DOM reading must not
-    duplicate.
+    duplicate. Nor does it inspect the *return* side of an action (whether
+    returning those gems is possible at all) or collapse the pre-enumerated
+    noble slots - and those two blind spots dominate the residual: measured on
+    the ``opening.html`` fixture, 89% of the dom-only set carries a
+    ``returned_gems`` combo and 84% carries a ``noble_index``.
     """
     facts = _DomActionFacts(snapshot)
     return {
@@ -159,10 +183,21 @@ class MaskParityMonitor:
         missing = sorted(engine_indices - dom_indices)
         extra = sorted(dom_indices - engine_indices)
 
+        # The safety-critical direction is `engine-only`: a non-zero count means
+        # the engine would let the policy choose an action the page cannot
+        # execute. The reverse (`dom-only`) is unreachable by construction (the
+        # policy samples the engine mask) and dom_affordances over-approximates
+        # on purpose, so it is expected rather than alarming. Stated in the
+        # header line so the one field that matters is never read out of context.
+        direction_note = (
+            " [direction safe: engine mask is a subset of DOM affordances]"
+            if not missing
+            else ""
+        )
         report: list[str] = [
             f"mask parity: engine-legal={len(engine_indices)} "
             f"dom-affordable={len(dom_indices)} shared={len(shared)} "
-            f"engine-only={len(missing)} dom-only={len(extra)}"
+            f"engine-only={len(missing)} dom-only={len(extra)}{direction_note}"
         ]
         if not missing and not extra:
             report.append("OK: both measurements agree on the legal-action set")
@@ -212,8 +247,9 @@ class MaskParityMonitor:
             if known.code in matched:
                 samples = matched[known.code]
                 report.append(
-                    f"KNOWN RULE DIFFERENCE {known.code}: {known.description} - "
-                    f"{len(samples)} dom-only action(s) "
+                    f"KNOWN-DIFFERENCE CLASS {known.code} "
+                    f"(type-matched bucket, not confirmed instances): "
+                    f"{known.description} - {len(samples)} dom-only action(s) "
                     f"(e.g. {_describe_samples(samples)})"
                 )
         if unmatched:

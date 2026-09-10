@@ -80,6 +80,24 @@ play-dashboard --events-dir web_events --port 8899
 - **累计战绩**：各座位已完成对局的 胜/平/负 与累计胜率。
 - **实时日志**：🤖/🧑 动作、🗑️ 弃宝石（红底，含颜色×数量）、⚠️ 掩码奇偶、🏁/🏆 对局起止。
 
+### 掩码奇偶那一行怎么读（⚠️ 掩码奇偶）
+
+每次我方决策点，引擎掩码与"DOM 可点集"会各测一次并对比，结果推成一行日志。**只有 `engine-only` 需要担心**：
+
+| 字段 | 含义 | 正常值 |
+|---|---|---|
+| `engine-legal` | 引擎 `getLegalActions` 认为当前合法 | 十几到几十 |
+| `dom-affordable` | DOM 机械事实"可能支持"的动作数 | 数千（**故意过近似**） |
+| `shared` | 两者交集 | = `engine-legal` |
+| `engine-only` | 引擎说合法、但 DOM 支持不了 | **必须为 0** |
+| `dom-only` | DOM 支持、引擎不合法 | 数千，正常 |
+
+- `engine-only=0` 时报告会自带 `[direction safe: ...]`：策略只从**引擎掩码**里采样，所以 dom-only 的动作**根本选不到**，只是"看得见够不着"。
+- `dom-only` 为什么这么大：`dom_affordances` **按设计不重复引擎规则**——它不检查买得起与否、不看 `returned_gems`（归还那些宝石到底可不可能）、不合并被预枚举的 5 个贵族槽。实测（`opening.html`，空手满桌）：3465 个 dom-only 里 **89% 带 `returned_gems`、84% 带 `noble_index`**，而真正的"自愿少拿"（E5）形态只占 **0.43%**。
+- `KNOWN-DIFFERENCE CLASS E5/E6` 这两段的**数字不是"确认了多少处规则差异"**：它们的匹配条件是**动作类型**（所有 collect / 所有 buy），所以 E5 桶会把归还变体、贵族槽变体、以及恰好看不出差别的普通非法动作一起收进去，E6 桶同理会把"买不起的卡"和真正的 7 张上限混在一起。**要看的是"有没有哪个 dom-only 动作的类型不属于任何已登记类别"**，那才是需要人来判断的新情况。
+- 需要报警的只有三种：`engine-only > 0`（引擎给了页面执行不了的动作）、`dom-affordable = 0`（页面重设计/抽取脚本全失配）、`engine-only` 里出现 `PASS`（顶部动作按钮消失）。
+
+
 ## 四、排障
 
 | 现象 | 处置 |
@@ -95,6 +113,7 @@ play-dashboard --events-dir web_events --port 8899
 | `noble ... is not eligible to visit agent N` | 已修（2026-09-10）：贵族归属按**动作后**卡数判定。若复现，说明 bundle 版本已变，按 §勘误 3 重下 chunk 复核 |
 | 推理很慢 | 降低 `--n-rollouts`；Z8 上确认走的是预期 device（`ping` 返回里有 `device` 字段） |
 | 日志出现乱码数字墙 | phase-6 已修复（`_status_from_body`）；若复现请附 status 原文并回报 |
+| `mask_anomalies` 计数恒 ≥2、永远不为 0 | **已知缺陷**：`_emit_parity` 用 `len(report)` 计"异常"，而 `check()` 的报告**恒有**表头行（完全一致时也会返回 2 行）。相位 3 验收的"零未解释差异"应该只数**需要人看**的行（`engine-only>0`、缺 PASS、类型未登记）。修法：在 `MaskParityMonitor.check` 里记录 `unexplained = len(missing) + len(unmatched)`，调用方改用它而不是 `len(report)` |
 
 ## 五、多账号 Cookie 隔离（per-bot profile）
 

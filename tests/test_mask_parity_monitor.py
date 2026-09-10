@@ -71,6 +71,10 @@ def test_known_rule_difference_attributed_to_registry() -> None:
     E5: the DOM affords a single-colour take the engine forbids (its forced
     minimum when the hand is light); E6: the DOM affords a buy the engine
     forbids (same-colour cap). Both land on the registered whitelist.
+
+    The buckets are type-matched, so the report says "class ... bucket, not
+    confirmed instances": a count there is a candidate-class size, not a
+    verified divergence count.
     """
     engine_legal = {PASS_INDEX, _collect_index({"white": 1, "blue": 1, "green": 1})}
     dom = engine_legal | {_collect_index({"white": 1}), _buy_index(0, 0)}
@@ -79,7 +83,20 @@ def test_known_rule_difference_attributed_to_registry() -> None:
     joined = "\n".join(report)
     assert "E5" in joined
     assert "E6" in joined
-    assert "KNOWN RULE DIFFERENCE" in joined
+    assert "KNOWN-DIFFERENCE CLASS" in joined
+    assert "not confirmed instances" in joined
+    # every engine-legal action is DOM-supported here, and the header says so
+    assert "direction safe" in joined
+
+
+def test_direction_note_absent_when_the_engine_asks_the_impossible() -> None:
+    """The header must NOT claim safety while engine-only is non-zero."""
+    engine_legal = {PASS_INDEX, _buy_index(0, 0)}
+    report = MaskParityMonitor().check(_mask(engine_legal), {PASS_INDEX})
+    joined = "\n".join(report)
+    assert "engine-only=1" in joined
+    assert "direction safe" not in joined
+    assert "DOM EXTRACTION BUG" in joined
 
 
 def test_dom_extraction_bug_attributed() -> None:
