@@ -45,12 +45,13 @@
 </header>
 <main data-page-node-id="cLuRkBBC9sIAj9eqz63g4Q">
   <section class="panel" data-page-node-id="ELnT82yjNkVkrdhnwGtAnI">
-    <h2 data-page-node-id="5yW4oCcFuTXoeT94DyWkTw">各座位实时局面胜率（每个操作前 → 后）</h2>
+    <h2 data-page-node-id="5yW4oCcFuTXoeT94DyWkTw">各座位实时局面胜率（每个操作前 → 后）<span id="game-label" style="color:var(--accent);font-weight:500;margin-left:8px;"></span></h2>
     <div id="chart-box" data-page-node-id="YMW8m7zj1HY2iycxrf77vf"><canvas id="chart" data-page-node-id="1EXEMsG4c80vh131oGpcD9"></canvas></div>
     <p class="definition" data-page-node-id="mURLyABoeKS8AlYpPAmk42">
       胜率定义：在当前可见局面重建的完整引擎状态上，用当前策略自对弈模拟 N 局至终局
       （未知牌库/对手预留按注册表均匀抽样补全），某座位以最高分终局的频率
-      （同分按卡数少者 tie-break，仍并列各计 0.5）。每个操作画「前→后」两个点：
+      （同分按卡数少者 tie-break，仍并列各计 0.5）。图表只显示最近一局，
+      x 轴每局从 0 重新计数。每个操作画「前→后」两个点：
       虚线圆点为操作前，实线方块为操作后；灰点表示该步估计失败/降级。
     </p>
   </section>
@@ -77,8 +78,15 @@ const chart = new Chart(document.getElementById("chart"), {
     responsive: true, maintainAspectRatio: false, animation: false,
     interaction: { mode: "nearest", intersect: true },
     scales: {
-      x: { title: { display: true, text: "操作序列（同一序号：操作前 → 操作后）" },
-           ticks: { precision: 0 } },
+      // x MUST stay "linear": the datasets carry numeric {x, y} points
+      // (x = action index, x + 0.5 = same action after it resolved). Chart.js
+      // defaults a line chart's x axis to the "category" scale, which only
+      // registers *string* labels - numeric x is then read as a category
+      // index and, with an empty label array, clamped to range [0, -1]. That
+      // silently collapses every point onto x = 0 (no ticks, flat left edge).
+      x: { type: "linear", min: 0,
+           title: { display: true, text: "局内操作序列（每局从 0 重新计数；同一序号：操作前 → 操作后）" },
+           ticks: { precision: 0, maxRotation: 0 } },
       y: { min: 0, max: 100, title: { display: true, text: "局面胜率 %" } }
     },
     plugins: {
@@ -159,13 +167,31 @@ function renderStats(events) {
 }
 
 function renderChart(events) {
-  const actions = events.filter((e) => e.type === "action");
+  // Per-game x reset: the event files are append-mode across runs and the
+  // `game` counter restarts at 1 every run, so "the current game" cannot be
+  // keyed by the `game` field alone. Slice the window at the LATEST
+  // game_start's timestamp instead - everything before it belongs to a
+  // finished game / a previous run and must not bleed into this chart
+  // (otherwise a new game would continue on the previous game's x tail).
+  const starts = events.filter((e) => e.type === "game_start");
+  const lastStart = starts.length ? starts[starts.length - 1] : null;
+  const windowEvents = lastStart
+    ? events.filter((e) => (e.ts || 0) >= (lastStart.ts || 0))
+    : events;
+  // Only real action records (stale:false, written by the acting bot itself
+  // with both `before` and `after`). The other bot re-logs the same action as
+  // an observation with stale:true and after:null - counting those would
+  // burn one x index per duplicate and break the before->after pairing.
+  const actions = windowEvents.filter((e) => e.type === "action" && !e.stale);
+  const label = document.getElementById("game-label");
+  label.textContent = lastStart ? `· 第 ${lastStart.game} 局` : "";
   const seatCount = Math.max(2, ...actions.map((e) =>
     Math.max((e.before || []).length, (e.after || []).length)));
   const datasets = [];
   for (let seat = 1; seat <= seatCount; seat++) {
     const color = SEAT_COLORS[(seat - 1) % SEAT_COLORS.length];
     const before = [], after = [];
+    // x is the index WITHIN the current game: every new game restarts at 0.
     actions.forEach((e, idx) => {
       const b = (e.before || [])[seat - 1];
       const a = (e.after || [])[seat - 1];
