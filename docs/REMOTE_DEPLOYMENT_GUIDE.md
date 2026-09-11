@@ -113,7 +113,7 @@ play-dashboard --events-dir web_events --port 8899
 | `noble ... is not eligible to visit agent N` | 已修（2026-09-10）：贵族归属按**动作后**卡数判定。若复现，说明 bundle 版本已变，按 §勘误 3 重下 chunk 复核 |
 | 推理很慢 | 降低 `--n-rollouts`；Z8 上确认走的是预期 device（`ping` 返回里有 `device` 字段） |
 | 日志出现乱码数字墙 | phase-6 已修复（`_status_from_body`）；若复现请附 status 原文并回报 |
-| `mask_anomalies` 计数恒 ≥2、永远不为 0 | **已知缺陷**：`_emit_parity` 用 `len(report)` 计"异常"，而 `check()` 的报告**恒有**表头行（完全一致时也会返回 2 行）。相位 3 验收的"零未解释差异"应该只数**需要人看**的行（`engine-only>0`、缺 PASS、类型未登记）。修法：在 `MaskParityMonitor.check` 里记录 `unexplained = len(missing) + len(unmatched)`，调用方改用它而不是 `len(report)` |
+| `mask_anomalies` 是什么 | 每局累加的**需要人看**的奇偶行数（`engine-only>0` / 缺 PASS / 页面重设计），由 `monitor.anomaly_count` 统计。E5/E6 桶与 PASS/RESERVE 残差**不计入**——那是 `dom_affordances` 按设计的过近似，策略根本选不到。**恒为 0 是正常的，>0 才要查**（别用 `len(report)` 计数：报告恒有表头行，那样连完全一致也会报 2 个"异常"） |
 
 ## 五、多账号 Cookie 隔离（per-bot profile）
 
