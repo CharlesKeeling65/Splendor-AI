@@ -22,17 +22,21 @@
   <!-- tier-2 red pts=3 cost={b3,bl5,g3,w3} -->
   <div class="ccbs-card ccbs-card-top ccbs-type-3 ccbs-img-4"><div class="ccbs-card-top"><div class="ccbs-score">3</div></div><div class="ccbs-circle ccbs-color-4">3</div><div class="ccbs-circle ccbs-color-1">5</div><div class="ccbs-circle ccbs-color-2">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
 </div>
-<!-- page row 1 = tier 1 (middle): 3 face cards + 1 ccbs-empty placeholder -->
+<!-- page row 1 = tier 1 (middle): [card, card, EMPTY, card] — the exact
+     live shape measured 2026-09-11 on a bot page (tier-0 row with deck
+     count 0: bought slot stays as a mid-row .ccbs-empty placeholder and
+     the last card keeps its position). The placeholder must map to None
+     at ITS index; dropping it would shift the last card one slot left. -->
 <div class="flex justify-center origin-top">
   <div class="ccbs-card ccbs-type-5 ccbs-img-1"><div class="ccbs-left-count">3</div></div>
   <!-- tier-1 black pts=1 cost={b2,g2,w3} -->
   <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-5"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-1">2</div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-0">3</div></div>
   <!-- tier-1 blue pts=1 cost={b2,g2,r3} -->
   <div class="ccbs-card ccbs-card-top ccbs-type-1 ccbs-img-6"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-1">2</div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-3">3</div></div>
-  <!-- tier-1 green pts=1 cost={g2,r3,w3} -->
-  <div class="ccbs-card ccbs-card-top ccbs-type-2 ccbs-img-7"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-3">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
-  <!-- THE BUG: tier-1 row has a bare ccbs-empty placeholder where slot 4 should be -->
+  <!-- mid-row empty placeholder: the bought card's slot with an exhausted deck -->
   <div class="ccbs-card ccbs-empty"></div>
+  <!-- tier-1 green pts=1 cost={g2,r3,w3} - keeps its 4th slot -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-2 ccbs-img-7"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-3">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
 </div>
 <!-- page row 2 = tier 0 (bottom): 4 cheap cards -->
 <div class="flex justify-center origin-top">

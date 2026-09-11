@@ -217,14 +217,23 @@ EXTRACT_SNAPSHOT_JS: str = (
   };
   // [B3.1] 3 table rows = div.flex.justify-center.origin-top; the my-reserved
   // band shares those classes plus bg-gray-400 and is filtered out.
-  // [B3.1] face cards carry ccbs-type-0..4; type-5 is a deck back; empty
-  // row slots are bare `.ccbs-card.ccbs-empty` (no ccbs-type-N, no
-  // ccbs-img-N) and must NOT leak through the filter or _interpret_card
-  // will raise (live bug, 2026-09-11). Restrict to type-0..4 explicitly.
+  // [B3.1] face cards carry ccbs-type-0..4; type-5 is a deck back.
+  // [MEASURED 2026-09-11 live] when a deck is exhausted, bought slots stay
+  // EMPTY as bare `.ccbs-card.ccbs-empty` placeholders AT THEIR POSITION
+  // (later cards keep their slots) - matching the engine, which replaces a
+  // bought card by deal() and keeps the None slot when the deck is empty
+  // (splendor_model.py: "empty slots that cannot be filled"). The placeholder
+  // must therefore be mapped to a null entry AT ITS INDEX, not dropped:
+  // dropping it would shift every later card one slot left and corrupt
+  // dealt[tier][col] (BUY_AVAILABLE col targeting, registry lookups).
   const isFaceCard = (el) => {
     const t = typeIndexOf(el);
     return t >= 0 && t <= 4;
   };
+  const readRowCard = (el) =>
+    el.classList.contains("ccbs-empty")
+      ? { empty: true, type_index: -1, img_index: -1, score_text: "", circles: [] }
+      : readCard(el);
   const rows = Array.from(
     document.querySelectorAll("div.flex.justify-center.origin-top")
   )
@@ -235,8 +244,8 @@ EXTRACT_SNAPSHOT_JS: str = (
         ? back.querySelector(".ccbs-left-count")  // [B3.1] deck remaining
         : null;
       const cards = Array.from(row.querySelectorAll(".ccbs-card"))
-        .filter(isFaceCard)
-        .map(readCard);
+        .filter((el) => typeIndexOf(el) !== 5)  // drop deck backs only;
+        .map(readRowCard);  // empties become {empty:true} at their index
       return {
         deck_count_text: count ? (count.textContent || "").trim() : null,
         cards: cards,
@@ -280,7 +289,8 @@ EXTRACT_SNAPSHOT_JS: str = (
     };
   });
 // [B3.1] my reserved band: face-up .ccbs-card inside the gray strip.
-  // Same empty-slot guard as the table rows above.
+  // Unlike table rows, the band is a variable-length list (no fixed slots),
+  // so empty placeholders are dropped outright instead of mapped to null.
   const band = document.querySelector(
     "div.flex.justify-center.origin-top.bg-gray-400"
   );
@@ -363,15 +373,20 @@ def _interpret_rows(
 
     Web rows run top -> bottom = deck_id 2/1/0 (the tier direction conversion
     is funnelled through this single loop - the most off-by-one-prone spot).
-    Empty slots (deck exhausted) are trailing Nones on the page; a mid-row
-    empty slot is not producible by the engine's deal order.
+    Empty slots map positionally: when a deck is exhausted the page keeps the
+    bought slot as a ``.ccbs-empty`` placeholder (raw entry with
+    ``empty: true``) and later cards keep their positions - mirroring the
+    engine, where ``board.dealt[tier][i]`` stays None at the bought slot once
+    ``deal()`` returns None. Both trailing and mid-row Nones are therefore
+    normal engine states (MEASURED live 2026-09-11, tier-0 row
+    ``[card, card, EMPTY, card]`` with deck count 0).
     """
     dealt: list[list[CardInfo | None]] = []
     deck_counts: list[int] = []
     for deck_id in range(NUMBER_OF_TIERS):
         row = rows[NUMBER_OF_TIERS - 1 - deck_id]
         cards: list[CardInfo | None] = [
-            _interpret_card(raw_card, deck_id)
+            None if raw_card.get("empty") else _interpret_card(raw_card, deck_id)
             for raw_card in row["cards"][:MAX_TIER_CARDS]
         ]
         while len(cards) < MAX_TIER_CARDS:

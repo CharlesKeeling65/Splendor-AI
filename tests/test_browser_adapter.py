@@ -110,26 +110,31 @@ def test_empty_deck_fixture_has_trailing_empty_slots() -> None:
 
 def test_row_with_empty_slot_drops_ccbs_empty_placeholders() -> None:
     """
-    Live bug, 2026-09-11: the page renders ``.ccbs-card.ccbs-empty`` for
-    unoccupied slot(s) in a row (no ``ccbs-type-N``, no ``ccbs-img-N``).
-    The old JS / Python filter ``typeIndexOf !== 5`` let those through, so
-    ``_interpret_card`` rejected them with
-    ``SnapshotSchemaError: card type_index -1 outside 0..4`` and crashed
-    the bot mid-game. The guard must drop ``ccbs-empty`` and parse the
-    surviving face cards normally.
+    Live bug, 2026-09-11: with an exhausted deck the page keeps a bought
+    slot as ``.ccbs-card.ccbs-empty`` (no ccbs-type-N) AT ITS POSITION -
+    later cards keep their slots, mirroring the engine where
+    ``dealt[tier][i]`` stays None once ``deal()`` returns None. Two failure
+    modes are pinned here:
+
+    * the placeholder must not leak to ``_interpret_card`` as
+      ``type_index -1`` (SnapshotSchemaError, the original crash); and
+    * it must be mapped to None AT ITS INDEX - dropping it outright would
+      shift the last card one slot left and corrupt ``dealt[tier][col]``
+      (MEASURED live: tier-0 row ``[card, card, EMPTY, card]``, deck 0).
     """
     snapshot = extract_snapshot(_driver_for("row_with_empty_slot.html"))
     # deck_counts is ordered by deck_id 0..2; page rows are top->bottom =
     # deck 2/1/0, so the fixture's page-row counts (5, 3, 2) become [2, 3, 5].
     assert snapshot["deck_counts"] == [2, 3, 5]
-    # tier-1 (page row 1) has 3 face cards + 1 .ccbs-empty placeholder;
-    # the placeholder must drop out so the row resolves to 4 slots where
-    # the 4th is None (not a crashing -1 type_index).
-    assert len(snapshot["dealt"][1]) == 4
-    assert snapshot["dealt"][1][0] is not None
-    assert snapshot["dealt"][1][1] is not None
-    assert snapshot["dealt"][1][2] is not None
-    assert snapshot["dealt"][1][3] is None  # the empty slot
+    # tier-1 (page row 1) = [black 1分, blue 1分, EMPTY, green 1分]: the
+    # placeholder must surface as None in the THIRD slot, with the green
+    # card still in the FOURTH (not shifted left).
+    tier1 = snapshot["dealt"][1]
+    assert len(tier1) == 4
+    assert (tier1[0]["colour"], tier1[0]["points"]) == ("black", 1)
+    assert (tier1[1]["colour"], tier1[1]["points"]) == ("blue", 1)
+    assert tier1[2] is None  # the mid-row empty placeholder
+    assert (tier1[3]["colour"], tier1[3]["points"]) == ("green", 1)
     # tier-0 (page row 2) and tier-2 (page row 0): no empty slots, all
     # 4 face cards present
     assert all(card is not None for card in snapshot["dealt"][0])

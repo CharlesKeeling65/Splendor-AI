@@ -577,15 +577,39 @@ def _read_card(element: _Element) -> dict:
 
 def _is_face_card(element: _Element) -> bool:
     """
-    A face card carries ``ccbs-type-0..4``; the ``ccbs-type-5`` index is
-    reserved for deck backs and the live page also renders
-    ``.ccbs-card.ccbs-empty`` placeholders (no ccbs-type-N at all) for
-    unoccupied row slots - both must be dropped before ``_read_card``,
-    otherwise ``_interpret_card`` raises on ``type_index == -1`` (live
-    bug, 2026-09-11).
+    A face card carries ``ccbs-type-0..4``. Used only for the my-reserved
+    band (a variable-length list with no fixed slots): deck backs
+    (``ccbs-type-5``) and bare ``.ccbs-empty`` placeholders are dropped
+    outright there. Table rows use ``_read_row_card`` instead, which maps
+    empty placeholders positionally (see its docstring).
     """
     type_index = _class_or_minus_one(element, "ccbs-type-")
     return 0 <= type_index <= LAST_FACE_TYPE_INDEX
+
+
+def _read_row_card(element: _Element) -> dict:
+    """
+    Read one table-row card entry, mapping empty slot placeholders
+    positionally.
+
+    When a deck is exhausted the page keeps a bought slot as a bare
+    ``.ccbs-card.ccbs-empty`` div AT ITS POSITION (later cards keep their
+    slots), mirroring the engine where ``dealt[tier][i]`` stays None once
+    ``deal()`` returns None. The placeholder becomes ``{"empty": True, ...}``
+    so ``_interpret_rows`` can place None at that index; dropping it would
+    shift every later card one slot left and corrupt ``dealt[tier][col]``
+    (MEASURED live 2026-09-11: tier-0 row ``[card, card, EMPTY, card]`` with
+    deck count 0).
+    """
+    if "ccbs-empty" in element.classes:
+        return {
+            "empty": True,
+            "type_index": -1,
+            "img_index": -1,
+            "score_text": "",
+            "circles": [],
+        }
+    return _read_card(element)
 
 
 def _read_rows(root: _Element) -> list[dict]:
@@ -605,9 +629,9 @@ def _read_rows(root: _Element) -> list[dict]:
             if counts:
                 deck_count = counts[0].text_content().strip()
         cards = [
-            _read_card(el)
+            _read_row_card(el)
             for el in query_selector_all(row, ".ccbs-card")
-            if _is_face_card(el)
+            if _class_or_minus_one(el, "ccbs-type-") != CARD_BACK_TYPE_INDEX
         ]
         rows.append({"deck_count_text": deck_count, "cards": cards})
     return rows
