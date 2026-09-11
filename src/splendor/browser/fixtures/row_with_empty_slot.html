@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<body>
+<!-- Live-page fixture (2026-09-11): tier-1 row contains a bare
+     `.ccbs-card.ccbs-empty` placeholder (no ccbs-type-N, no ccbs-img-N).
+     The old filter `typeIndexOf !== 5` let those through, so
+     `_interpret_card` raised SnapshotSchemaError("type_index -1") and
+     the bot crashed mid-game. After the fix the placeholder is
+     silently dropped and the row's surviving face cards parse normally.
+
+     Page rows are top -> bottom = deck_id 2 / 1 / 0 (tier-2 / tier-1 /
+     tier-0); `deck_counts` is reported by deck_id 0..2. -->
+<!-- page row 0 = tier 2 (top): 4 expensive cards -->
+<div class="flex justify-center origin-top">
+  <div class="ccbs-card ccbs-type-5 ccbs-img-0"><div class="ccbs-left-count">5</div></div>
+  <!-- tier-2 black pts=3 cost={b3,g5,r3,w3} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-1"><div class="ccbs-card-top"><div class="ccbs-score">3</div></div><div class="ccbs-circle ccbs-color-1">3</div><div class="ccbs-circle ccbs-color-2">5</div><div class="ccbs-circle ccbs-color-3">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
+  <!-- tier-2 blue pts=3 cost={b5,g3,r3,w3} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-1 ccbs-img-2"><div class="ccbs-card-top"><div class="ccbs-score">3</div></div><div class="ccbs-circle ccbs-color-4">5</div><div class="ccbs-circle ccbs-color-2">3</div><div class="ccbs-circle ccbs-color-3">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
+  <!-- tier-2 green pts=3 cost={b3,bl3,r3,w5} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-2 ccbs-img-3"><div class="ccbs-card-top"><div class="ccbs-score">3</div></div><div class="ccbs-circle ccbs-color-4">3</div><div class="ccbs-circle ccbs-color-1">3</div><div class="ccbs-circle ccbs-color-3">3</div><div class="ccbs-circle ccbs-color-0">5</div></div>
+  <!-- tier-2 red pts=3 cost={b3,bl5,g3,w3} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-3 ccbs-img-4"><div class="ccbs-card-top"><div class="ccbs-score">3</div></div><div class="ccbs-circle ccbs-color-4">3</div><div class="ccbs-circle ccbs-color-1">5</div><div class="ccbs-circle ccbs-color-2">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
+</div>
+<!-- page row 1 = tier 1 (middle): 3 face cards + 1 ccbs-empty placeholder -->
+<div class="flex justify-center origin-top">
+  <div class="ccbs-card ccbs-type-5 ccbs-img-1"><div class="ccbs-left-count">3</div></div>
+  <!-- tier-1 black pts=1 cost={b2,g2,w3} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-5"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-1">2</div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-0">3</div></div>
+  <!-- tier-1 blue pts=1 cost={b2,g2,r3} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-1 ccbs-img-6"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-1">2</div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-3">3</div></div>
+  <!-- tier-1 green pts=1 cost={g2,r3,w3} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-2 ccbs-img-7"><div class="ccbs-card-top"><div class="ccbs-score">1</div></div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-3">3</div><div class="ccbs-circle ccbs-color-0">3</div></div>
+  <!-- THE BUG: tier-1 row has a bare ccbs-empty placeholder where slot 4 should be -->
+  <div class="ccbs-card ccbs-empty"></div>
+</div>
+<!-- page row 2 = tier 0 (bottom): 4 cheap cards -->
+<div class="flex justify-center origin-top">
+  <div class="ccbs-card ccbs-type-5 ccbs-img-2"><div class="ccbs-left-count">2</div></div>
+  <!-- tier-0 black pts=0 cost={b1,g1,r1,w1} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-8"><div class="ccbs-card-top"></div><div class="ccbs-circle ccbs-color-1">1</div><div class="ccbs-circle ccbs-color-2">1</div><div class="ccbs-circle ccbs-color-3">1</div><div class="ccbs-circle ccbs-color-0">1</div></div>
+  <!-- tier-0 black pts=0 cost={b2,g1,r1,w1} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-9"><div class="ccbs-card-top"></div><div class="ccbs-circle ccbs-color-1">2</div><div class="ccbs-circle ccbs-color-2">1</div><div class="ccbs-circle ccbs-color-3">1</div><div class="ccbs-circle ccbs-color-0">1</div></div>
+  <!-- tier-0 black pts=0 cost={b2,r1,w2} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-10"><div class="ccbs-card-top"></div><div class="ccbs-circle ccbs-color-1">2</div><div class="ccbs-circle ccbs-color-3">1</div><div class="ccbs-circle ccbs-color-0">2</div></div>
+  <!-- tier-0 black pts=0 cost={g2,r1} -->
+  <div class="ccbs-card ccbs-card-top ccbs-type-4 ccbs-img-11"><div class="ccbs-card-top"></div><div class="ccbs-circle ccbs-color-2">2</div><div class="ccbs-circle ccbs-color-3">1</div></div>
+</div>
+<div class="ccbs-noble ccbs-noble-0"><div class="ccbs-score">3</div><div class="ccbs-rect ccbs-color-0">4</div><div class="ccbs-rect ccbs-color-1">4</div></div>
+<div class="ccbs-noble ccbs-noble-1"><div class="ccbs-score">3</div><div class="ccbs-rect ccbs-color-2">3</div><div class="ccbs-rect ccbs-color-3">3</div><div class="ccbs-rect ccbs-color-4">3</div></div>
+<div class="mt-4 flex items-center justify-center space-x-6">
+  <button class="ccbs-circle ccbs-color-0 scale-125">4</button>
+  <button class="ccbs-circle ccbs-color-1 scale-125">4</button>
+  <button class="ccbs-circle ccbs-color-2 scale-125">4</button>
+  <button class="ccbs-circle ccbs-color-3 scale-125">4</button>
+  <button class="ccbs-circle ccbs-color-4 scale-125">4</button>
+  <button class="ccbs-circle ccbs-color-5 scale-125">5</button>
+</div>
+<div class="flex flex-wrap items-center justify-center my-2">
+  <span>😊 房主 1 我</span>
+  <span class="ccbs-score">4分</span>
+  <div class="ccbs-rect ccbs-color-0">0</div>
+  <div class="ccbs-rect ccbs-color-1">0</div>
+  <div class="ccbs-rect ccbs-color-2">0</div>
+  <div class="ccbs-rect ccbs-color-3">1</div>
+  <div class="ccbs-rect ccbs-color-4">0</div>
+  <div class="ccbs-circle ccbs-color-0 scale-75 mx-auto opacity-50">3</div>
+  <div class="ccbs-circle ccbs-color-1 scale-75 mx-auto opacity-50">2</div>
+  <div class="ccbs-circle ccbs-color-2 scale-75 mx-auto opacity-50">2</div>
+  <div class="ccbs-circle ccbs-color-3 scale-75 mx-auto opacity-50">4</div>
+  <div class="ccbs-circle ccbs-color-4 scale-75 mx-auto opacity-50">0</div>
+  <div class="ccbs-circle ccbs-color-5 scale-75 mx-auto opacity-50">0</div>
+</div>
+<div class="flex flex-wrap items-center justify-center my-2">
+  <span>座位2</span>
+  <span class="ccbs-score">3分</span>
+  <div class="ccbs-rect ccbs-color-0">1</div>
+  <div class="ccbs-rect ccbs-color-1">0</div>
+  <div class="ccbs-rect ccbs-color-2">1</div>
+  <div class="ccbs-rect ccbs-color-3">0</div>
+  <div class="ccbs-rect ccbs-color-4">0</div>
+  <div class="ccbs-circle ccbs-color-0 scale-75 mx-auto opacity-50">2</div>
+  <div class="ccbs-circle ccbs-color-1 scale-75 mx-auto opacity-50">1</div>
+  <div class="ccbs-circle ccbs-color-2 scale-75 mx-auto opacity-50">3</div>
+  <div class="ccbs-circle ccbs-color-3 scale-75 mx-auto opacity-50">1</div>
+  <div class="ccbs-circle ccbs-color-4 scale-75 mx-auto opacity-50">0</div>
+  <div class="ccbs-circle ccbs-color-5 scale-75 mx-auto opacity-50">0</div>
+</div>
+<div class="flex justify-center origin-top bg-gray-400"></div>
+<div class="text-center"><div class="mt-4">等待你操作</div></div>
+</body>
+</html>

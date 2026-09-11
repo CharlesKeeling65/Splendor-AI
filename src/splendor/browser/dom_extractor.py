@@ -217,6 +217,14 @@ EXTRACT_SNAPSHOT_JS: str = (
   };
   // [B3.1] 3 table rows = div.flex.justify-center.origin-top; the my-reserved
   // band shares those classes plus bg-gray-400 and is filtered out.
+  // [B3.1] face cards carry ccbs-type-0..4; type-5 is a deck back; empty
+  // row slots are bare `.ccbs-card.ccbs-empty` (no ccbs-type-N, no
+  // ccbs-img-N) and must NOT leak through the filter or _interpret_card
+  // will raise (live bug, 2026-09-11). Restrict to type-0..4 explicitly.
+  const isFaceCard = (el) => {
+    const t = typeIndexOf(el);
+    return t >= 0 && t <= 4;
+  };
   const rows = Array.from(
     document.querySelectorAll("div.flex.justify-center.origin-top")
   )
@@ -227,7 +235,7 @@ EXTRACT_SNAPSHOT_JS: str = (
         ? back.querySelector(".ccbs-left-count")  // [B3.1] deck remaining
         : null;
       const cards = Array.from(row.querySelectorAll(".ccbs-card"))
-        .filter((el) => typeIndexOf(el) !== 5)
+        .filter(isFaceCard)
         .map(readCard);
       return {
         deck_count_text: count ? (count.textContent || "").trim() : null,
@@ -271,14 +279,15 @@ EXTRACT_SNAPSHOT_JS: str = (
     ).map(imgIndexOf),
     };
   });
-  // [B3.1] my reserved band: face-up .ccbs-card inside the gray strip.
+// [B3.1] my reserved band: face-up .ccbs-card inside the gray strip.
+  // Same empty-slot guard as the table rows above.
   const band = document.querySelector(
     "div.flex.justify-center.origin-top.bg-gray-400"
   );
   const myReserved = band
     ? Array.from(band.querySelectorAll(".ccbs-card"))
-        .filter((el) => typeIndexOf(el) !== 5)
-        .map(readCard)
+      .filter(isFaceCard)
+      .map(readCard)
     : [];
   // [MEASURED 2026-09-05] the turn-status element has no stable class (a
   // bare div.mt-4 inside div.text-center); the *texts* 等待你操作 /

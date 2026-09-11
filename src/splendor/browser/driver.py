@@ -70,6 +70,11 @@ def _read_status_text(root: _Element) -> str:
 # §3.1: ccbs-type-5 is only used for deck piles / card backs). Mirrored here
 # because this module must not import dom_extractor (import cycle).
 CARD_BACK_TYPE_INDEX = 5
+# Face cards live in ccbs-type-0..LAST_FACE_TYPE_INDEX (inclusive); the live
+# page also renders bare `.ccbs-card.ccbs-empty` placeholders (no
+# ccbs-type-N at all) for unoccupied row slots, so the explicit range
+# check is required to drop them (live bug, 2026-09-11).
+LAST_FACE_TYPE_INDEX = 4
 
 
 @runtime_checkable
@@ -570,6 +575,19 @@ def _read_card(element: _Element) -> dict:
     }
 
 
+def _is_face_card(element: _Element) -> bool:
+    """
+    A face card carries ``ccbs-type-0..4``; the ``ccbs-type-5`` index is
+    reserved for deck backs and the live page also renders
+    ``.ccbs-card.ccbs-empty`` placeholders (no ccbs-type-N at all) for
+    unoccupied row slots - both must be dropped before ``_read_card``,
+    otherwise ``_interpret_card`` raises on ``type_index == -1`` (live
+    bug, 2026-09-11).
+    """
+    type_index = _class_or_minus_one(element, "ccbs-type-")
+    return 0 <= type_index <= LAST_FACE_TYPE_INDEX
+
+
 def _read_rows(root: _Element) -> list[dict]:
     """
     The three table rows: BROWSER_RL_MAPPING §3.1 documents them as
@@ -589,7 +607,7 @@ def _read_rows(root: _Element) -> list[dict]:
         cards = [
             _read_card(el)
             for el in query_selector_all(row, ".ccbs-card")
-            if _class_or_minus_one(el, "ccbs-type-") != CARD_BACK_TYPE_INDEX
+            if _is_face_card(el)
         ]
         rows.append({"deck_count_text": deck_count, "cards": cards})
     return rows
@@ -657,7 +675,7 @@ def read_raw_snapshot(root: _Element) -> dict:
         [
             _read_card(el)
             for el in query_selector_all(band[0], ".ccbs-card")
-            if _class_or_minus_one(el, "ccbs-type-") != CARD_BACK_TYPE_INDEX
+            if _is_face_card(el)
         ]
         if band
         else []

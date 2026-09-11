@@ -108,6 +108,41 @@ def test_empty_deck_fixture_has_trailing_empty_slots() -> None:
     assert any(card is None for row in snapshot["dealt"] for card in row)
 
 
+def test_row_with_empty_slot_drops_ccbs_empty_placeholders() -> None:
+    """
+    Live bug, 2026-09-11: the page renders ``.ccbs-card.ccbs-empty`` for
+    unoccupied slot(s) in a row (no ``ccbs-type-N``, no ``ccbs-img-N``).
+    The old JS / Python filter ``typeIndexOf !== 5`` let those through, so
+    ``_interpret_card`` rejected them with
+    ``SnapshotSchemaError: card type_index -1 outside 0..4`` and crashed
+    the bot mid-game. The guard must drop ``ccbs-empty`` and parse the
+    surviving face cards normally.
+    """
+    snapshot = extract_snapshot(_driver_for("row_with_empty_slot.html"))
+    # deck_counts is ordered by deck_id 0..2; page rows are top->bottom =
+    # deck 2/1/0, so the fixture's page-row counts (5, 3, 2) become [2, 3, 5].
+    assert snapshot["deck_counts"] == [2, 3, 5]
+    # tier-1 (page row 1) has 3 face cards + 1 .ccbs-empty placeholder;
+    # the placeholder must drop out so the row resolves to 4 slots where
+    # the 4th is None (not a crashing -1 type_index).
+    assert len(snapshot["dealt"][1]) == 4
+    assert snapshot["dealt"][1][0] is not None
+    assert snapshot["dealt"][1][1] is not None
+    assert snapshot["dealt"][1][2] is not None
+    assert snapshot["dealt"][1][3] is None  # the empty slot
+    # tier-0 (page row 2) and tier-2 (page row 0): no empty slots, all
+    # 4 face cards present
+    assert all(card is not None for card in snapshot["dealt"][0])
+    assert all(card is not None for card in snapshot["dealt"][2])
+    # my seat and supply must still parse (the snapshot was usable end-to-end)
+    assert snapshot["my_seat"] == 1
+    assert snapshot["status"] == "等待你操作"
+    # the rest of the pipeline still runs on the survivor rows
+    pseudo_state = build_pseudo_state(snapshot, snapshot["my_seat"] - 1, turns=3)
+    obs = extract_metrics_with_cards(pseudo_state, snapshot["my_seat"] - 1)
+    assert obs.shape == (265,)
+
+
 def test_game_over_fixture_signals_terminal() -> None:
     snapshot = extract_snapshot(_driver_for("game_over.html"))
     assert not is_my_turn(snapshot["status"])
