@@ -1995,7 +1995,7 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.1,<5" },
     { name = "pylint", marker = "extra == 'extra'", specifier = ">=3.3.1,<4" },
     { name = "pytz", specifier = "==2024.1" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7.0,<1" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<0.16" },
     { name = "scikit-learn", specifier = ">=1.5.2,<2" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=8.2.3,<9" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = ">=0.5.2,<1" },
