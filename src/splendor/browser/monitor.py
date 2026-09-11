@@ -37,6 +37,12 @@ How to read a report, in one place, because two fields invite misreading:
   "voluntary partial take" shape. The triage signal is therefore not these
   counts but *whether a dom-only action's type belongs to no registered class
   at all*.
+
+:func:`anomaly_count` turns all of the above into the single number the
+phase-3 acceptance is judged on: the lines carrying an ``ANOMALY_PREFIXES``
+tag, i.e. exactly the "needs a human" categories above. Never count
+``len(report)`` - the header is unconditional, so that reports perfect parity
+as 2 anomalies.
 """
 
 from collections.abc import Callable, Iterable
@@ -254,18 +260,43 @@ class MaskParityMonitor:
                 )
         if unmatched:
             # Affordances over-approximate legality *by design* (a DOM reading
-            # cannot know affordability, the pass restriction, or which
-            # sub-flows the engine would open), so dom-only residuals are
-            # expected. They stay in the report - grouped by action type -
-            # so a systematic drift (e.g. every reserve missing) is visible
-            # instead of silently folded into noise.
+            # cannot know affordability, the pass restriction, which
+            # sub-flows the engine would open, whether a return combo is
+            # possible at all, or which noble slot is still free), so dom-only
+            # residuals are expected and are NOT anomalies. They stay in the
+            # report - grouped by action type - so a systematic drift (e.g.
+            # every reserve missing) is visible instead of silently folded
+            # into noise.
             report.append(
-                f"DOM-ONLY over-approximation (expected unless systematic): "
-                f"{len(unmatched)} action(s) - "
+                f"DOM-ONLY over-approximation (expected, not counted as "
+                f"anomaly): {len(unmatched)} action(s) - "
                 f"{_group_by_type(unmatched)} "
                 f"(e.g. {_describe_samples(unmatched)})"
             )
         return report
+
+
+# Report lines that need a human. Everything else in a report documents the
+# by-design over-approximation described above. Kept as *prefixes* rather than
+# a structured return type so that every consumer (play_web, play_vs_humans,
+# play_remote) can filter the same list the dashboard renders, without
+# re-deriving the underlying sets.
+ANOMALY_PREFIXES: tuple[str, ...] = (
+    "PAGE REDESIGN",
+    "DOM EXTRACTION BUG",
+)
+
+
+def anomaly_count(report: Iterable[str]) -> int:
+    """
+    How many of a report's lines need a human.
+
+    This is the number phase-3 acceptance ("zero unexplained differences over
+    10 games") is judged on. Counting ``len(report)`` instead is a bug that
+    reports *perfect* parity as 2 anomalies - the header line is always there,
+    and an agreeing report appends "OK" to it.
+    """
+    return sum(1 for line in report if line.startswith(ANOMALY_PREFIXES))
 
 
 def _describe_samples(indices: list[int]) -> str:

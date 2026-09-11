@@ -50,6 +50,7 @@ from splendor.browser.dom_extractor import (
     waiting_seat,
 )
 from splendor.browser.ego_driver import EgoBrowserDriver
+from splendor.browser.monitor import anomaly_count
 from splendor.browser.session import SessionManager
 from splendor.browser.state_builder import build_pseudo_state
 from splendor.splendor.gym.envs.utils import (
@@ -371,7 +372,7 @@ def run_game(  # noqa: PLR0913 - one glue point per concern
         action_idx, q_value, description, top = select_action(
             env, actor, obs, snapshot, rule, my_index, my_turns
         )
-        anomalies += len(getattr(env, "last_parity_report", []))
+        anomalies += anomaly_count(getattr(env, "last_parity_report", []))
 
         print(
             f"▶ 第 {step} 步 | 我执行: {description} | Q={q_value:.2f}",
@@ -394,7 +395,9 @@ def run_game(  # noqa: PLR0913 - one glue point per concern
                     {"idx": idx, "q": value, "desc": text} for idx, value, text in top
                 ],
                 "estimates": [asdict(item) for item in estimates],
-                "mask_anomalies": len(getattr(env, "last_parity_report", [])),
+                "mask_anomalies": anomaly_count(
+                    getattr(env, "last_parity_report", [])
+                ),
             }
         )
         history.append(

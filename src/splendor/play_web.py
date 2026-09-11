@@ -30,6 +30,7 @@ from splendor.browser.browser_env import BrowserSplendorEnv
 from splendor.browser.dom_extractor import extract_snapshot
 from splendor.browser.driver import BrowserDriver
 from splendor.browser.ego_driver import EgoBrowserDriver
+from splendor.browser.monitor import anomaly_count
 from splendor.browser.session import SessionManager
 from splendor.splendor.gym.base import SplendorEnvBase
 
@@ -89,7 +90,7 @@ def run_game(
     my_seat = int(info["my_id"])
     terminated = False
     for _ in range(max_steps):
-        anomalies += len(getattr(env, "last_parity_report", []))
+        anomalies += anomaly_count(getattr(env, "last_parity_report", []))
         action = _greedy_action(env, q_net, obs)
         obs, reward, terminated, _truncated, _info = env.step(action)
         steps += 1

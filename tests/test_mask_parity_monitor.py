@@ -12,6 +12,7 @@ from splendor.browser.dom_extractor import Snapshot
 from splendor.browser.monitor import (
     DEFAULT_KNOWN_DIFFERENCES,
     MaskParityMonitor,
+    anomaly_count,
     dom_affordances,
 )
 from splendor.splendor.gym.envs.actions import ALL_ACTIONS, ActionEnum
@@ -203,3 +204,47 @@ def test_check_tolerates_empty_affordance_set() -> None:
     report = MaskParityMonitor().check(_mask(engine_legal), set())
     assert isinstance(report, list)
     assert report
+
+
+def test_anomaly_count_is_zero_for_perfect_agreement() -> None:
+    """
+    Regression: counting ``len(report)`` reported *perfect* parity as 2
+    anomalies, because the header line is unconditional and an agreeing report
+    appends "OK" to it. Phase-3 acceptance ("zero unexplained differences") is
+    therefore judged on :func:`anomaly_count`, never on the report's length.
+    """
+    engine_legal = {PASS_INDEX, _collect_index({"white": 1, "blue": 1, "green": 1})}
+    report = MaskParityMonitor().check(_mask(engine_legal), engine_legal)
+    assert len(report) == 2
+    assert anomaly_count(report) == 0
+
+
+def test_anomaly_count_ignores_the_by_design_over_approximation() -> None:
+    """
+    E5/E6 buckets and the PASS/RESERVE residual are all reachable-but-illegal
+    candidates the policy can never select, so none of them is an anomaly.
+    """
+    engine_legal = {PASS_INDEX, _collect_index({"white": 1, "blue": 1, "green": 1})}
+    dom = engine_legal | {_collect_index({"white": 1}), _buy_index(0, 0)}
+
+    report = MaskParityMonitor().check(_mask(engine_legal), dom)
+    assert anomaly_count(report) == 0
+
+
+def test_anomaly_count_flags_every_engine_only_action() -> None:
+    """engine-only is the safety-critical direction: each one is an anomaly."""
+    engine_legal = {
+        PASS_INDEX,
+        _collect_index({"white": 1, "blue": 1, "green": 1}),
+        _buy_index(0, 0),
+    }
+    report = MaskParityMonitor().check(_mask(engine_legal), {PASS_INDEX})
+    assert anomaly_count(report) == 1
+
+
+def test_anomaly_count_flags_the_page_redesign_cases() -> None:
+    engine_legal = {PASS_INDEX, _collect_index({"white": 1, "blue": 1, "green": 1})}
+
+    assert anomaly_count(MaskParityMonitor().check(_mask(engine_legal), set())) >= 1
+    vanished = MaskParityMonitor().check(_mask(engine_legal), engine_legal - {PASS_INDEX})
+    assert anomaly_count(vanished) >= 1

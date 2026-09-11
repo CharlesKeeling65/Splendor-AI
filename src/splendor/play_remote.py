@@ -52,7 +52,7 @@ from splendor.browser.dom_extractor import (
 )
 from splendor.browser.driver import BrowserDriver
 from splendor.browser.ego_driver import EgoBrowserDriver
-from splendor.browser.monitor import _describe_action
+from splendor.browser.monitor import _describe_action, anomaly_count
 from splendor.browser.session import SessionManager
 from splendor.remote.client import InferenceClient
 from splendor.splendor.gym.envs.actions import ALL_ACTIONS
@@ -615,11 +615,20 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
 
 
 def _emit_parity(env: BrowserSplendorEnv, ctx: _GameContext) -> int:
-    """Forward the env's mask-parity report to the event stream; return count."""
+    """
+    Forward the env's mask-parity report to the event stream; return anomalies.
+
+    The report itself is emitted whenever there is one, because its buckets are
+    how a run is *attributed*; the returned count is only the part of it that
+    needs a human (see :func:`splendor.browser.monitor.anomaly_count` - the
+    header and the by-design over-approximation buckets are not anomalies, so
+    counting ``len(report)`` would make the per-run anomaly figure permanently
+    non-zero and blind the phase-3 acceptance to real regressions).
+    """
     report = list(getattr(env, "last_parity_report", []))
     if report:
         ctx.emit({"type": "parity", "lines": report})
-    return len(report)
+    return anomaly_count(report)
 
 
 def _result_of(last_scores: dict[int, float], my_seat: int) -> str:
