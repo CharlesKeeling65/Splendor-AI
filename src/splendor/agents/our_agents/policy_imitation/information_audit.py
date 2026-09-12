@@ -71,18 +71,21 @@ def _probe_variant(
 ) -> dict[str, Any]:
     """Compare one hidden-state perturbation after checking obs/mask equality."""
     base_state = deepcopy(probe.state)
-    changed = perturbation(base_state, probe.seat)
+    base_rule = deepcopy(probe.rule)
+    base_rule.current_game_state = base_state
+    changed_state = deepcopy(base_state)
+    changed = perturbation(changed_state, probe.seat)
     if not changed:
         return {"attempted": False, "reason": "state has no perturbable hidden component"}
-    changed_state = base_state
-    changed_rule = deepcopy(probe.rule)
+    changed_rule = deepcopy(base_rule)
+    changed_rule.current_game_state = changed_state
     changed_actions = changed_rule.getLegalActions(changed_state, probe.seat)
-    base_observation = extract_observation(probe.state, probe.seat, feature_version)
+    base_observation = extract_observation(base_state, probe.seat, feature_version)
     changed_observation = extract_observation(
         changed_state, probe.seat, feature_version
     )
     base_mask = create_legal_actions_mask(
-        probe.actions, probe.state, probe.seat
+        probe.actions, base_state, probe.seat
     ).astype(np.uint8)
     changed_mask = create_legal_actions_mask(
         changed_actions, changed_state, probe.seat
@@ -97,8 +100,8 @@ def _probe_variant(
         }
     base_action, base_error = _select_probe_action(
         candidate,
-        probe.state,
-        probe.rule,
+        base_state,
+        base_rule,
         probe.actions,
         seat=probe.seat,
         seed=probe.seed + ordinal * 2,

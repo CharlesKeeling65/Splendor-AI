@@ -91,11 +91,20 @@ def select_action(
             search_nodes=0,
         )
     began = time.perf_counter()
-    proxy = CountingRuleProxy(deepcopy(game_rule))
+    # Copy the query inputs as one object graph.  Legal actions contain card
+    # objects from the state, and legacy search code may read the state from
+    # the rule instead of from its explicit argument.  Rebind the copied rule
+    # after deepcopy as a defensive guard for callers that supplied a rule and
+    # state copied independently (as the probe API does).
+    copied_actions, copied_state, copied_rule = deepcopy(
+        (actions, game_state, game_rule)
+    )
+    copied_rule.current_game_state = copied_state
+    proxy = CountingRuleProxy(copied_rule)
     try:
         selected = agent.SelectAction(
-            deepcopy(actions),
-            deepcopy(game_state),
+            copied_actions,
+            copied_state,
             proxy,  # type: ignore[arg-type]
         )
     except Exception as exc:
