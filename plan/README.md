@@ -5,6 +5,13 @@
 
 ## 文档体系
 
+### 训练方向增量计划（2026-09-07）
+
+- [策略模仿与自博弈实施计划](policy-imitation-selfplay.md)：教师评测 → BC → DAgger → PPO 对手池训练；保留 corrected DQN 对照，MCTS 按收益门槛进入。**待实施**，不代表已完成训练或替换部署模型。
+- 依据：[DQN 第二轮结果与选模纠错](../docs/DQN_ROUND2_RESULTS_20260907.md)；已有实验协议见 [dqn-round2.md](dqn-round2.md)。
+
+以下 P0–P5 保留原有升级计划；上述文档补充后续训练路线，不覆盖引擎、浏览器及存量算法的兼容约束。
+
 ```
 plan/
 ├── README.md                        ← 本文：阶段总览 + 验收体系说明 + 导航
