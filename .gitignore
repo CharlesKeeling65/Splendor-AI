@@ -22,5 +22,9 @@ docs/_build/
 # streams plus room_url.txt / seatN.ready handshake files)
 web_events/
 
+# Runtime output: play-web-remote's default --logs-dir (per-game JSONL backups
+# under logs/bot<i>/game-NNN.jsonl - replay material, not project artifacts)
+logs/
+
 # Scratch directory of the offline room-coordination tests
 tests/_tmp_room_coordination/
