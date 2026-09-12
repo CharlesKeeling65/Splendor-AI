@@ -101,7 +101,10 @@ def test_act_respects_the_mask(server_port: int) -> None:
     mask = np.zeros(3510, dtype=np.int64)
     mask[1234] = 1  # the only legal action must be the answer
     with InferenceClient("127.0.0.1", server_port) as client:
-        assert client.act("m1", obs, mask) == 1234
+        decision = client.act("m1", obs, mask)
+    assert decision.action == 1234
+    assert decision.top and decision.top[0]["idx"] == 1234
+    assert isinstance(decision.top[0]["q"], float)
 
 
 def test_act_shape_violation_is_an_error_frame(server_port: int) -> None:

@@ -39,10 +39,12 @@ import multiprocessing
 import random
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from splendor.browser.browser_env import BrowserSplendorEnv
 from splendor.browser.dom_extractor import (
@@ -69,20 +71,49 @@ START_WAIT_SECONDS = 60.0
 # A seat click is only believed after the seat map shows this browser in a
 # seat (SessionManager.my_seat); the server needs a beat to render the badge.
 SEAT_VERIFY_SECONDS = 8.0
+DEFAULT_LOGS_DIR = "logs"
 
 
 # ----- event stream -------------------------------------------------------------
 class EventWriter:
-    """Append-only JSONL event log, one file per bot (no cross-process locks)."""
+    """
+    Append-only JSONL event log, one file per bot (no cross-process locks).
 
-    def __init__(self, events_dir: Path, bot_id: int) -> None:
+    Every emit is dual-written: the live dashboard stream
+    (``events_dir/bot<i>.jsonl``) plus a per-game backup under
+    ``logs_dir/bot<i>/game-NNN.jsonl`` so a finished run can be replayed
+    even after the live files keep growing.
+    """
+
+    def __init__(
+        self,
+        events_dir: Path,
+        bot_id: int,
+        logs_dir: Path | None = None,
+    ) -> None:
         events_dir.mkdir(parents=True, exist_ok=True)
+        self._bot_id = bot_id
         self._path = events_dir / f"bot{bot_id}.jsonl"
+        self._logs_dir = logs_dir
+        self._game_path: Path | None = None
+
+    def start_game(self, game_index: int) -> None:
+        """Open a fresh per-game backup file (0-based index -> 1-based name)."""
+        if self._logs_dir is None:
+            return
+        bot_dir = self._logs_dir / f"bot{self._bot_id}"
+        bot_dir.mkdir(parents=True, exist_ok=True)
+        self._game_path = bot_dir / f"game-{game_index + 1:03d}.jsonl"
+        self._game_path.write_text("", encoding="utf-8")
 
     def emit(self, event: dict[str, Any]) -> None:
         event["ts"] = round(time.time(), 3)
+        line = json.dumps(event, ensure_ascii=False) + "\n"
         with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+            handle.write(line)
+        if self._game_path is not None:
+            with self._game_path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
 
 
 # ----- snapshot labelling ---------------------------------------------------------
@@ -143,7 +174,11 @@ def run_bot(bot_id: int, options: dict[str, Any]) -> None:
     # Each worker pins its own model (per-bot ids allow checkpoint matches);
     # the child's options dict is a private pickle copy, safe to specialize.
     options = {**options, "model": _model_for(bot_id, options)}
-    events = EventWriter(Path(options["events_dir"]), bot_id)
+    events = EventWriter(
+        Path(options["events_dir"]),
+        bot_id,
+        logs_dir=Path(options["logs_dir"]) if options.get("logs_dir") else None,
+    )
     client = InferenceClient(
         options["server_host"], options["server_port"], timeout=options["timeout"]
     )
@@ -546,6 +581,55 @@ class _GameContext:
             })
 
 
+def _board_summary(snapshot: Mapping[str, Any], my_seat: int) -> dict[str, Any]:
+    """
+    Compact human-readable board view for remote-act verification.
+
+    This is what a human can cross-check against the live page (scores,
+    supply, my gems, status) plus the mask size that was actually sent to
+    the inference server - not the full 265-d obs vector.
+    """
+    panels = snapshot.get("panels") or []
+    scores = {
+        str(panel.get("seat", index + 1)): float(panel.get("score", 0))
+        for index, panel in enumerate(panels)
+    }
+    my_panel = next(
+        (p for p in panels if p.get("seat") == my_seat),
+        panels[my_seat - 1] if 0 < my_seat <= len(panels) else None,
+    )
+    dealt_filled = [
+        sum(1 for slot in row if slot is not None)
+        for row in (snapshot.get("dealt") or [])
+    ]
+    return {
+        "status": snapshot.get("status") or "",
+        "scores": scores,
+        "my_gems": dict(my_panel.get("gems") or {}) if my_panel else {},
+        "my_reserved": len(my_panel.get("reserved_tiers") or []) if my_panel else 0,
+        "supply": dict(snapshot.get("supply") or {}),
+        "dealt_filled": dealt_filled,
+        "deck_counts": list(snapshot.get("deck_counts") or []),
+    }
+
+
+def _ranking_payload(
+    top: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Server ranking + Chinese descriptions for the dashboard panel."""
+    ranked: list[dict[str, Any]] = []
+    for item in top:
+        idx = int(item["idx"])
+        ranked.append(
+            {
+                "idx": idx,
+                "q": float(item["q"]),
+                "desc": _describe_action(ALL_ACTIONS[idx]),
+            }
+        )
+    return ranked
+
+
 def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
     env: BrowserSplendorEnv,
     client: InferenceClient,
@@ -555,6 +639,7 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
     options: dict[str, Any],
 ) -> None:
     """One game: the play_web loop with remote inference + event emission."""
+    events.start_game(game_index)
     _coordinate_room(bot_id, game_index, env, options, events)
 
     obs, info = env.reset()
@@ -577,12 +662,33 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
     for _step in range(options["max_steps"]):
         anomalies += _emit_parity(env, ctx)
         mask = env.get_legal_actions_mask()
-        action = client.act(options["model"], obs, mask)
+        decision = client.act(options["model"], obs, mask)
+        action = decision.action
         desc = _describe_action(ALL_ACTIONS[action])
-        prev_snapshot = extract_snapshot(env.driver)
+        act_snapshot = extract_snapshot(env.driver)
+        board = _board_summary(act_snapshot, ctx.my_seat)
+        ctx.emit({
+            "type": "remote_act",
+            "seq": seq + 1,
+            "action": action,
+            "desc": desc,
+            "top": _ranking_payload(decision.top),
+            "legal_count": int(np.count_nonzero(mask)),
+            "board": board,
+        })
+        prev_snapshot = act_snapshot
 
         obs, _reward, terminated, _trunc, _info = env.step(action)
         seq += 1
+        # env.step returning without raising means the executor completed the
+        # click sequence for this same action index (no silent re-mapping).
+        ctx.emit({
+            "type": "browser_act",
+            "seq": seq,
+            "action": action,
+            "desc": desc,
+            "executed": True,
+        })
         cur_snapshot = extract_snapshot(env.driver)
         for seat, panel in enumerate(cur_snapshot["panels"], start=1):
             last_scores[seat] = float(panel["score"])
@@ -616,19 +722,27 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
 
 def _emit_parity(env: BrowserSplendorEnv, ctx: _GameContext) -> int:
     """
-    Forward the env's mask-parity report to the event stream; return anomalies.
+    Surface only the parity lines that need a human; return the anomaly count.
 
-    The report itself is emitted whenever there is one, because its buckets are
-    how a run is *attributed*; the returned count is only the part of it that
-    needs a human (see :func:`splendor.browser.monitor.anomaly_count` - the
-    header and the by-design over-approximation buckets are not anomalies, so
-    counting ``len(report)`` would make the per-run anomaly figure permanently
-    non-zero and blind the phase-3 acceptance to real regressions).
+    Healthy decisions are silent: ``engine-only=0`` plus the E5/E6 and
+    DOM-ONLY over-approximation buckets fire on almost every step and used to
+    flood both the JSONL stream and the dashboard log. The report itself is
+    emitted only when :func:`~splendor.browser.monitor.anomaly_count` is
+    non-zero (page redesign / DOM extraction bug / ``engine-only > 0``), so a
+    clean run stays readable and an anomaly is still fully attributed. The
+    returned count is what ``game_end`` reports - never ``len(report)``, which
+    would count the unconditional header.
     """
     report = list(getattr(env, "last_parity_report", []))
-    if report:
-        ctx.emit({"type": "parity", "lines": report})
-    return anomaly_count(report)
+    count = anomaly_count(report)
+    if count:
+        ctx.emit({
+            "type": "parity",
+            "level": "warn",
+            "anomalies": count,
+            "lines": report,
+        })
+    return count
 
 
 def _result_of(last_scores: dict[int, float], my_seat: int) -> str:
@@ -707,6 +821,8 @@ def _parse_args() -> dict[str, Any]:
     )
     parser.add_argument("--events-dir", default="web_events",
                         help="Directory for bot<i>.jsonl events (dashboard input).")
+    parser.add_argument("--logs-dir", default=DEFAULT_LOGS_DIR,
+                        help="Per-game JSONL backup directory (logs/bot<i>/game-NNN.jsonl).")
     options = vars(parser.parse_args())
 
     model_ids = [part.strip() for part in options["model"].split(",") if part.strip()]

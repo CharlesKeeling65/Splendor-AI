@@ -17,7 +17,10 @@ keeping failure attribution one-to-one).
 Operations (request -> response payload):
 
 * ``ping``    -> ``{"models": [...], "device": "cpu"}``
-* ``act``     -> ``{"action": int}``           (obs 265-d + mask 3510-d in)
+* ``act``     -> ``{"action": int, "top": [{"idx": int, "q": float}, ...]}``
+                 (obs 265-d + mask 3510-d in; optional ``top_k``, default 5 -
+                 ranking is over *legal* actions only, so displayed Q values
+                 never hit the illegal HUGE_NEG sentinel)
 * ``winrate`` -> ``{"win_rates": [float per seat], "draw_rate": float, ...}``
 """
 

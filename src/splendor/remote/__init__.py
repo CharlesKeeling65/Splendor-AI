@@ -13,7 +13,7 @@ This package implements the TCP JSONL protocol between the two halves
   batched Monte-Carlo win-rate estimator (:mod:`.rollout`).
 """
 
-from .client import InferenceClient
+from .client import ActDecision, InferenceClient
 from .protocol import (
     MAX_FRAME_BYTES,
     decode_message,
@@ -25,6 +25,7 @@ from .protocol import (
 
 __all__ = [
     "MAX_FRAME_BYTES",
+    "ActDecision",
     "InferenceClient",
     "decode_message",
     "encode_message",

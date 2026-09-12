@@ -41,23 +41,27 @@ from .protocol import (
 )
 from .rollout import DEFAULT_MAX_STEPS, WinRateEstimator
 
+DEFAULT_TOP_K = 5
+
 
 class InferenceServer:
     """TCP JSONL server: ping / act / winrate over a checkpoint registry."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - registry + tunables, one construction site
         self,
         models: dict[str, QNetwork],
         host: str = "0.0.0.0",
         port: int = 8765,
         default_rollouts: int = 16,
         default_max_steps: int = DEFAULT_MAX_STEPS,
+        default_top_k: int = DEFAULT_TOP_K,
     ) -> None:
         self._models = models
         self._host = host
         self._port = port
         self._default_rollouts = default_rollouts
         self._default_max_steps = default_max_steps
+        self._default_top_k = default_top_k
         self._estimators = {
             name: WinRateEstimator(model) for name, model in models.items()
         }
@@ -135,8 +139,23 @@ class InferenceServer:
             raise ProtocolError(
                 f"mask shape {mask.shape} != ({len(ALL_ACTIONS)},)"
             )
-        action = model.act(torch.from_numpy(obs), torch.from_numpy(mask))
-        return make_response(request_id, action=int(action))
+        top_k = int(request.get("top_k", self._default_top_k))
+        if top_k < 1:
+            raise ProtocolError(f"top_k must be >= 1, got {top_k}")
+        with torch.no_grad():
+            q_values = model.forward(
+                torch.from_numpy(obs), torch.from_numpy(mask)
+            ).squeeze(0)
+        action = int(q_values.argmax().item())
+        legal_count = int(np.count_nonzero(mask))
+        k = min(top_k, max(legal_count, 1))
+        values, indices = torch.topk(q_values, k)
+        top = [
+            {"idx": int(idx.item()), "q": float(val.item())}
+            for val, idx in zip(values, indices, strict=True)
+            if mask[int(idx.item())] > 0
+        ]
+        return make_response(request_id, action=action, top=top)
 
     async def _handle_winrate(
         self, request_id: int, request: dict[str, Any]

@@ -82,7 +82,7 @@ play-dashboard --events-dir web_events --port 8899
 
 ### 掩码奇偶那一行怎么读（⚠️ 掩码奇偶）
 
-每次我方决策点，引擎掩码与"DOM 可点集"会各测一次并对比，结果推成一行日志。**只有 `engine-only` 需要担心**：
+每个我方决策点引擎掩码与"DOM 可点集"各测一次并对比。**健康时（`engine-only=0`）不再写入事件流**——E5/E6 与 DOM-ONLY 近似桶几乎每步都会出现，逐步推送会把日志和仪表盘刷满。只有 `anomaly_count > 0` 时才推完整报告并标 `level=warn`。`game_end.anomalies` 仍是整局累计。**只有 `engine-only` 需要担心**：
 
 | 字段 | 含义 | 正常值 |
 |---|---|---|

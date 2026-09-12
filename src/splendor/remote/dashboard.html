@@ -34,6 +34,13 @@
   #log .entry.warn { color: #b45309; }
   #log .entry .seat { flex: none; font-weight: 600; }
   .definition { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  #ranking-box { margin-top: 0; }
+  table.ranking { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.ranking th, table.ranking td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+  table.ranking th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  table.ranking tr.chosen { background: #eff6ff; font-weight: 600; }
+  table.ranking td.q { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .board-line { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -64,10 +71,22 @@
       </table>
     </section>
     <section class="panel" data-page-node-id="OfqkcCTsVKD2D8bCwlfCAo">
-      <h2 data-page-node-id="t5OvBFhGYRN9DeMCyINRKg">实时对局日志</h2>
+      <h2 data-page-node-id="t5OvBFhGYRN9DeMCyINRKg">实时对局日志（仅最新一局）</h2>
       <div id="log" data-page-node-id="ufH3XF36Ia7umA0EEZSToA"></div>
     </section>
   </aside>
+  <section class="panel" id="ranking-box" style="grid-column: 1 / -1;">
+    <h2>远程动作排序 · Q 值（最新一步）</h2>
+    <p class="board-line" id="board-line"></p>
+    <table class="ranking">
+      <thead><tr><th>#</th><th>动作</th><th>Q</th><th>选用</th></tr></thead>
+      <tbody id="ranking-body"><tr><td colspan="4" style="color:var(--muted)">等待 remote_act 事件…</td></tr></tbody>
+    </table>
+    <p class="definition">
+      排序来自推理服务器对当前合法掩码的 top-k Q 值；「选用」= 远程回传并交给浏览器执行器的那一步。
+      对照 <code>remote_act</code> 与紧随其后的 <code>browser_act</code>（同一 seq/action）即可核对传输动作与页面执行是否一致。
+    </p>
+  </section>
 </main>
 <script>
 const SEAT_COLORS = ["#2563eb", "#dc2626", "#059669", "#d97706"];
@@ -105,8 +124,10 @@ function iconOf(e) {
   if (e.type === "game_start") return "🏁";
   if (e.type === "game_end") return "🏆";
   if (e.type === "discard") return "🗑️";
+  if (e.type === "remote_act") return "📡";
+  if (e.type === "browser_act") return "🖱️";
   if (e.type === "action") return e.actor && e.actor.startsWith("bot") ? "🤖" : "🧑";
-  if (e.type === "parity") return "⚠️";
+  if (e.type === "parity") return "⚠️";  // only emitted on real anomalies
   return "ℹ️";
 }
 function fmtGems(gems) {
@@ -118,15 +139,38 @@ function timeOf(e) {
   return d.toTimeString().slice(0, 8);
 }
 
+function latestGameWindow(events) {
+  // Same window rule as the chart: everything since the LATEST game_start.
+  const starts = events.filter((e) => e.type === "game_start");
+  const lastStart = starts.length ? starts[starts.length - 1] : null;
+  return lastStart
+    ? events.filter((e) => (e.ts || 0) >= (lastStart.ts || 0))
+    : events;
+}
+
+function fmtBoard(e) {
+  const board = e.board;
+  if (!board) return "";
+  const scores = Object.entries(board.scores || {})
+    .map(([s, v]) => `座${s}:${v}`).join(" ");
+  return `比分[${scores}] 供给${fmtGems(board.supply)} 我持${fmtGems(board.my_gems)} 合法${e.legal_count ?? "?"}`;
+}
+
 function renderLog(events) {
   const log = document.getElementById("log");
   log.innerHTML = "";
-  for (const e of events.slice(-60).reverse()) {
+  const windowEvents = latestGameWindow(events);
+  for (const e of windowEvents.slice(-80).reverse()) {
     const div = document.createElement("div");
     div.className = "entry" + (e.type === "discard" ? " discard" : "")
       + (e.level === "warn" || e.type === "parity" ? " warn" : "");
     let text = "";
-    if (e.type === "action") text = `${e.actor} · ${e.desc}`;
+    if (e.type === "remote_act") {
+      text = `远程回传 #${e.seq} → [${e.action}] ${e.desc} · ${fmtBoard(e)}`;
+    } else if (e.type === "browser_act") {
+      const ok = e.executed ? "已执行" : "未执行";
+      text = `浏览器${ok} #${e.seq} → [${e.action}] ${e.desc}`;
+    } else if (e.type === "action") text = `${e.actor} · ${e.desc}`;
     else if (e.type === "discard") text = `座位${e.seat} 弃宝石 ${fmtGems(e.gems)}`;
     else if (e.type === "game_start") text = `对局开始（bot${e.bot} 坐位${e.my_seat}，${e.seats}人局）`;
     else if (e.type === "game_end") text = `bot${e.bot} 终局 ${e.result}（${Object.entries(e.scores || {}).map(([s, v]) => `座${s}:${v}`).join(" ")}）`;
@@ -134,6 +178,34 @@ function renderLog(events) {
     else text = e.message || "";
     div.innerHTML = `<span class="time">${timeOf(e)}</span><span>${iconOf(e)}</span><span>${text}</span>`;
     log.appendChild(div);
+  }
+}
+
+function renderRanking(events) {
+  const windowEvents = latestGameWindow(events);
+  const acts = windowEvents.filter((e) => e.type === "remote_act");
+  const body = document.getElementById("ranking-body");
+  const boardLine = document.getElementById("board-line");
+  if (!acts.length) {
+    body.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">等待 remote_act 事件…</td></tr>`;
+    boardLine.textContent = "";
+    return;
+  }
+  const latest = acts[acts.length - 1];
+  const scores = Object.entries((latest.board && latest.board.scores) || {})
+    .map(([s, v]) => `座${s}:${v}`).join(" ");
+  boardLine.textContent =
+    `第 ${latest.seq} 步 · 选用 [${latest.action}] ${latest.desc} · ` +
+    `比分[${scores}] · 合法动作 ${latest.legal_count ?? "?"} · ` +
+    `状态「${(latest.board && latest.board.status) || ""}」`;
+  body.innerHTML = "";
+  for (const item of (latest.top || []).slice(0, 10)) {
+    const tr = document.createElement("tr");
+    if (item.idx === latest.action) tr.className = "chosen";
+    tr.innerHTML = `<td>${item.idx}</td><td>${item.desc || ""}</td>` +
+      `<td class="q">${Number(item.q).toFixed(3)}</td>` +
+      `<td>${item.idx === latest.action ? "✓" : ""}</td>`;
+    body.appendChild(tr);
   }
 }
 
@@ -173,11 +245,8 @@ function renderChart(events) {
   // game_start's timestamp instead - everything before it belongs to a
   // finished game / a previous run and must not bleed into this chart
   // (otherwise a new game would continue on the previous game's x tail).
-  const starts = events.filter((e) => e.type === "game_start");
-  const lastStart = starts.length ? starts[starts.length - 1] : null;
-  const windowEvents = lastStart
-    ? events.filter((e) => (e.ts || 0) >= (lastStart.ts || 0))
-    : events;
+  const windowEvents = latestGameWindow(events);
+  const lastStart = [...events].reverse().find((e) => e.type === "game_start") || null;
   // Only real action records (stale:false, written by the acting bot itself
   // with both `before` and `after`). The other bot re-logs the same action as
   // an observation with stale:true and after:null - counting those would
@@ -222,6 +291,7 @@ async function tick() {
     renderChart(state.events);
     renderStats(state.events);
     renderLog(state.events);
+    renderRanking(state.events);
   } catch (err) {
     document.getElementById("status").textContent = "连接失败：" + err.message;
   }

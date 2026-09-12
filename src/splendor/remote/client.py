@@ -13,6 +13,7 @@ which already has per-game recovery).
 import io
 import socket
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -28,10 +29,19 @@ from .protocol import (
 )
 
 DEFAULT_TIMEOUT = 120.0
+DEFAULT_TOP_K = 5
 
 
 class InferenceClientError(RuntimeError):
     """The server answered with an error frame, or the link failed twice."""
+
+
+@dataclass(frozen=True)
+class ActDecision:
+    """Greedy action plus the server's legal-action Q ranking."""
+
+    action: int
+    top: tuple[dict[str, Any], ...]  # [{"idx": int, "q": float}, ...]
 
 
 class InferenceClient:
@@ -50,22 +60,36 @@ class InferenceClient:
         """Health check; returns {"models": [...], "device": ...}."""
         return self._call(OP_PING)
 
-    def act(self, model_id: str, obs: np.ndarray, mask: np.ndarray) -> int:
+    def act(
+        self,
+        model_id: str,
+        obs: np.ndarray,
+        mask: np.ndarray,
+        top_k: int = DEFAULT_TOP_K,
+    ) -> ActDecision:
         """
         Greedy action for one observation under one legal mask.
 
-        :returns: the action index into ALL_ACTIONS.
+        :returns: :class:`ActDecision` - the chosen ``ALL_ACTIONS`` index plus
+                  the server's top-k legal Q ranking (for logging / dashboard).
         """
         response = self._call(
             OP_ACT,
             model_id=model_id,
             obs=np.asarray(obs, dtype=np.float32).tolist(),
             mask=np.asarray(mask, dtype=np.int64).tolist(),
+            top_k=int(top_k),
         )
         action = response["action"]
         if not isinstance(action, int):
             raise InferenceClientError(f"malformed act response: {response!r}")
-        return action
+        raw_top = response.get("top") or []
+        top: list[dict[str, Any]] = []
+        for item in raw_top:
+            if not isinstance(item, dict) or "idx" not in item or "q" not in item:
+                raise InferenceClientError(f"malformed act ranking: {item!r}")
+            top.append({"idx": int(item["idx"]), "q": float(item["q"])})
+        return ActDecision(action=action, top=tuple(top))
 
     def estimate_winrate(
         self,
