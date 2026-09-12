@@ -30,6 +30,8 @@ from splendor.splendor.splendor_model import Card, SplendorGameRule, SplendorSta
 from .dom_extractor import (
     COLOR_NAME_TO_INDEX,
     DISCARD_SELECTION_RE,
+    PHASE_NOBLE_TEXT,
+    NobleInfo,
     Snapshot,
     extract_snapshot,
 )
@@ -92,6 +94,10 @@ SELECTOR_NOBLE_CANDIDATE = ".ccbs-noble.ccbs-candidate"
 
 # --- etiquette ----------------------------------------------------------------
 HUMAN_CLICK_DELAY: tuple[float, float] = (0.2, 0.5)
+# After a buy the server needs a beat to settle the purchase and either grant
+# a lone noble silently or flip the status into 等待你选择要获得的贵族卡. The
+# grace window lets that transition happen before "no choice UI" is trusted.
+NOBLE_CHOICE_GRACE_SECONDS = 0.8
 
 # Pill texts are digit + Chinese colour-character pairs, e.g. "2白1金".
 _PILL_RE = re.compile(r"([0-9]+)([白蓝绿红黑金])")
@@ -135,10 +141,16 @@ class ActionExecutor:
         driver: BrowserDriver,
         click_delay: tuple[float, float] = HUMAN_CLICK_DELAY,
         wait_timeout: float = 5.0,
+        noble_choice_grace: float = NOBLE_CHOICE_GRACE_SECONDS,
     ) -> None:
         self._driver = driver
         self._click_delay = click_delay
         self._wait_timeout = wait_timeout
+        # How long after the buy click the page gets to *enter* the noble-choice
+        # state before the executor concludes it resolved without a UI (auto-
+        # grant, or the engine probe over-counted). Live failures showed the
+        # page settling in well under a second when no choice is required.
+        self._noble_choice_grace = noble_choice_grace
         # Engine instance used only to *reuse* payment/noble semantics (see
         # select_payment_greedy); its throwaway random initial state is the
         # price of keeping those semantics single-sourced in the engine.
@@ -333,17 +345,22 @@ class ActionExecutor:
 
     def _pick_noble(self, action: Action, pseudo_state: SplendorState | None) -> None:
         """
-        Claim the noble this action selected - only when the page asks.
+        Claim the noble this action selected - only when the *page* asks.
 
-        Measured page behaviour (ccbs bundle, 2026-09-11): the engine attaches
-        a noble to an action whenever at least one noble is satisfied *after*
-        the action, but the page renders a choice UI only when TWO OR MORE
-        nobles are simultaneously satisfied and otherwise grants the lone
-        candidate automatically. Eligibility therefore has to be judged on the
-        post-action card counts (exactly as ``getLegalActions`` does for buys) -
-        the pre-fix check ran ``noble_visit`` against the pre-action agent and
-        reported ``noble ... is not eligible to visit agent N`` for every buy
-        that *created* the eligibility.
+        Two authorities, deliberately split:
+
+        * the engine probe (``_noble_choices_expected``) is a cheap fast path:
+          0-1 satisfied nobles means the page grants silently, so return
+          without touching the DOM (the common case, measured live);
+        * once the probe expects a choice, the **page status** decides. The
+          probe reads ``board.nobles`` from the DOM and can over-count when a
+          claimed tile leaks into the bank list; the status line
+          (``等待你…选择要获得的贵族卡``) is what the server actually renders
+          when a pick is required. If the page settles without ever entering
+          that state, the purchase already landed - proceed rather than abort
+          a legal action over a reporting mismatch (live failure mode of
+          2026-09-11: ``noble choice UI did not appear within 5.0s`` killed
+          the game after a fine buy).
 
         The candidate is located by its cost vector rather than by bank order:
         the page's candidate order is the bank order, but matching on cost
@@ -362,25 +379,60 @@ class ActionExecutor:
         expected = _cost_key(chosen[1])
         if not self._noble_choices_expected(action, pseudo_state):
             return  # 0 or 1 satisfied noble: the page grants it without a click
-        deadline = time.monotonic() + self._wait_timeout
+        self._await_noble_choice(chosen, expected)
+
+    def _await_noble_choice(
+        self,
+        chosen: tuple[str, dict[str, int]],
+        expected: tuple[tuple[str, int], ...],
+    ) -> None:
+        """Poll the page until it picks, settles without asking, or times out."""
+        started = time.monotonic()
+        deadline = started + self._wait_timeout
+        grace_deadline = started + self._noble_choice_grace
+        saw_choice_status = False
+        candidates_seen = 0
         while True:
-            options = extract_snapshot(self._driver)["noble_options"] or []
-            for index, option in enumerate(options):
-                if _cost_key(option["requirements"]) == expected:
-                    self._click_confirmed(SELECTOR_NOBLE_CANDIDATE, index)
-                    return
+            fresh = extract_snapshot(self._driver)
+            status = fresh["status"]
+            options = fresh["noble_options"] or []
+            candidates_seen = max(candidates_seen, len(options))
             if options:
-                raise ActionExecutionError(
-                    f"noble {chosen[0]} is not among the {len(options)} "
-                    "candidate(s) the page highlights (engine/page mismatch)"
-                )
+                self._click_noble_candidate(chosen, expected, options)
+                return
+            if PHASE_NOBLE_TEXT in status:
+                saw_choice_status = True  # choice is up: keep the full budget
+            elif saw_choice_status or time.monotonic() > grace_deadline:
+                # The page left the choice state (or never entered it after
+                # the grace window): it resolved the visit without a UI.
+                return
             if time.monotonic() >= deadline:
                 raise ActionExecutionError(
                     "noble choice UI did not appear within "
-                    f"{self._wait_timeout}s (expected a choice between the "
-                    "satisfied nobles)"
+                    f"{self._wait_timeout}s while the page still asks for a "
+                    f"pick (status={status!r}; expected cost="
+                    f"{dict(chosen[1])!r}; candidates seen={candidates_seen}; "
+                    f"bank nobles="
+                    f"{[dict(n['requirements']) for n in fresh['nobles']]!r})"
                 )
             time.sleep(0.2)
+
+    def _click_noble_candidate(
+        self,
+        chosen: tuple[str, dict[str, int]],
+        expected: tuple[tuple[str, int], ...],
+        options: list[NobleInfo],
+    ) -> None:
+        for index, option in enumerate(options):
+            if _cost_key(option["requirements"]) == expected:
+                self._click_confirmed(SELECTOR_NOBLE_CANDIDATE, index)
+                return
+        raise ActionExecutionError(
+            f"noble {chosen[0]} is not among the {len(options)} "
+            "candidate(s) the page highlights (engine/page mismatch); "
+            f"expected cost={dict(chosen[1])!r}, "
+            f"page candidates={[dict(o['requirements']) for o in options]!r}"
+        )
 
     def _noble_choices_expected(
         self, action: Action, pseudo_state: SplendorState

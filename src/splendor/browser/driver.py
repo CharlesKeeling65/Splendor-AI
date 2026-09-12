@@ -638,8 +638,23 @@ def _read_rows(root: _Element) -> list[dict]:
 
 
 def _read_nobles(root: _Element) -> list[dict]:
+    """
+    Bank nobles only: tiles inside a seat panel are *claimed* copies.
+
+    A claimed noble re-renders under its owner's panel with the same
+    ``.ccbs-noble`` class (measured 2026-09-09 without requirement pips; a
+    later live run showed panel copies that still carried pips - those used
+    to re-enter ``board.nobles`` as ghosts and made every later buy look
+    noble-eligible). Panel membership is the only reliable "already taken"
+    signal the page exposes, so the global query is filtered by ancestry.
+    """
+    panels = query_selector_all(
+        root, "div.flex.flex-wrap.items-center.justify-center.my-2"
+    )
     readings: list[dict] = []
     for noble in query_selector_all(root, ".ccbs-noble"):
+        if any(_is_descendant(noble, panel) for panel in panels):
+            continue
         scores = query_selector_all(noble, ".ccbs-score")
         readings.append(
             {
@@ -665,6 +680,14 @@ def _read_panels(root: _Element) -> tuple[list[dict], int | None]:
         if "我" in panel.text_content():
             my_panel_index = seat_offset
         scores = query_selector_all(panel, ".ccbs-score")
+        # Card pips only: a claimed .ccbs-noble inside the panel may carry
+        # requirement rects that must not inflate permanent-card counts.
+        panel_nobles = query_selector_all(panel, ".ccbs-noble")
+        card_rects = [
+            el
+            for el in query_selector_all(panel, ".ccbs-rect")
+            if not any(_is_descendant(el, noble) for noble in panel_nobles)
+        ]
         panels.append(
             {
                 "text": panel.text_content(),
@@ -672,7 +695,13 @@ def _read_panels(root: _Element) -> tuple[list[dict], int | None]:
                 # panel text would glue the seat number to the score
                 # ("座位1" + "15分" -> "115分").
                 "score_text": scores[0].text_content().strip() if scores else "",
-                "rects": _read_counts(panel, ".ccbs-rect"),
+                "rects": [
+                    {
+                        "color_index": _class_or_minus_one(el, "ccbs-color-"),
+                        "text": el.text_content().strip(),
+                    }
+                    for el in card_rects
+                ],
                 "circles": _read_counts(panel, ".ccbs-circle"),
                 "reserved_backs": [
                     _class_or_minus_one(el, "ccbs-img-")

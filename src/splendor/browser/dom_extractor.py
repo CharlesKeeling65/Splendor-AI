@@ -251,14 +251,22 @@ EXTRACT_SNAPSHOT_JS: str = (
         cards: cards,
       };
     });
-  const nobles = Array.from(document.querySelectorAll(".ccbs-noble")).map(  // [B3.1]
-    (noble) => ({
+  // [MEASURED 2026-09-05] one div.flex.flex-wrap.items-center.justify-center.my-2
+  // per seat, in seat order; my own panel is the one whose text carries 我.
+  // Defined before the noble query: claimed nobles re-render inside their
+  // owner's panel with the same .ccbs-noble class (2026-09-09 without pips,
+  // later live runs WITH pips) and must never enter the bank-noble list.
+  const panelEls = Array.from(
+    document.querySelectorAll("div.flex.flex-wrap.items-center.justify-center.my-2")
+  );
+  const nobles = Array.from(document.querySelectorAll(".ccbs-noble"))  // [B3.1]
+    .filter((noble) => !panelEls.some((panel) => panel.contains(noble)))
+    .map((noble) => ({
       score_text: noble.querySelector(".ccbs-score")
         ? noble.querySelector(".ccbs-score").textContent.trim()
         : "",
       rects: readCounts(noble, ".ccbs-rect"),  // [B3.1] noble requirements
-    })
-  );
+    }));
   // [MEASURED 2026-09-05] supply container: a single row of six chips below
   // the table (div.ccbs-circle.ccbs-color-N.scale-125, <button> only in
   // take-gems mode). A bare ".ccbs-circle" query would hit card-cost pips
@@ -267,21 +275,27 @@ EXTRACT_SNAPSHOT_JS: str = (
     "div.mt-4.flex.items-center.justify-center.space-x-6"
   );
   const supply = supplyArea ? readCounts(supplyArea, ".ccbs-circle") : [];
-  // [MEASURED 2026-09-05] one div.flex.flex-wrap.items-center.justify-center.my-2
-  // per seat, in seat order; my own panel is the one whose text carries 我.
-  const panelEls = Array.from(
-    document.querySelectorAll("div.flex.flex-wrap.items-center.justify-center.my-2")
-  );
+  // panelEls was defined above (before the noble query) so claimed nobles
+  // inside panels can be filtered out of the bank-noble list.
   const myPanelIdx = panelEls.findIndex((el) =>
     (el.innerText || el.textContent || "").includes("我")
   );
   const myPanelIndex = myPanelIdx >= 0 ? myPanelIdx : null;
   const panels = panelEls.map((p) => {
     const score = p.querySelector(".ccbs-score");  // [B3.1] "N分" element
+    // Permanent-card pips only: a claimed .ccbs-noble re-rendered inside the
+    // panel may itself carry .ccbs-rect requirement pips (seen live after
+    // the first noble visit); those must not inflate card_counts.
+    const cardRects = Array.from(p.querySelectorAll(".ccbs-rect")).filter(
+      (el) => !el.closest(".ccbs-noble")
+    );
     return {
     text: p.innerText || p.textContent || "",
     score_text: score ? (score.textContent || "").trim() : "",
-    rects: readCounts(p, ".ccbs-rect"),     // [B3.1] permanent cards
+    rects: cardRects.map((el) => ({
+      color_index: colorIndexOf(el),
+      text: (el.textContent || "").trim(),
+    })),
     circles: readCounts(p, ".ccbs-circle"), // [B3.1] gems in hand
     reserved_backs: Array.from(
       p.querySelectorAll(".ccbs-card.ccbs-type-5")  // [B3.1] backs leak tier
@@ -440,13 +454,11 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         return _room_page_snapshot(raw)
     dealt, deck_counts = _interpret_rows(rows)
 
-    # Board nobles always render 3-5 requirement pips, so their requirement
-    # dict is never empty. A *claimed* noble tile is re-rendered with the
-    # same .ccbs-noble class (in its owner's panel area) but without
-    # .ccbs-rect pips - such a reading yields an empty requirement dict that
-    # no registry entry matches (measured live 2026-09-09: KeyError on {}).
-    # Drop empty readings; keep the global query so the board area needs no
-    # container assumption.
+    # Bank nobles always render 3-5 requirement pips, so their requirement
+    # dict is never empty. Panel-scoped claimed copies are already dropped in
+    # the selection layer (EXTRACT_SNAPSHOT_JS / MockBrowserDriver._read_nobles);
+    # the empty-requirements filter stays as defence in depth for any residual
+    # non-bank tile with no pips (measured live 2026-09-09: KeyError on {}).
     nobles: list[NobleInfo] = [
         {"requirements": requirements}
         for noble in raw["nobles"]

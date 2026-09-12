@@ -179,6 +179,31 @@ def test_claimed_noble_in_panel_is_dropped() -> None:
     assert pseudo_state is not None
 
 
+def test_claimed_noble_with_pips_in_panel_is_dropped() -> None:
+    """
+    Ghost-noble pin (live failure 2026-09-11): a claimed noble inside the
+    owner's panel that STILL carries requirement pips used to re-enter
+    ``board.nobles`` through the global ``.ccbs-noble`` query. The engine
+    then kept treating the already-taken tile as visitable, so a later buy
+    that "satisfied" it plus one real bank noble asked for a choice UI the
+    page never rendered (``noble choice UI did not appear within 5.0s`` -
+    5 occurrences across both bots). Panel ancestry is the only reliable
+    "claimed" signal, and the panel's permanent-card rects must ignore the
+    noble's own pips.
+    """
+    snapshot = extract_snapshot(_driver_for("noble_claimed_with_pips.html"))
+    requirements = [noble["requirements"] for noble in snapshot["nobles"]]
+    # the three bank nobles survive; the pipped panel ghost does not
+    assert len(requirements) == 3
+    assert {"green": 3, "red": 3, "black": 3} in requirements
+    # ghost pips were 3 white / 3 blue / 3 green - they must not appear as
+    # permanent cards on the claiming panel either
+    my_panel = snapshot["panels"][snapshot["my_seat"] - 1]
+    assert my_panel["card_counts"].get("white", 0) == 0
+    assert my_panel["card_counts"].get("blue", 0) == 0
+    assert my_panel["card_counts"].get("green", 0) == 0
+
+
 def _fake_cards(colour: str, count: int) -> list[Card]:
     """Synthetic permanent cards - noble_visit only reads len(cards[colour])."""
     return [
@@ -256,6 +281,52 @@ def test_two_satisfied_nobles_make_the_executor_pick_the_right_candidate() -> No
     # the fixture highlights two candidates in bank order (4g4r, 4b4g); the
     # chosen noble is 4g4r, so the click must land on candidate 0
     assert (SELECTOR_NOBLE_CANDIDATE, 0) in driver.click_log
+
+
+def test_pick_noble_degrades_when_page_never_shows_choice() -> None:
+    """
+    Engine probe says 2+ nobles are satisfied, but the page settles without
+    ever entering 等待你选择要获得的贵族卡 (auto-grant, or a residual ghost
+    in the probe). The purchase already landed - the executor must proceed
+    instead of aborting the game (live failure of 2026-09-11).
+    """
+    driver, snapshot, state = _hand_one_short_of_noble_zero()
+    my = state.agents[state.agent_to_move]
+    my.cards["blue"].extend(_fake_cards("blue", 4))  # probe: 2 nobles eligible
+    # Strip the choice UI from the page: status stays 等待你操作, no candidates.
+    raw = (FIXTURES / "noble_available.html").read_text(encoding="utf-8")
+    driver.set_html(raw.replace(" ccbs-candidate", ""), url=BASE_URL)
+
+    ActionExecutor(
+        driver, click_delay=(0, 0), wait_timeout=1.0, noble_choice_grace=0.05
+    ).execute(_buy_action_index(0, 0, noble_index=0), snapshot, state)
+
+    assert not [
+        entry for entry in driver.click_log if entry[0] == SELECTOR_NOBLE_CANDIDATE
+    ]
+
+
+def test_pick_noble_timeout_carries_page_diagnostics() -> None:
+    """
+    When the status *stays* in the choice sub-flow without rendering any
+    candidate, the raise must name what the page actually showed - the old
+    message ("did not appear within 5.0s") was undiagnosable from a log.
+    """
+    driver, snapshot, state = _hand_one_short_of_noble_zero()
+    my = state.agents[state.agent_to_move]
+    my.cards["blue"].extend(_fake_cards("blue", 4))
+    # Keep candidates stripped but force the status into the choice sub-flow.
+    raw = (FIXTURES / "noble_available.html").read_text(encoding="utf-8")
+    stuck = raw.replace(" ccbs-candidate", "").replace(
+        "等待你操作", "等待你选择要获得的贵族卡", 1
+    )
+    driver.set_html(stuck, url=BASE_URL)
+
+    executor = ActionExecutor(
+        driver, click_delay=(0, 0), wait_timeout=0.4, noble_choice_grace=0.0
+    )
+    with pytest.raises(ActionExecutionError, match="candidates seen=0"):
+        executor.execute(_buy_action_index(0, 0, noble_index=0), snapshot, state)
 
 
 # ---------------------------------------------------------------------------
