@@ -127,7 +127,9 @@ def _teacher_eval(args: argparse.Namespace) -> None:
     names = args.candidates
     opponent_names = args.opponents
     candidates = [_candidate(name, args) for name in names]
-    opponents = [build_fixed_baseline(name, device_name=args.device) for name in opponent_names]
+    opponents = [
+        build_fixed_baseline(name, device_name=args.device) for name in opponent_names
+    ]
     seeds = _seed_group(manifest, "teacher_evaluation")
     results = evaluate_matrix(candidates, opponents, seeds)
     _write_json(
@@ -255,7 +257,9 @@ def _dagger_aggregate(args: argparse.Namespace) -> None:
     print(f"DAgger aggregate written to {args.output}")
 
 
-def _pool_entries(args: argparse.Namespace, initial_bc: Path) -> list[OpponentPoolEntry]:
+def _pool_entries(
+    args: argparse.Namespace, initial_bc: Path
+) -> list[OpponentPoolEntry]:
     """Build fixed pool entries; ``current`` is supplied by the PPO trainer."""
     entries: list[OpponentPoolEntry] = []
     for raw in args.opponent_pool.split(","):
@@ -298,6 +302,14 @@ def _ppo_selfplay(args: argparse.Namespace) -> None:
         terminal_value=args.terminal_value,
         seed=args.seed,
         device_name=args.device,
+        initialization=args.initialization,
+        target_kl=args.target_kl,
+        reference_kl_coefficient=args.reference_kl_coefficient,
+        current_weight=_current_pool_weight(args.opponent_pool),
+        history_weight=args.history_weight,
+        history_limit=args.history_limit,
+        critic_warmup_epochs=args.critic_warmup_epochs,
+        eval_every=args.eval_every,
     )
     result = train_ppo_selfplay(
         initial_bc,
@@ -310,6 +322,18 @@ def _ppo_selfplay(args: argparse.Namespace) -> None:
         source_manifest=str(args.manifest),
     )
     print(f"PPO self-play written to {result['best']}")
+
+
+def _current_pool_weight(pool: str) -> float:
+    """Honor the declared current bucket instead of silently forcing weight one."""
+    weights = []
+    for raw in pool.split(","):
+        name, separator, weight = raw.strip().partition(":")
+        if name == "current":
+            weights.append(float(weight) if separator else 1.0)
+    if len(weights) > 1:
+        raise ValueError("current opponent bucket must not appear twice")
+    return weights[0] if weights else 0.0
 
 
 def _ppo_eval(args: argparse.Namespace) -> None:
@@ -377,12 +401,13 @@ def _mcts_gate(args: argparse.Namespace) -> None:
     manifest = load_manifest(args.manifest)
     require_approved(manifest)
     seeds = _seed_group(manifest, args.seed_group)
-    opponent_names = [name.strip() for name in args.opponents.split(",") if name.strip()]
+    opponent_names = [
+        name.strip() for name in args.opponents.split(",") if name.strip()
+    ]
     if not opponent_names:
         raise ValueError("MCTS gate requires at least one fixed opponent")
     opponents = [
-        build_fixed_baseline(name, device_name=args.device)
-        for name in opponent_names
+        build_fixed_baseline(name, device_name=args.device) for name in opponent_names
     ]
     gate = run_search_gate(
         args.checkpoint,
@@ -443,10 +468,21 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     create.add_argument("--experiment-id", required=True)
     create.add_argument("--phase", default="3.0-3.2")
     create.add_argument("--purpose", choices=("smoke", "formal"), default="formal")
-    create.add_argument("--training-seeds", nargs="+", type=int, default=[42, 1234, 2024])
-    create.add_argument("--validation-seeds", nargs="+", type=int, default=list(range(800101, 800111)))
-    create.add_argument("--final-test-seeds", nargs="+", type=int, default=list(range(800201, 800221)))
-    create.add_argument("--teacher-evaluation-seeds", nargs="+", type=int, default=list(range(800301, 800311)))
+    create.add_argument(
+        "--training-seeds", nargs="+", type=int, default=[42, 1234, 2024]
+    )
+    create.add_argument(
+        "--validation-seeds", nargs="+", type=int, default=list(range(800101, 800111))
+    )
+    create.add_argument(
+        "--final-test-seeds", nargs="+", type=int, default=list(range(800201, 800221))
+    )
+    create.add_argument(
+        "--teacher-evaluation-seeds",
+        nargs="+",
+        type=int,
+        default=list(range(800301, 800311)),
+    )
     create.add_argument("--teacher-games-per-pair", type=int, default=20)
     create.add_argument("--bc-epochs", type=int, default=10)
     create.add_argument("--bc-max-samples", type=int, default=50000)
@@ -462,15 +498,30 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     teacher = subparsers.add_parser("teacher-eval")
     teacher.add_argument("manifest", type=Path)
     teacher.add_argument("--output", type=Path, required=True)
-    teacher.add_argument("--candidates", nargs="+", choices=DEFAULT_CANDIDATES, default=list(DEFAULT_CANDIDATES))
-    teacher.add_argument("--opponents", nargs="+", choices=DEFAULT_OPPONENTS, default=list(DEFAULT_OPPONENTS))
+    teacher.add_argument(
+        "--candidates",
+        nargs="+",
+        choices=DEFAULT_CANDIDATES,
+        default=list(DEFAULT_CANDIDATES),
+    )
+    teacher.add_argument(
+        "--opponents",
+        nargs="+",
+        choices=DEFAULT_OPPONENTS,
+        default=list(DEFAULT_OPPONENTS),
+    )
     _add_snapshot_arguments(teacher)
     teacher.set_defaults(handler=_teacher_eval)
 
     audit = subparsers.add_parser("information-audit")
     audit.add_argument("manifest", type=Path)
     audit.add_argument("--output", type=Path, required=True)
-    audit.add_argument("--candidates", nargs="+", choices=DEFAULT_CANDIDATES, default=list(DEFAULT_CANDIDATES))
+    audit.add_argument(
+        "--candidates",
+        nargs="+",
+        choices=DEFAULT_CANDIDATES,
+        default=list(DEFAULT_CANDIDATES),
+    )
     audit.add_argument("--opponent", choices=DEFAULT_OPPONENTS, default="random")
     audit.add_argument("--max-states", type=int, default=24)
     _add_snapshot_arguments(audit)
@@ -491,7 +542,9 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     train.add_argument("--dataset", type=Path, required=True)
     train.add_argument("--output", type=Path, required=True)
     train.add_argument("--feature-version", choices=("v1", "public-v2"), default=None)
-    train.add_argument("--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128])
+    train.add_argument(
+        "--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128]
+    )
     train.add_argument("--learning-rate", type=float, default=1e-4)
     train.add_argument("--batch-size", type=int, default=256)
     train.add_argument("--epochs", type=int, default=10)
@@ -525,7 +578,9 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     ppo.add_argument("--opponent-pool", default="ga:1,heuristic:1,current:1")
     ppo.add_argument("--validation-opponents", default="random,heuristic,minimax")
     ppo.add_argument("--feature-version", choices=("v1", "public-v2"), default="v1")
-    ppo.add_argument("--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128])
+    ppo.add_argument(
+        "--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128]
+    )
     ppo.add_argument("--learning-rate", type=float, default=3e-4)
     ppo.add_argument("--discount-factor", type=float, default=0.99)
     ppo.add_argument("--gae-lambda", type=float, default=0.95)
@@ -537,6 +592,13 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     ppo.add_argument("--updates", type=int, default=10)
     ppo.add_argument("--games-per-update", type=int, default=4)
     ppo.add_argument("--terminal-value", type=float, default=10.0)
+    ppo.add_argument("--initialization", choices=("bc", "scratch"), default="bc")
+    ppo.add_argument("--target-kl", type=float, default=0.02)
+    ppo.add_argument("--reference-kl-coefficient", type=float, default=0.0)
+    ppo.add_argument("--history-weight", type=float, default=1.0)
+    ppo.add_argument("--history-limit", type=int, default=4)
+    ppo.add_argument("--critic-warmup-epochs", type=int, default=0)
+    ppo.add_argument("--eval-every", type=int, default=1)
     ppo.add_argument("--seed", type=int, default=1234)
     ppo.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
     ppo.set_defaults(handler=_ppo_selfplay)

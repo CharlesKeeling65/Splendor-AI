@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 import torch
@@ -31,9 +31,33 @@ from .policies import CandidateSpec
 from .protocol import RuntimeSnapshot, isolated_seed, seed_everything
 from .runner import TeacherDecisionError, select_action
 
+ValueMode = Literal["return", "outcome"]
+InitializationMode = Literal["bc", "scratch"]
+ADVANTAGE_STD_EPSILON = 1e-8
+EXPLAINED_VARIANCE_EPSILON = 1e-12
+
+
+def _validate_value_mode(value_mode: str) -> ValueMode:
+    """Validate and narrow the two checkpoint-compatible critic semantics."""
+    if value_mode not in {"return", "outcome"}:
+        raise ValueError("value_mode must be 'return' or 'outcome'")
+    return cast(ValueMode, value_mode)
+
+
+def _validate_initialization(initialization: str) -> InitializationMode:
+    """Validate the policy initialization mode."""
+    if initialization not in {"bc", "scratch"}:
+        raise ValueError("initialization must be 'bc' or 'scratch'")
+    return cast(InitializationMode, initialization)
+
 
 class PolicyValueNetwork(nn.Module):
-    """Masked policy and bounded outcome-value heads for imitation PPO."""
+    """Masked policy and configurable value heads for imitation PPO.
+
+    New models use an unbounded return critic.  ``outcome`` is retained for
+    loading the historical tanh-bounded checkpoints whose value semantics were
+    trained around terminal outcome targets.
+    """
 
     def __init__(
         self,
@@ -42,6 +66,7 @@ class PolicyValueNetwork(nn.Module):
         feature_version: str,
         hidden_layers: tuple[int, ...] = HIDDEN_DIMS,
         output_dim: int = ACTION_DIM,
+        value_mode: ValueMode = "return",
     ) -> None:
         super().__init__()
         expected_dim = observation_dim(feature_version)
@@ -57,6 +82,7 @@ class PolicyValueNetwork(nn.Module):
         self.output_dim = output_dim
         self.feature_version = feature_version
         self.hidden_layers = hidden_layers
+        self.value_mode = _validate_value_mode(value_mode)
         self.normalizer = FixedNormalizer(input_dim)
         layers: list[nn.Module] = []
         previous = input_dim
@@ -80,19 +106,33 @@ class PolicyValueNetwork(nn.Module):
             module.bias.data.zero_()
 
     @classmethod
-    def from_bc(cls, bc_model: BehaviorCloningNetwork) -> "PolicyValueNetwork":
-        """Copy the BC trunk/policy and initialize a fresh outcome critic."""
+    def from_bc(
+        cls,
+        bc_model: BehaviorCloningNetwork,
+        *,
+        initialization: InitializationMode = "bc",
+        value_mode: ValueMode = "return",
+    ) -> "PolicyValueNetwork":
+        """Build PPO from BC while keeping normalizer/schema provenance.
+
+        ``scratch`` intentionally keeps the BC normalizer and input schema but
+        does not copy the BC trunk or policy head, so a comparison changes only
+        policy/trunk initialization while using the same source statistics.
+        """
+        _validate_initialization(initialization)
         model = cls(
             bc_model.input_dim,
             feature_version=bc_model.feature_version,
             hidden_layers=bc_model.hidden_layers,
             output_dim=bc_model.output_dim,
+            value_mode=value_mode,
         )
         model.normalizer.mean.copy_(bc_model.normalizer.mean)
         model.normalizer.variance.copy_(bc_model.normalizer.variance)
         model.normalizer.fitted = bc_model.normalizer.fitted
-        model.trunk.load_state_dict(deepcopy(bc_model.trunk.state_dict()))
-        model.policy_head.load_state_dict(deepcopy(bc_model.policy_head.state_dict()))
+        if initialization == "bc":
+            model.trunk.load_state_dict(deepcopy(bc_model.trunk.state_dict()))
+            model.policy_head.load_state_dict(deepcopy(bc_model.policy_head.state_dict()))
         return model
 
     def _hidden(self, observations: torch.Tensor) -> torch.Tensor:
@@ -105,7 +145,7 @@ class PolicyValueNetwork(nn.Module):
         observations: torch.Tensor,
         legal_masks: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return masked action logits and tanh-bounded outcome values."""
+        """Return masked action logits and values in the configured mode."""
         if legal_masks.dim() == 1:
             legal_masks = legal_masks.unsqueeze(0)
         hidden = self._hidden(observations)
@@ -116,10 +156,10 @@ class PolicyValueNetwork(nn.Module):
             )
         if not torch.all(legal_masks.sum(dim=1) > 0):
             raise ValueError("each PPO row must contain at least one legal action")
-        return (
-            logits.masked_fill(legal_masks <= 0, HUGE_NEG),
-            torch.tanh(self.value_head(hidden)).squeeze(-1),
-        )
+        values = self.value_head(hidden).squeeze(-1)
+        if self.value_mode == "outcome":
+            values = torch.tanh(values)
+        return logits.masked_fill(legal_masks <= 0, HUGE_NEG), values
 
 
 class PPOPolicyAgent(Agent):
@@ -198,6 +238,7 @@ class PPOConfig:
 
     feature_version: str = "v1"
     hidden_layers: tuple[int, ...] = HIDDEN_DIMS
+    value_mode: ValueMode = "return"
     learning_rate: float = 3e-4
     discount_factor: float = 0.99
     gae_lambda: float = 0.95
@@ -210,25 +251,57 @@ class PPOConfig:
     updates: int = 10
     games_per_update: int = 4
     terminal_value: float = 10.0
+    target_kl: float | None = 0.02
+    reference_kl_coefficient: float = 0.0
+    current_weight: float = 1.0
+    history_weight: float = 1.0
+    history_limit: int = 4
+    critic_warmup_epochs: int = 0
+    initialization: InitializationMode = "bc"
+    eval_every: int = 1
     seed: int = 1234
     device_name: DeviceName = "cpu"
 
-    def __post_init__(self) -> None:
-        if self.learning_rate <= 0 or self.discount_factor <= 0:
+    def __post_init__(self) -> None:  # noqa: C901 - validate each independent configuration bound
+        _validate_value_mode(self.value_mode)
+        _validate_initialization(self.initialization)
+        if not np.isfinite(self.learning_rate) or not np.isfinite(
+            self.discount_factor
+        ) or self.learning_rate <= 0 or self.discount_factor <= 0:
             raise ValueError("PPO learning rate and discount must be positive")
-        if not 0 < self.gae_lambda <= 1 or not 0 < self.clip_epsilon < 1:
+        if not np.isfinite(self.gae_lambda) or not np.isfinite(
+            self.clip_epsilon
+        ) or not 0 < self.gae_lambda <= 1 or not 0 < self.clip_epsilon < 1:
             raise ValueError("invalid GAE or PPO clip value")
-        if self.entropy_coefficient < 0 or self.value_coefficient <= 0:
+        if not np.isfinite(self.entropy_coefficient) or not np.isfinite(
+            self.value_coefficient
+        ) or self.entropy_coefficient < 0 or self.value_coefficient <= 0:
             raise ValueError("invalid PPO loss coefficients")
-        if self.max_grad_norm <= 0 or self.terminal_value <= 0:
+        if not np.isfinite(self.max_grad_norm) or not np.isfinite(
+            self.terminal_value
+        ) or self.max_grad_norm <= 0 or self.terminal_value <= 0:
             raise ValueError("gradient limit and terminal value must be positive")
         if min(
             self.minibatch_size,
             self.update_epochs,
             self.updates,
             self.games_per_update,
+            self.eval_every,
         ) < 1:
             raise ValueError("PPO budgets must be positive")
+        if self.target_kl is not None and (
+            not np.isfinite(self.target_kl) or self.target_kl <= 0
+        ):
+            raise ValueError("target_kl must be positive or None")
+        for name, value in (
+            ("reference_kl_coefficient", self.reference_kl_coefficient),
+            ("current_weight", self.current_weight),
+            ("history_weight", self.history_weight),
+        ):
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if self.history_limit < 0 or self.critic_warmup_epochs < 0:
+            raise ValueError("history_limit and critic_warmup_epochs must be non-negative")
         if self.seed < 0:
             raise ValueError("PPO seed must be non-negative")
 
@@ -244,8 +317,8 @@ class OpponentPoolEntry:
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("opponent pool entry needs a name")
-        if not np.isfinite(self.weight) or self.weight <= 0:
-            raise ValueError("opponent pool weights must be finite and positive")
+        if not np.isfinite(self.weight) or self.weight < 0:
+            raise ValueError("opponent pool weights must be finite and non-negative")
 
 
 @dataclass(frozen=True)
@@ -267,11 +340,71 @@ def _sample_pool_entry(
     entries: Sequence[OpponentPoolEntry], rng: random.Random
 ) -> OpponentPoolEntry:
     """Choose exactly one pool policy for an entire game."""
-    if not entries:
+    eligible = [entry for entry in entries if entry.weight > 0]
+    if not eligible:
         raise ValueError("PPO opponent pool must not be empty")
     return rng.choices(
-        list(entries), weights=[entry.weight for entry in entries], k=1
+        eligible, weights=[entry.weight for entry in eligible], k=1
     )[0]
+
+
+def build_opponent_pool(  # noqa: PLR0913 - explicit opponent bucket controls
+    fixed_entries: Sequence[OpponentPoolEntry],
+    history_entries: Sequence[OpponentPoolEntry] = (),
+    current_entry: OpponentPoolEntry | None = None,
+    *,
+    current_weight: float = 1.0,
+    history_weight: float = 1.0,
+    history_limit: int = 4,
+) -> list[OpponentPoolEntry]:
+    """Build a non-drifting fixed/current/history sampling pool.
+
+    Fixed entries retain their declared weights.  The current policy receives
+    one current-bucket mass, while the retained history receives one shared
+    history-bucket mass divided equally across the most recent snapshots.  If
+    there is no retained history, the history mass is explicitly transferred
+    to the current entry; callers can record that decision in their run log.
+    Zero-weight entries are retained for auditable configuration but are never
+    sampled.
+    """
+    if history_limit < 0:
+        raise ValueError("history_limit must be non-negative")
+    for name, weight in (
+        ("current_weight", current_weight),
+        ("history_weight", history_weight),
+    ):
+        if not np.isfinite(weight) or weight < 0:
+            raise ValueError(f"{name} must be finite and non-negative")
+    retained_history = (
+        list(history_entries[-history_limit:]) if history_limit else []
+    )
+    if not retained_history and history_weight > 0 and current_entry is None:
+        raise ValueError("history mass cannot be redistributed without current_entry")
+
+    result: list[OpponentPoolEntry] = list(fixed_entries)
+    names = {entry.name for entry in result}
+    if len(names) != len(result):
+        raise ValueError("opponent pool entry names must be unique")
+
+    redistributed_history = history_weight if not retained_history else 0.0
+    if current_entry is not None:
+        if current_entry.name in names:
+            raise ValueError("opponent pool entry names must be unique")
+        names.add(current_entry.name)
+        result.append(
+            replace(
+                current_entry,
+                weight=current_weight + redistributed_history,
+            )
+        )
+
+    history_share = history_weight / len(retained_history) if retained_history else 0.0
+    for entry in retained_history:
+        if entry.name in names:
+            raise ValueError("opponent pool entry names must be unique")
+        names.add(entry.name)
+        result.append(replace(entry, weight=history_share))
+    return result
 
 
 def _policy_step(
@@ -433,7 +566,9 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
         "elapsed_seconds": time.perf_counter() - started,
         "terminal_value_mapping": {-1: -config.terminal_value, 0: 0.0, 1: config.terminal_value},
     }
-    return record, transitions
+    # A failed game can contain useful diagnostics but it is not an on-policy
+    # trajectory.  Never let a caller accidentally optimize on its prefix.
+    return record, transitions if completed else []
 
 
 def compute_gae(
@@ -445,43 +580,151 @@ def compute_gae(
     """Compute terminal-aware GAE across a batch of complete games."""
     if not transitions:
         raise ValueError("cannot compute GAE for an empty rollout")
-    values = np.asarray([transition.old_value for transition in transitions], dtype=np.float32)
-    rewards = np.asarray([transition.reward for transition in transitions], dtype=np.float32)
-    terminals = np.asarray([transition.terminal for transition in transitions], dtype=np.bool_)
+    values = np.asarray(
+        [transition.old_value for transition in transitions], dtype=np.float32
+    )
+    rewards = np.asarray(
+        [transition.reward for transition in transitions], dtype=np.float32
+    )
+    terminals = np.asarray(
+        [transition.terminal for transition in transitions], dtype=np.bool_
+    )
+    if not np.isfinite(values).all() or not np.isfinite(rewards).all():
+        raise FloatingPointError("non-finite PPO value or reward in GAE inputs")
     advantages = np.zeros(len(transitions), dtype=np.float32)
     running = 0.0
     for index in range(len(transitions) - 1, -1, -1):
-        if terminals[index]:
+        is_terminal = bool(terminals[index])
+        if is_terminal:
             next_value = 0.0
             continuation = 0.0
         else:
-            next_value = float(values[index + 1]) if index + 1 < len(values) else 0.0
-            continuation = 1.0
+            has_next_transition = index + 1 < len(values)
+            next_value = float(values[index + 1]) if has_next_transition else 0.0
+            continuation = float(has_next_transition)
         delta = float(rewards[index]) + discount_factor * next_value - float(values[index])
         running = delta + discount_factor * gae_lambda * continuation * running
         advantages[index] = running
     returns = advantages + values
+    if not np.isfinite(advantages).all() or not np.isfinite(returns).all():
+        raise FloatingPointError("non-finite PPO advantages or return targets")
     return advantages, returns
 
 
-def ppo_update(
+def _policy_logits(
+    policy: BehaviorCloningNetwork | PolicyValueNetwork,
+    observations: torch.Tensor,
+    legal_masks: torch.Tensor,
+) -> torch.Tensor:
+    """Get masked logits from either a BC reference or PPO policy."""
+    if isinstance(policy, BehaviorCloningNetwork):
+        return policy(observations, legal_masks)
+    logits, _ = policy(observations, legal_masks)
+    return logits
+
+
+def _critic_values_from_hidden(
+    model: PolicyValueNetwork, hidden: torch.Tensor
+) -> torch.Tensor:
+    """Apply the configured value semantics without running the policy head."""
+    values = model.value_head(hidden).squeeze(-1)
+    if model.value_mode == "outcome":
+        values = torch.tanh(values)
+    return values
+
+
+def warmup_critic(  # noqa: C901 - explicit finite-value and warmup safety checks
+    model: PolicyValueNetwork,
+    transitions: Sequence[PPOTransition],
+    config: PPOConfig,
+) -> dict[str, float | int]:
+    """Fit only ``value_head`` to first-rollout return targets.
+
+    The hidden representation is detached and a separate optimizer owns only
+    the value head.  Thus BC's pretrained trunk and policy head cannot change
+    during critic warmup.
+    """
+    if not transitions:
+        raise ValueError("critic warmup needs at least one transition")
+    if config.critic_warmup_epochs < 1:
+        raise ValueError("critic warmup requires critic_warmup_epochs >= 1")
+    _, returns = compute_gae(
+        transitions,
+        discount_factor=config.discount_factor,
+        gae_lambda=config.gae_lambda,
+    )
+    if not np.isfinite(returns).all():
+        raise FloatingPointError("non-finite critic warmup return targets")
+    device = next(model.parameters()).device
+    observations = torch.from_numpy(
+        np.stack([transition.observation for transition in transitions]).astype(
+            np.float32
+        )
+    ).to(device)
+    return_tensor = torch.from_numpy(returns).to(device)
+    model.eval()
+    with torch.no_grad():
+        hidden = model.trunk(model.normalizer(observations)).detach()
+    if not torch.isfinite(hidden).all():
+        raise FloatingPointError("non-finite critic warmup hidden states")
+    warmup_optimizer = optim.Adam(model.value_head.parameters(), lr=config.learning_rate)
+    losses: list[float] = []
+    for _ in range(config.critic_warmup_epochs):
+        predicted = _critic_values_from_hidden(model, hidden)
+        loss = F.smooth_l1_loss(predicted, return_tensor)
+        if not torch.isfinite(predicted).all() or not torch.isfinite(loss).item():
+            raise FloatingPointError("non-finite critic warmup value or loss")
+        warmup_optimizer.zero_grad()
+        loss.backward()
+        for parameter in model.value_head.parameters():
+            if parameter.grad is not None and not torch.isfinite(
+                parameter.grad
+            ).all():
+                raise FloatingPointError("non-finite critic warmup gradient")
+        nn.utils.clip_grad_norm_(model.value_head.parameters(), config.max_grad_norm)
+        warmup_optimizer.step()
+        for parameter in model.value_head.parameters():
+            if not torch.isfinite(parameter).all():
+                raise FloatingPointError("non-finite critic warmup parameter")
+        losses.append(float(loss.detach().cpu().item()))
+    model.train()
+    return {
+        "epochs": config.critic_warmup_epochs,
+        "optimizer_steps": config.critic_warmup_epochs,
+        "loss": float(np.mean(losses)),
+        "target_min": float(np.min(returns)),
+        "target_max": float(np.max(returns)),
+    }
+
+
+def ppo_update(  # noqa: C901, PLR0912, PLR0913, PLR0915 - PPO accounting is explicit
     model: PolicyValueNetwork,
     optimizer: optim.Optimizer,
     transitions: Sequence[PPOTransition],
     config: PPOConfig,
     *,
     update_seed: int,
-) -> dict[str, float | int]:
-    """Apply clipped PPO updates to one frozen-policy rollout batch."""
+    reference_model: BehaviorCloningNetwork | PolicyValueNetwork | None = None,
+) -> dict[str, float | int | bool]:
+    """Apply clipped PPO updates to one frozen-policy rollout batch.
+
+    The KL diagnostic uses the non-negative Schulman approximation
+    ``((ratio - 1) - log_ratio)`` before each optimizer step.  If it exceeds
+    ``target_kl``, the current minibatch is not applied and the update stops.
+    """
     if not transitions:
         raise ValueError("PPO update needs at least one transition")
+    if reference_model is model:
+        raise ValueError("reference_model must be independent of the on-policy model")
     advantages, returns = compute_gae(
         transitions,
         discount_factor=config.discount_factor,
         gae_lambda=config.gae_lambda,
     )
     if len(advantages) > 1:
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = (advantages - advantages.mean()) / (
+            advantages.std() + ADVANTAGE_STD_EPSILON
+        )
     device = next(model.parameters()).device
     observations = torch.from_numpy(
         np.stack([transition.observation for transition in transitions]).astype(np.float32)
@@ -499,18 +742,50 @@ def ppo_update(
     )
     advantage_tensor = torch.from_numpy(advantages).to(device)
     return_tensor = torch.from_numpy(returns).to(device)
+    if not torch.isfinite(advantage_tensor).all() or not torch.isfinite(
+        return_tensor
+    ).all():
+        raise FloatingPointError("non-finite PPO advantage or return target")
     generator = torch.Generator(device="cpu")
     generator.manual_seed(update_seed)
     model.train()
+    if reference_model is not None:
+        reference_model.eval()
     metrics: list[dict[str, float]] = []
+    optimizer_steps = 0
+    early_stopped = False
+    epochs_completed = 0
     for _ in range(config.update_epochs):
+        epochs_completed += 1
         permutation = torch.randperm(len(transitions), generator=generator)
         for start in range(0, len(transitions), config.minibatch_size):
             batch = permutation[start : start + config.minibatch_size].to(device)
             logits, values = model(observations[batch], masks[batch])
+            if not torch.isfinite(logits).all() or not torch.isfinite(values).all():
+                raise FloatingPointError("non-finite PPO policy logits or values")
             distribution = distributions.Categorical(logits=logits)
             log_probabilities = distribution.log_prob(actions[batch])
-            ratio = (log_probabilities - old_log_probabilities[batch]).exp()
+            log_ratio = log_probabilities - old_log_probabilities[batch]
+            ratio = log_ratio.exp()
+            if not torch.isfinite(log_probabilities).all() or not torch.isfinite(
+                ratio
+            ).all():
+                raise FloatingPointError("non-finite PPO log-probability or ratio")
+            approx_kl_tensor = (ratio - 1.0) - log_ratio
+            approx_kl = float(
+                torch.clamp(approx_kl_tensor.mean(), min=0.0)
+                .detach()
+                .cpu()
+                .item()
+            )
+            clip_fraction = float(
+                (torch.abs(ratio - 1.0) > config.clip_epsilon)
+                .float()
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
             surrogate_one = ratio * advantage_tensor[batch]
             surrogate_two = torch.clamp(
                 ratio,
@@ -520,39 +795,106 @@ def ppo_update(
             policy_loss = -torch.minimum(surrogate_one, surrogate_two).mean()
             value_loss = F.smooth_l1_loss(values, return_tensor[batch])
             entropy = distribution.entropy().mean()
-            loss = (
-                policy_loss
-                + config.value_coefficient * value_loss
-                - config.entropy_coefficient * entropy
+            reference_kl = torch.zeros((), device=device)
+            if reference_model is not None:
+                with torch.no_grad():
+                    reference_logits = _policy_logits(
+                        reference_model,
+                        observations[batch],
+                        masks[batch],
+                    )
+                if not torch.isfinite(reference_logits).all():
+                    raise FloatingPointError("non-finite reference policy logits")
+                reference_distribution = distributions.Categorical(
+                    logits=reference_logits
+                )
+                reference_kl = distributions.kl_divergence(
+                    reference_distribution, distribution
+                ).mean()
+            reference_kl_value = float(
+                torch.clamp(reference_kl.detach(), min=0.0).cpu().item()
             )
-            optimizer.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-            optimizer.step()
+            loss_values = (
+                approx_kl,
+                clip_fraction,
+                float(policy_loss.detach().cpu().item()),
+                float(value_loss.detach().cpu().item()),
+                float(entropy.detach().cpu().item()),
+                reference_kl_value,
+            )
+            if not all(np.isfinite(value) for value in loss_values):
+                raise FloatingPointError("non-finite PPO loss or diagnostic")
             metrics.append(
                 {
                     "policy_loss": float(policy_loss.detach().cpu().item()),
                     "value_loss": float(value_loss.detach().cpu().item()),
                     "entropy": float(entropy.detach().cpu().item()),
-                    "approx_kl": float(
-                        (old_log_probabilities[batch] - log_probabilities)
-                        .mean()
-                        .detach()
-                        .cpu()
-                        .item()
-                    ),
+                    "approx_kl": approx_kl,
+                    "clip_fraction": clip_fraction,
+                    "reference_kl": reference_kl_value,
                 }
             )
+            if config.target_kl is not None and approx_kl > config.target_kl:
+                early_stopped = True
+                break
+            loss = (
+                policy_loss
+                + config.value_coefficient * value_loss
+                - config.entropy_coefficient * entropy
+                + config.reference_kl_coefficient * reference_kl
+            )
+            optimizer.zero_grad()
+            loss.backward()
+            if not torch.isfinite(loss).item():
+                raise FloatingPointError("non-finite PPO loss")
+            for parameter in model.parameters():
+                if parameter.grad is not None and not torch.isfinite(
+                    parameter.grad
+                ).all():
+                    raise FloatingPointError("non-finite PPO loss gradient")
+            nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+            optimizer.step()
+            for parameter in model.parameters():
+                if not torch.isfinite(parameter).all():
+                    raise FloatingPointError("non-finite PPO parameter after update")
+            optimizer_steps += 1
+        if early_stopped:
+            break
     if not metrics:
         raise RuntimeError("PPO update produced no minibatches")
+    model.eval()
+    with torch.no_grad():
+        _, final_values = model(observations, masks)
+    model.train()
+    if not torch.isfinite(final_values).all():
+        raise FloatingPointError("non-finite PPO values after update")
+    predicted_values = final_values.detach().cpu().numpy()
+    return_variance = float(np.var(returns))
+    explained_variance = (
+        0.0
+        if return_variance <= EXPLAINED_VARIANCE_EPSILON
+        else 1.0 - float(np.var(returns - predicted_values)) / return_variance
+    )
+    if not np.isfinite(explained_variance):
+        raise FloatingPointError("non-finite PPO explained variance")
+    aggregate_metrics = {
+        key: float(np.mean([metric[key] for metric in metrics]))
+        for key in metrics[0]
+    }
     return {
         "samples": len(transitions),
-        **{
-            key: float(np.mean([metric[key] for metric in metrics]))
-            for key in metrics[0]
-        },
+        **aggregate_metrics,
         "advantage_mean": float(np.mean(advantages)),
         "return_mean": float(np.mean(returns)),
+        "return_min": float(np.min(returns)),
+        "return_max": float(np.max(returns)),
+        "value_mean": float(np.mean(predicted_values)),
+        "value_min": float(np.min(predicted_values)),
+        "value_max": float(np.max(predicted_values)),
+        "explained_variance": explained_variance,
+        "optimizer_steps": optimizer_steps,
+        "epochs_completed": epochs_completed,
+        "early_stopped": early_stopped,
     }
 
 
@@ -574,14 +916,18 @@ def save_ppo_checkpoint(  # noqa: PLR0913 - provenance fields are explicit
         "model_type": "imitation_ppo_policy_value",
         "model_state_dict": state_dict,
         "update": update,
+        "value_mode": model.value_mode,
         "config": {
             **asdict(config),
             "hidden_layers": list(config.hidden_layers),
             "input_dim": model.input_dim,
             "output_dim": model.output_dim,
+            "value_mode": model.value_mode,
             "normalizer_fitted": model.normalizer.fitted,
         },
         "source_bc": source_bc,
+        "normalizer_source": source_bc,
+        "initialization": config.initialization,
         "opponent_pool": [
             {
                 "name": entry.name,
@@ -607,18 +953,105 @@ def load_ppo_checkpoint(
     if checkpoint.get("model_type") != "imitation_ppo_policy_value":
         raise ValueError("checkpoint is not an imitation PPO policy/value model")
     config = checkpoint.get("config") or {}
+    # Checkpoints written before value_mode existed used the tanh outcome
+    # critic.  Preserve that behavior explicitly instead of silently changing
+    # the meaning of their value head on load.
+    value_mode = _validate_value_mode(
+        str(config.get("value_mode", checkpoint.get("value_mode", "outcome")))
+    )
     model = PolicyValueNetwork(
         int(config["input_dim"]),
         feature_version=str(config["feature_version"]),
         hidden_layers=tuple(config["hidden_layers"]),
         output_dim=int(config["output_dim"]),
+        value_mode=value_mode,
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.normalizer.fitted = bool(config.get("normalizer_fitted", False))
     return model.to(resolve_device(device_name)).eval()
 
 
-def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write an incremental run artifact with JSON-safe fallback formatting."""
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _validation_score(validation: dict[str, Any]) -> tuple[int, int]:
+    """Return exact integer W/D/L coordinates after fail-closed auditing."""
+    if not validation:
+        raise ValueError("validation matrix is empty")
+    reports = list(validation.values())
+    scheduled_counts: list[int] = []
+    for report in reports:
+        try:
+            scheduled = int(report["games"])
+            completed = int(report["completed_games"])
+            failed = int(report["failed_games"])
+            candidate_illegal = int(report["candidate_illegal_actions"])
+            opponent_illegal = int(report["opponent_illegal_actions"])
+            wins = int(report["wins"])
+            draws = int(report["draws"])
+            losses = int(report["losses"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("validation report is missing audit fields") from exc
+        if scheduled <= 0:
+            raise ValueError("validation report has zero scheduled games")
+        if completed != scheduled or failed != 0:
+            raise ValueError("validation report contains failed or incomplete games")
+        if candidate_illegal != 0 or opponent_illegal != 0:
+            raise ValueError("validation report contains illegal actions")
+        if wins < 0 or draws < 0 or losses < 0 or wins + draws + losses != scheduled:
+            raise ValueError("validation W/D/L counts do not match scheduled games")
+        scheduled_counts.append(scheduled)
+    if len(set(scheduled_counts)) != 1:
+        raise ValueError("validation reports have unequal scheduled game counts")
+    wins = sum(int(report["wins"]) for report in reports)
+    games = sum(int(report["games"]) for report in reports)
+    return wins, -games
+
+
+def _pool_metadata(
+    fixed_entries: Sequence[OpponentPoolEntry],
+    history_entries: Sequence[OpponentPoolEntry],
+    current_entry: OpponentPoolEntry,
+    config: PPOConfig,
+) -> dict[str, Any]:
+    """Describe pool bucket mass so redistribution is auditable."""
+    retained_history = (
+        list(history_entries[-config.history_limit:]) if config.history_limit else []
+    )
+    redistributed = bool(config.history_weight > 0 and not retained_history)
+    current_mass = config.current_weight + (
+        config.history_weight if redistributed else 0.0
+    )
+    history_mass = config.history_weight if retained_history else 0.0
+    return {
+        "fixed": [
+            {"name": entry.name, "weight": entry.weight}
+            for entry in fixed_entries
+        ],
+        "current": {"name": current_entry.name, "weight": current_mass},
+        "history": [
+            {"name": entry.name, "weight": history_mass / len(retained_history)}
+            for entry in retained_history
+        ],
+        "current_weight_requested": config.current_weight,
+        "history_weight_requested": config.history_weight,
+        "history_weight_allocated": history_mass,
+        "history_weight_redistributed_to_current": redistributed,
+        "history_limit": config.history_limit,
+        "total_weight": float(
+            sum(entry.weight for entry in fixed_entries)
+            + current_mass
+            + history_mass
+        ),
+    }
+
+
+def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is explicit
     initial_bc: Path,
     output_dir: Path,
     training_seeds: Sequence[int],
@@ -629,7 +1062,12 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
     validation_opponents: Sequence[CandidateSpec] = (),
     source_manifest: str | None = None,
 ) -> dict[str, Any]:
-    """Train PPO from BC and select only by fixed validation opponents."""
+    """Train PPO from BC and select only by fixed validation opponents.
+
+    ``status.json`` and a partial ``result.json`` are refreshed after every
+    completed update.  The final result keeps the complete update-0-through-N
+    log, including validation and pool provenance.
+    """
     if not training_seeds or len(set(training_seeds)) != len(training_seeds):
         raise ValueError("PPO training seeds must be nonempty and unique")
     if not opponent_pool:
@@ -641,24 +1079,153 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
     bc_model = load_bc_checkpoint(initial_bc, device_name=config.device_name)
     if bc_model.feature_version != config.feature_version:
         raise ValueError("BC checkpoint and PPO config feature schemas differ")
-    model = PolicyValueNetwork.from_bc(bc_model).to(device)
+    model = PolicyValueNetwork.from_bc(
+        bc_model,
+        initialization=config.initialization,
+        value_mode=config.value_mode,
+    ).to(device)
+    reference_model: BehaviorCloningNetwork | None = None
+    if config.reference_kl_coefficient > 0:
+        reference_model = bc_model.to(device).eval()
+        reference_model.requires_grad_(False)
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     output_dir.mkdir(parents=True, exist_ok=True)
+    status_path = output_dir / "status.json"
+    result_path = output_dir / "result.json"
     logs: list[dict[str, Any]] = []
     history: list[OpponentPoolEntry] = []
     best_score: tuple[int, int] | None = None
-    best_update: int | None = None
+    best_update: int | None = 0
     best_path = output_dir / "best.pth"
+    run_started = time.perf_counter()
+    validation_enabled = bool(validation_seeds and validation_opponents)
+
+    def result_payload(
+        status: str,
+        *,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Build both partial and final result artifacts from one source."""
+        payload: dict[str, Any] = {
+            "status": status,
+            "best": str(best_path),
+            "final": str(output_dir / "final.pth"),
+            "best_update": best_update,
+            "best_validation_score": best_score,
+            "config": asdict(config),
+            "source_bc": str(initial_bc),
+            "normalizer_source": str(initial_bc),
+            "source_manifest": source_manifest,
+            "training_seeds": [int(seed) for seed in training_seeds],
+            "validation_seeds": [int(seed) for seed in validation_seeds]
+            if validation_seeds
+            else None,
+            "logs": logs,
+            "elapsed_seconds": time.perf_counter() - run_started,
+        }
+        if error is not None:
+            payload["error"] = error
+        return payload
+
+    def write_progress(
+        status: str,
+        update: int,
+        *,
+        update_seconds: float = 0.0,
+        error: str | None = None,
+    ) -> None:
+        """Persist current status and the complete log accumulated so far."""
+        _write_json(
+            status_path,
+            {
+                "status": status,
+                "update": update,
+                "updates": config.updates,
+                "best_update": best_update,
+                "best_validation_score": best_score,
+                "update_seconds": update_seconds,
+                "elapsed_seconds": time.perf_counter() - run_started,
+                "error": error,
+            },
+        )
+        _write_json(result_path, result_payload(status, error=error))
+
+    initial_started = time.perf_counter()
+    initial_validation: dict[str, Any] | None = None
+    if validation_enabled:
+        from .evaluation import evaluate_matrix  # noqa: PLC0415
+
+        initial_candidate = build_policy_candidate(
+            model,
+            name="ppo-initial",
+            snapshot=str(output_dir / "initial.pth"),
+            device_name=config.device_name,
+        )
+        initial_validation = evaluate_matrix(
+            [initial_candidate], validation_opponents, validation_seeds or ()
+        )[initial_candidate.name]
+        best_score = _validation_score(initial_validation)
+    initial_record: dict[str, Any] = {
+        "update": 0,
+        "status": "initial",
+        "training_records": [],
+        "training_games": 0,
+        "training_failed_games": 0,
+        "teacher_queries": 0,
+        "opponent_names": [],
+        "opponent_pool": None,
+        "update_metrics": None,
+        "critic_warmup": None,
+        "validation": initial_validation,
+        "elapsed_seconds": time.perf_counter() - initial_started,
+    }
+    logs.append(initial_record)
+    initial_path = output_dir / "initial.pth"
+    save_ppo_checkpoint(
+        model,
+        initial_path,
+        update=0,
+        config=config,
+        source_bc=str(initial_bc),
+        opponent_pool=opponent_pool,
+        metrics=initial_record,
+    )
+    save_ppo_checkpoint(
+        model,
+        best_path,
+        update=0,
+        config=config,
+        source_bc=str(initial_bc),
+        opponent_pool=opponent_pool,
+        metrics=initial_record,
+    )
+    write_progress("running", 0, update_seconds=initial_record["elapsed_seconds"])
+
     for update in range(1, config.updates + 1):
+        update_started = time.perf_counter()
+        previous_snapshot = (
+            output_dir / "initial.pth"
+            if update == 1
+            else output_dir / f"update-{update - 1}.pth"
+        )
         current = build_policy_candidate(
             model,
             name=f"current-update-{update}",
-            snapshot=str(output_dir / f"update-{update}.pth"),
+            snapshot=str(previous_snapshot),
             device_name=config.device_name,
         )
-        entries = [*opponent_pool, *history, OpponentPoolEntry(current.name, current)]
+        current_entry = OpponentPoolEntry(current.name, current)
+        entries = build_opponent_pool(
+            opponent_pool,
+            history,
+            current_entry,
+            current_weight=config.current_weight,
+            history_weight=config.history_weight,
+            history_limit=config.history_limit,
+        )
         transitions: list[PPOTransition] = []
         records: list[dict[str, Any]] = []
+        rollout_started = time.perf_counter()
         for game_index in range(config.games_per_update):
             seed = int(
                 training_seeds[
@@ -667,28 +1234,91 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
                 ]
             )
             seat = (update + game_index) % 2
-            record, game_transitions = collect_ppo_game(
-                model,
-                entries,
-                seed=seed,
-                seat=seat,
-                config=config,
-                update_index=update,
-                game_index=game_index,
-            )
+            try:
+                record, game_transitions = collect_ppo_game(
+                    model,
+                    entries,
+                    seed=seed,
+                    seat=seat,
+                    config=config,
+                    update_index=update,
+                    game_index=game_index,
+                )
+            except Exception as exc:  # preserve a failed rollout in the log
+                record = {
+                    "update": update,
+                    "game_index": game_index,
+                    "seed": seed,
+                    "seat": seat,
+                    "status": "failed",
+                    "failure": {
+                        "side": "rollout",
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                    "elapsed_seconds": time.perf_counter() - rollout_started,
+                }
+                game_transitions = []
             records.append(record)
             transitions.extend(game_transitions)
-        if not transitions:
-            raise RuntimeError(f"PPO update {update} collected no transitions")
+        rollout_seconds = time.perf_counter() - rollout_started
+        failed_games = [
+            record for record in records if record.get("status") != "completed"
+        ]
+        if failed_games or not transitions:
+            failure_message = (
+                f"PPO update {update} collected an incomplete rollout; "
+                f"failed_games={len(failed_games)}, transitions={len(transitions)}"
+            )
+            failed_record: dict[str, Any] = {
+                "update": update,
+                "status": "failed",
+                "training_records": records,
+                "training_games": len(records),
+                "training_failed_games": len(failed_games),
+                "teacher_queries": 0,
+                "opponent_names": sorted(
+                    {
+                        str(record["opponent"])
+                        for record in records
+                        if "opponent" in record
+                    }
+                ),
+                "opponent_pool": _pool_metadata(
+                    opponent_pool, history, current_entry, config
+                ),
+                "update_metrics": None,
+                "critic_warmup": None,
+                "validation": None,
+                "rollout_seconds": rollout_seconds,
+                "elapsed_seconds": time.perf_counter() - update_started,
+                "error": failure_message,
+            }
+            logs.append(failed_record)
+            write_progress(
+                "failed",
+                update,
+                update_seconds=failed_record["elapsed_seconds"],
+                error=failure_message,
+            )
+            raise RuntimeError(failure_message)
+
+        warmup_metrics: dict[str, float | int] | None = None
+        if update == 1 and config.critic_warmup_epochs:
+            warmup_metrics = warmup_critic(model, transitions, config)
         update_metrics = ppo_update(
             model,
             optimizer,
             transitions,
             config,
             update_seed=config.seed + update,
+            reference_model=reference_model,
         )
         validation: dict[str, Any] | None = None
-        if validation_seeds and validation_opponents:
+        should_evaluate = validation_enabled and (
+            update % config.eval_every == 0 or update == config.updates
+        )
+        if should_evaluate:
             from .evaluation import evaluate_matrix  # noqa: PLC0415
 
             candidate = build_policy_candidate(
@@ -698,19 +1328,24 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
                 device_name=config.device_name,
             )
             validation = evaluate_matrix(
-                [candidate], validation_opponents, validation_seeds
+                [candidate], validation_opponents, validation_seeds or ()
             )[candidate.name]
         update_record: dict[str, Any] = {
             "update": update,
+            "status": "completed",
             "training_records": records,
             "training_games": len(records),
-            "training_failed_games": sum(
-                record["status"] == "failed" for record in records
-            ),
+            "training_failed_games": 0,
             "teacher_queries": 0,
             "opponent_names": sorted({record["opponent"] for record in records}),
+            "opponent_pool": _pool_metadata(
+                opponent_pool, history, current_entry, config
+            ),
             "update_metrics": update_metrics,
+            "critic_warmup": warmup_metrics,
             "validation": validation,
+            "rollout_seconds": rollout_seconds,
+            "elapsed_seconds": time.perf_counter() - update_started,
         }
         logs.append(update_record)
         update_path = output_dir / f"update-{update}.pth"
@@ -724,14 +1359,10 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
             metrics=update_record,
         )
         if validation is not None:
-            wins = sum(
-                int(report["wins"]) for report in validation.values()
-            )
-            games = sum(
-                int(report["games"]) for report in validation.values()
-            )
-            score = (wins, -games)
-            if best_score is None or score > best_score:
+            score = _validation_score(validation)
+            # Validation games are fixed by the manifest.  Compare exact wins
+            # only, keeping the earliest checkpoint on a tie.
+            if best_score is None or score[0] > best_score[0]:
                 best_score = score
                 best_update = update
                 save_ppo_checkpoint(
@@ -743,17 +1374,6 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
                     opponent_pool=entries,
                     metrics=update_record,
                 )
-        elif best_update is None:
-            best_update = update
-            save_ppo_checkpoint(
-                model,
-                best_path,
-                update=update,
-                config=config,
-                source_bc=str(initial_bc),
-                opponent_pool=entries,
-                metrics=update_record,
-            )
         history.append(
             OpponentPoolEntry(
                 name=f"history-update-{update}",
@@ -765,6 +1385,16 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
                 ),
             )
         )
+        if config.history_limit:
+            history = history[-config.history_limit:]
+        else:
+            history = []
+        write_progress(
+            "running",
+            update,
+            update_seconds=update_record["elapsed_seconds"],
+        )
+
     final_path = output_dir / "final.pth"
     save_ppo_checkpoint(
         model,
@@ -775,22 +1405,19 @@ def train_ppo_selfplay(  # noqa: C901,PLR0913,PLR0915 - lifecycle is explicit
         opponent_pool=[*opponent_pool, *history],
         metrics={"logs": logs},
     )
-    result: dict[str, Any] = {
-        "best": str(best_path),
-        "final": str(final_path),
-        "best_update": best_update,
-        "best_validation_score": best_score,
-        "config": asdict(config),
-        "source_bc": str(initial_bc),
-        "source_manifest": source_manifest,
-        "training_seeds": [int(seed) for seed in training_seeds],
-        "validation_seeds": [int(seed) for seed in validation_seeds]
-        if validation_seeds
-        else None,
-        "logs": logs,
-    }
-    (output_dir / "result.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
-        encoding="utf-8",
+    result = result_payload("completed")
+    _write_json(
+        status_path,
+        {
+            "status": "completed",
+            "update": config.updates,
+            "updates": config.updates,
+            "best_update": best_update,
+            "best_validation_score": best_score,
+            "update_seconds": logs[-1].get("elapsed_seconds", 0.0),
+            "elapsed_seconds": time.perf_counter() - run_started,
+            "error": None,
+        },
     )
+    _write_json(result_path, result)
     return result
