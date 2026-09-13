@@ -81,6 +81,14 @@ DQN 20k 步 ≈ 21 分钟/任务）。按此估算各阶段成本；若算力不
 - 一次冒烟：PPO 8 更新 × 16 局 + DQN 5k 步，确认 P5000 环境与墙钟估算（产出 `runs/budget-smoke/`）。
 - **验收**：两份 budget 数字入本文档 §2 的估算校准。
 - **成本**：0.5 天。
+- **实测（2026-09-13，Quadro P5000 CUDA，`.venv-p5000`，PYTHONHASHSEED=0）**：
+  - PPO 稳定化冒烟（8 updates × 16 局，fixed 变体，seed42）：训练 273.5 s（≈ **2.1 s/训练局**），
+    含验证评测的总墙钟 404 s。外推 C2（500 updates ≈ 8,000 训练局/seed）：**≈ 4.7 h/seed**
+    （+验证评测开销），3 seed 串行 ≈ 15 h，可一夜完成。
+  - DQN 冒烟（5,000 步 vs random）：172.4 s（**29 步/s**）。外推 D1（200k 步）：**≈ 1.9 h/seed**，
+    3 seed 串行 ≈ 6 h。
+  - 佐证文件：`runs/budget-smoke/ppo-stab-smoke/training/fixed-seed42/runresult.json`、
+    `runs/budget-smoke/dqn-5k/26-09-13_16-13-44__dqn/progress.csv`（runs/ 不入库）。
 
 ---
 
