@@ -499,5 +499,12 @@ evolve:main → parse_args → evolve
 | E4 胜率估计器多席化 | `remote/rollout.py` 守卫放宽 | 仅 legacy public-v2 锁 2 席；multi schema 支持 2..4 席，测试覆盖 |
 | F2 多确定化树搜索 | `dqn/search.py` `multi_tree_search_policy` | 每树一次隐藏采样树内复用 + 预算分配（uniform/root-value spread priority）+ 树间根访问分布平均；原单样本 PUCT 零改动 |
 
-C2 规模化自博弈（500×16×3 seed，c2_training 种子段）与 D1 DQN 200k×3 课程已启动
-（结果回填待训练完成）；E1 席位参数化与 F1 价值标定待上述训练产物。
+C2 规模化自博弈（500×16×3 seed，c2_training 种子段）已完成：EV(last3) 0.34–0.48
+（试点期 0.12–0.23），独立测试均值 vs random 100% / heuristic 37% / minimax 52%
+/ GA 45%（`docs/C2_SELFPLAY_C4_LEAGUE_REPORT_20260913.md`）。C4 league 体检
+（每对手 150 局，封存段）：vs minimax **57.3%**（仓库最佳，超 DQN 52.7%）、
+vs heuristic 38.7%、vs GA 47.3% —— G1 门槛未达，heuristic 族缺口归因与下一步
+入报告。F1 标定：return 模式价值头 AUC 0.525 < 0.75，**记录为不可用作搜索
+先验**（`runs/f1-calibration/`）。E1 席位参数化 + 3p/4p 冒烟零非法
+（`docs/E_PHASE_IMPLEMENTATION_20260913.md`）。D1（DQN 200k×3，pool
+random:0.5,minimax:0.5）当晚训练完成后按 M2/M3 门槛出报告。
