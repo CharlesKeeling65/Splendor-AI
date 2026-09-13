@@ -405,6 +405,14 @@ def evaluate(  # noqa: PLR0915
     }
 
 
+#: Monitor report prefixes that mark a structurally broken page read; games
+#: carrying these lines are excluded from the replay (roadmap D2 whitelist).
+ALARM_REPORT_PREFIXES: tuple[str, ...] = (
+    "PAGE REDESIGN",
+    "DOM EXTRACTION BUG",
+)
+
+
 def collect_from_browser(
     browser_env: SplendorEnvBase,
     buffer: ReplayBuffer,
@@ -484,7 +492,14 @@ def collect_from_browser(
             game_reward += float(reward)
         total_score += game_reward
         parity_report = list(getattr(browser_env, "last_parity_report", []) or [])
-        if drop_parity_anomalous and parity_report:
+        # Roadmap D2 payment-semantic whitelist: the monitor labels benign,
+        # documented rule differences (KNOWN-DIFFERENCE CLASS E5/E6, DOM-ONLY
+        # over-approximation) distinctly from structural failures.  Only the
+        # alarm classes (PAGE REDESIGN / DOM EXTRACTION BUG) drop the game.
+        anomalous = any(
+            line.startswith(ALARM_REPORT_PREFIXES) for line in parity_report
+        )
+        if drop_parity_anomalous and anomalous:
             anomalous_games += 1
             total_steps -= len(game_obs)
             total_score -= game_reward

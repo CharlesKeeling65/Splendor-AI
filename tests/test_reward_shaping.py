@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from copy import deepcopy
 from itertools import pairwise
+from typing import cast
 
 import gymnasium as gym
 import numpy as np
@@ -22,6 +23,7 @@ from splendor.agents.our_agents.policy_imitation.shaping import (
     noble_progress,
     potential,
 )
+from splendor.splendor.gym.envs.splendor_env import SplendorEnv
 from splendor.splendor.splendor_model import SplendorGameRule
 
 
@@ -43,9 +45,9 @@ def _run_game(seed: int, shaped: bool, discount: float = 0.99):
     observations = [np.asarray(obs)]
     terminated, truncated = False, False
     while not (terminated or truncated):
-        mask = env.unwrapped.get_legal_actions_mask()
+        mask = np.asarray(cast(SplendorEnv, env.unwrapped).get_legal_actions_mask())
         action = int(rng.choice(np.flatnonzero(mask)))
-        obs, reward, terminated, truncated, _info = env.step(action)
+        _obs, reward, terminated, truncated, _info = env.step(action)
         rewards.append(float(reward))
         observations.append(np.asarray(obs))
     potentials = (
@@ -78,7 +80,9 @@ def test_shaping_preserves_observations_and_telescopes(seed: int) -> None:
 def test_shaping_telescopes_undiscounted() -> None:
     """With gamma = 1 the bonus sum must equal phi(s_T) - phi(s_0) exactly."""
     _base_rewards, _base_obs, potentials = _run_game(825_103, shaped=True, discount=1.0)
-    total_bonus = sum(phi_next - phi_prev for phi_prev, phi_next in pairwise(potentials))
+    total_bonus = sum(
+        phi_next - phi_prev for phi_prev, phi_next in pairwise(potentials)
+    )
     assert total_bonus == pytest.approx(potentials[-1] - potentials[0], abs=1e-6)
 
 
@@ -187,7 +191,7 @@ def test_event_shaping_wrapper_adds_bonuses() -> None:
         local_rng = np.random.default_rng(42)
         terminated, truncated = False, False
         while not (terminated or truncated):
-            mask = env.unwrapped.get_legal_actions_mask()
+            mask = np.asarray(cast(SplendorEnv, env.unwrapped).get_legal_actions_mask())
             action = int(local_rng.choice(np.flatnonzero(mask)))
             _obs, reward, terminated, truncated, _info = env.step(action)
             sink.append(float(reward))
@@ -241,14 +245,14 @@ def test_rank_utility_wrapper_terminal_reward() -> None:
     wrapped = RankUtilityWrapper(env, terminal_scale=10.0)
     rng = np.random.default_rng(825_501)
     _seed_triple(825_501)
-    obs, info = wrapped.reset(seed=825_501)
+    _obs, _info = wrapped.reset(seed=825_501)
     terminated = truncated = False
     total = 0.0
     steps = 0
     while not (terminated or truncated):
-        mask = wrapped.unwrapped.get_legal_actions_mask()
+        mask = np.asarray(wrapped.unwrapped.get_legal_actions_mask())
         action = int(rng.choice(np.flatnonzero(mask)))
-        obs, reward, terminated, truncated, _info = wrapped.step(action)
+        _obs, reward, terminated, truncated, _info = wrapped.step(action)
         total += float(reward)
         steps += 1
     wrapped.close()

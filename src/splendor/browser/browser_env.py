@@ -195,9 +195,13 @@ class BrowserSplendorEnv(gym.Env):
         )
         legal_actions = self._rule.getLegalActions(pseudo_state, self._my_index)
         mask = create_legal_actions_mask(legal_actions, pseudo_state, self._my_index)
-        self.last_parity_report = self._monitor.check(
-            mask, dom_affordances(snapshot)
-        )
+        if self._board_present(snapshot):
+            self.last_parity_report = self._monitor.check(
+                mask, dom_affordances(snapshot)
+            )
+        # else: room page (game over / not started) - parity is defined for
+        # in-game pages only, so the last in-game report is kept rather than
+        # overwritten with the board-less page's false anomalies.
         return mask
 
     def get_payment_options(self, action: int) -> list[dict] | None:

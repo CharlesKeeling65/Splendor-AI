@@ -7,4 +7,4 @@ from splendor.agents.our_agents.policy_imitation.policies import (
     WeightedHeuristicAgent,
 )
 
-myAgent = partial(WeightedHeuristicAgent, weights=RUSH_WEIGHTS)  # noqa: PLC0414
+myAgent = partial(WeightedHeuristicAgent, weights=RUSH_WEIGHTS)

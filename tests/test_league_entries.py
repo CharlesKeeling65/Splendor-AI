@@ -34,7 +34,6 @@ def test_entries_require_explicit_checkpoint(
 
     _env(monkeypatch, env, missing=True)
     entry = importlib.import_module(module)
-    rule = SplendorGameRule(2)
     random.seed(0)
     with pytest.raises(ValueError, match=env):
         entry.myAgent(0)

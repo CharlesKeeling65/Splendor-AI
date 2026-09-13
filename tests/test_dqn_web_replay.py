@@ -196,7 +196,7 @@ def test_collect_from_browser_drops_parity_anomalous_game() -> None:
             self, engine_mask: NDArray, dom_affordances_set: set[int]
         ) -> list[str]:
             del engine_mask, dom_affordances_set
-            return ["synthetic anomaly: 1 masked action shown (test stub)"]
+            return ["DOM EXTRACTION BUG suspected: 3 engine-legal actions unsupported (test stub)"]
 
     driver = _RotatingDriver([_OPENING] * 40 + [_WAITING, _SCORED_MY_TURN, _TERMINAL])
     driver.set_html(_OPENING, url=f"{BASE_URL}/gt03")
@@ -219,7 +219,7 @@ def test_collect_from_browser_keeps_when_whitelist_disabled() -> None:
             self, engine_mask: NDArray, dom_affordances_set: set[int]
         ) -> list[str]:
             del engine_mask, dom_affordances_set
-            return ["synthetic anomaly: 1 masked action shown (test stub)"]
+            return ["DOM EXTRACTION BUG suspected: 3 engine-legal actions unsupported (test stub)"]
 
     driver = _RotatingDriver([_OPENING] * 40 + [_WAITING, _SCORED_MY_TURN, _TERMINAL])
     driver.set_html(_OPENING, url=f"{BASE_URL}/gt04")
