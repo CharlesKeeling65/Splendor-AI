@@ -559,6 +559,7 @@ def run_league(  # noqa: PLR0913 - explicit knobs beat a config blob here
     games_per_matchup: int,
     *,
     segment: SeedSegment = VALIDATION,
+    wrap_seeds: bool = False,
     time_limit: float = 1.0,
     warning_limit: int = 3,
     workers: int = 1,
@@ -569,7 +570,11 @@ def run_league(  # noqa: PLR0913 - explicit knobs beat a config blob here
         specs,
         seats,
         games_per_matchup,
-        allocate_seeds(segment, _matchup_count(specs, seats) * games_per_matchup),
+        allocate_seeds(
+            segment,
+            _matchup_count(specs, seats) * games_per_matchup,
+            wrap=wrap_seeds,
+        ),
         time_limit=time_limit,
         warning_limit=warning_limit,
     )
@@ -686,6 +691,12 @@ def load_parser() -> argparse.ArgumentParser:
         "--workers", type=int, default=1, help="parallel game processes"
     )
     parser.add_argument(
+        "--wrap-seeds",
+        action="store_true",
+        help="cycle the segment's seeds when the request exceeds capacity "
+        "(acceptable across different matchups; recorded in the manifest)",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         default=None,
@@ -716,6 +727,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.seats,
         args.games,
         segment=segment,
+        wrap_seeds=args.wrap_seeds,
         time_limit=args.time_limit,
         warning_limit=args.warning_limit,
         workers=args.workers,
