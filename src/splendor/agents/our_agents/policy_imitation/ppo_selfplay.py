@@ -67,6 +67,7 @@ class PolicyValueNetwork(nn.Module):
         hidden_layers: tuple[int, ...] = HIDDEN_DIMS,
         output_dim: int = ACTION_DIM,
         value_mode: ValueMode = "return",
+        critic_hidden_dim: int = 0,
     ) -> None:
         super().__init__()
         expected_dim = observation_dim(feature_version)
@@ -78,10 +79,13 @@ class PolicyValueNetwork(nn.Module):
             raise ValueError(f"PPO action head must have {ACTION_DIM} outputs")
         if not hidden_layers:
             raise ValueError("hidden_layers must not be empty")
+        if critic_hidden_dim < 0:
+            raise ValueError("critic_hidden_dim must be non-negative")
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.feature_version = feature_version
         self.hidden_layers = hidden_layers
+        self.critic_hidden_dim = critic_hidden_dim
         self.value_mode = _validate_value_mode(value_mode)
         self.normalizer = FixedNormalizer(input_dim)
         layers: list[nn.Module] = []
@@ -93,10 +97,24 @@ class PolicyValueNetwork(nn.Module):
             previous = width
         self.trunk = nn.Sequential(*layers)
         self.policy_head = nn.Linear(previous, output_dim)
-        self.value_head = nn.Linear(previous, 1)
+        if critic_hidden_dim:
+            # Roadmap C1 ablation: a critic-private hidden layer on top of the
+            # shared trunk, so value fitting cannot fight the policy trunk.
+            self.value_head: nn.Module = nn.Sequential(
+                nn.Linear(previous, critic_hidden_dim),
+                nn.LayerNorm(critic_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(critic_hidden_dim, 1),
+            )
+        else:
+            self.value_head = nn.Linear(previous, 1)
         self.apply(self._init_weights)
         nn.init.orthogonal_(self.policy_head.weight, gain=0.01)
-        nn.init.orthogonal_(self.value_head.weight, gain=1.0)
+        value_final = (
+            self.value_head[-1] if isinstance(self.value_head, nn.Sequential) else self.value_head
+        )
+        assert isinstance(value_final, nn.Linear)
+        nn.init.orthogonal_(value_final.weight, gain=1.0)
 
     @staticmethod
     def _init_weights(module: nn.Module) -> None:
@@ -112,6 +130,7 @@ class PolicyValueNetwork(nn.Module):
         *,
         initialization: InitializationMode = "bc",
         value_mode: ValueMode = "return",
+        critic_hidden_dim: int = 0,
     ) -> "PolicyValueNetwork":
         """Build PPO from BC while keeping normalizer/schema provenance.
 
@@ -126,6 +145,7 @@ class PolicyValueNetwork(nn.Module):
             hidden_layers=bc_model.hidden_layers,
             output_dim=bc_model.output_dim,
             value_mode=value_mode,
+            critic_hidden_dim=critic_hidden_dim,
         )
         model.normalizer.mean.copy_(bc_model.normalizer.mean)
         model.normalizer.variance.copy_(bc_model.normalizer.variance)
@@ -257,6 +277,9 @@ class PPOConfig:
     history_weight: float = 1.0
     history_limit: int = 4
     critic_warmup_epochs: int = 0
+    # Roadmap C1 critic-repair knobs; defaults preserve the shared-lr model.
+    critic_learning_rate: float | None = None
+    critic_hidden_dim: int = 0
     initialization: InitializationMode = "bc"
     eval_every: int = 1
     seed: int = 1234
@@ -302,6 +325,13 @@ class PPOConfig:
                 raise ValueError(f"{name} must be finite and non-negative")
         if self.history_limit < 0 or self.critic_warmup_epochs < 0:
             raise ValueError("history_limit and critic_warmup_epochs must be non-negative")
+        if self.critic_learning_rate is not None and (
+            not np.isfinite(self.critic_learning_rate)
+            or self.critic_learning_rate <= 0
+        ):
+            raise ValueError("critic_learning_rate must be positive when set")
+        if self.critic_hidden_dim < 0:
+            raise ValueError("critic_hidden_dim must be non-negative")
         if self.seed < 0:
             raise ValueError("PPO seed must be non-negative")
 
@@ -667,7 +697,10 @@ def warmup_critic(  # noqa: C901 - explicit finite-value and warmup safety check
         hidden = model.trunk(model.normalizer(observations)).detach()
     if not torch.isfinite(hidden).all():
         raise FloatingPointError("non-finite critic warmup hidden states")
-    warmup_optimizer = optim.Adam(model.value_head.parameters(), lr=config.learning_rate)
+    warmup_optimizer = optim.Adam(
+        model.value_head.parameters(),
+        lr=config.critic_learning_rate or config.learning_rate,
+    )
     losses: list[float] = []
     for _ in range(config.critic_warmup_epochs):
         predicted = _critic_values_from_hidden(model, hidden)
@@ -965,6 +998,7 @@ def load_ppo_checkpoint(
         hidden_layers=tuple(config["hidden_layers"]),
         output_dim=int(config["output_dim"]),
         value_mode=value_mode,
+        critic_hidden_dim=int(config.get("critic_hidden_dim", 0)),
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.normalizer.fitted = bool(config.get("normalizer_fitted", False))
@@ -1083,12 +1117,28 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         bc_model,
         initialization=config.initialization,
         value_mode=config.value_mode,
+        critic_hidden_dim=config.critic_hidden_dim,
     ).to(device)
     reference_model: BehaviorCloningNetwork | None = None
     if config.reference_kl_coefficient > 0:
         reference_model = bc_model.to(device).eval()
         reference_model.requires_grad_(False)
-    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+    if config.critic_learning_rate is not None:
+        critic_parameters = list(model.value_head.parameters())
+        critic_ids = {id(parameter) for parameter in critic_parameters}
+        shared_parameters = [
+            parameter
+            for parameter in model.parameters()
+            if id(parameter) not in critic_ids
+        ]
+        optimizer = optim.Adam(
+            [
+                {"params": shared_parameters, "lr": config.learning_rate},
+                {"params": critic_parameters, "lr": config.critic_learning_rate},
+            ]
+        )
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
     output_dir.mkdir(parents=True, exist_ok=True)
     status_path = output_dir / "status.json"
     result_path = output_dir / "result.json"

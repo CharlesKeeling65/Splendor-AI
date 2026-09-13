@@ -170,6 +170,11 @@ class StabilizationConfig:
     repo: Path | None = None
     eval_every: int = DEFAULT_EVAL_EVERY
     seed_base: int = TRAINING_SEED_START
+    # Roadmap C1 critic-repair ablation knobs (defaults keep the frozen run).
+    critic_learning_rate: float | None = None
+    critic_hidden_dim: int = 0
+    critic_warmup_epochs: int = 2
+    value_coefficient: float = 0.5
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output", Path(self.output))
@@ -213,6 +218,10 @@ class TrainingJob:
     updates: int
     games_per_update: int
     eval_every: int
+    critic_learning_rate: float | None = None
+    critic_hidden_dim: int = 0
+    critic_warmup_epochs: int = 2
+    value_coefficient: float = 0.5
 
     @property
     def name(self) -> str:
@@ -455,6 +464,10 @@ def make_training_jobs(
                     updates=config.updates,
                     games_per_update=config.games_per_update,
                     eval_every=config.eval_every,
+                    critic_learning_rate=config.critic_learning_rate,
+                    critic_hidden_dim=config.critic_hidden_dim,
+                    critic_warmup_epochs=config.critic_warmup_epochs,
+                    value_coefficient=config.value_coefficient,
                 )
             )
             job_index += 1
@@ -473,6 +486,10 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
     games_per_update: int,
     device: str,
     eval_every: int = DEFAULT_EVAL_EVERY,
+    critic_learning_rate: float | None = None,
+    critic_hidden_dim: int = 0,
+    critic_warmup_epochs: int = 2,
+    value_coefficient: float = 0.5,
 ) -> dict[str, Any]:
     """Return the frozen PPO configuration for one stabilisation branch."""
     if variant not in VARIANTS:
@@ -490,7 +507,7 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
         "gae_lambda": 0.95,
         "clip_epsilon": 0.2,
         "entropy_coefficient": 0.005,
-        "value_coefficient": 0.5,
+        "value_coefficient": value_coefficient,
         "max_grad_norm": 1.0,
         "minibatch_size": 256,
         "update_epochs": 4,
@@ -505,8 +522,10 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
         "current_weight": 1.0,
         "history_weight": 1.0,
         "history_limit": 4,
-        "critic_warmup_epochs": 2,
+        "critic_warmup_epochs": critic_warmup_epochs,
         "eval_every": eval_every,
+        "critic_learning_rate": critic_learning_rate,
+        "critic_hidden_dim": critic_hidden_dim,
     }
 
 
@@ -556,6 +575,10 @@ def _make_ppo_config(  # noqa: PLR0913 - mirror per-run configuration inputs
     games_per_update: int,
     device: str,
     eval_every: int,
+    critic_learning_rate: float | None = None,
+    critic_hidden_dim: int = 0,
+    critic_warmup_epochs: int = 2,
+    value_coefficient: float = 0.5,
 ) -> PPOConfig:
     """Instantiate the promised PPOConfig surface with no silent fallback."""
     kwargs = ppo_config_kwargs(
@@ -566,6 +589,10 @@ def _make_ppo_config(  # noqa: PLR0913 - mirror per-run configuration inputs
         games_per_update=games_per_update,
         device=device,
         eval_every=eval_every,
+        critic_learning_rate=critic_learning_rate,
+        critic_hidden_dim=critic_hidden_dim,
+        critic_warmup_epochs=critic_warmup_epochs,
+        value_coefficient=value_coefficient,
     )
     try:
         return PPOConfig(**kwargs)
@@ -1038,6 +1065,10 @@ def _run_training_job(job: TrainingJob) -> dict[str, Any]:
             games_per_update=job.games_per_update,
             device=job.device,
             eval_every=job.eval_every,
+            critic_learning_rate=job.critic_learning_rate,
+            critic_hidden_dim=job.critic_hidden_dim,
+            critic_warmup_epochs=job.critic_warmup_epochs,
+            value_coefficient=job.value_coefficient,
         )
         pool = _build_training_pool(device=job.device)
         validation_opponents = tuple(
@@ -1299,7 +1330,6 @@ def fixed_config_manifest(config: StabilizationConfig, *, feature_version: str) 
         "update_epochs": 4,
         "minibatch_size": 256,
         "target_kl": 0.02,
-        "critic_warmup_epochs": 2,
         "current_weight": 1.0,
         "history_weight": 1.0,
         "history_limit": 4,
@@ -1308,9 +1338,12 @@ def fixed_config_manifest(config: StabilizationConfig, *, feature_version: str) 
         "gae_lambda": 0.95,
         "clip_epsilon": 0.2,
         "entropy_coefficient": 0.005,
-        "value_coefficient": 0.5,
         "max_grad_norm": 1.0,
         "terminal_value": 10.0,
+        "critic_learning_rate": config.critic_learning_rate,
+        "critic_hidden_dim": config.critic_hidden_dim,
+        "critic_warmup_epochs": config.critic_warmup_epochs,
+        "value_coefficient": config.value_coefficient,
     }
     return {
         "common": common,
@@ -1832,6 +1865,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="NAME:KIND:PATH",
         help="repeat for bc, ppo, dqn, or builtin sources",
     )
+    parser.add_argument(
+        "--critic-learning-rate",
+        type=float,
+        default=None,
+        help="Roadmap C1 ablation: separate Adam lr for the value head",
+    )
+    parser.add_argument(
+        "--critic-hidden-dim",
+        type=int,
+        default=0,
+        help="Roadmap C1 ablation: critic-private hidden layer width (0 = off)",
+    )
+    parser.add_argument(
+        "--critic-warmup-epochs",
+        type=int,
+        default=2,
+        help="Roadmap C1 ablation: value-head warmup epochs before PPO updates",
+    )
+    parser.add_argument(
+        "--value-coefficient",
+        type=float,
+        default=0.5,
+        help="Roadmap C1 ablation: value-loss weight in the PPO total loss",
+    )
     parser.add_argument("--repo", type=Path, default=None)
     return parser
 
@@ -1853,6 +1910,10 @@ def config_from_args(args: argparse.Namespace) -> StabilizationConfig:
         smoke=bool(args.smoke),
         repo=args.repo,
         seed_base=args.seed_base,
+        critic_learning_rate=args.critic_learning_rate,
+        critic_hidden_dim=args.critic_hidden_dim,
+        critic_warmup_epochs=args.critic_warmup_epochs,
+        value_coefficient=args.value_coefficient,
     )
 
 

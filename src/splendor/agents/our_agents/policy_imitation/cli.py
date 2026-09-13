@@ -309,6 +309,8 @@ def _ppo_selfplay(args: argparse.Namespace) -> None:
         history_weight=args.history_weight,
         history_limit=args.history_limit,
         critic_warmup_epochs=args.critic_warmup_epochs,
+        critic_learning_rate=args.critic_learning_rate,
+        critic_hidden_dim=args.critic_hidden_dim,
         eval_every=args.eval_every,
     )
     result = train_ppo_selfplay(
@@ -598,6 +600,18 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     ppo.add_argument("--history-weight", type=float, default=1.0)
     ppo.add_argument("--history-limit", type=int, default=4)
     ppo.add_argument("--critic-warmup-epochs", type=int, default=0)
+    ppo.add_argument(
+        "--critic-learning-rate",
+        type=float,
+        default=None,
+        help="Roadmap C1: separate Adam lr for the value head",
+    )
+    ppo.add_argument(
+        "--critic-hidden-dim",
+        type=int,
+        default=0,
+        help="Roadmap C1: critic-private hidden layer width (0 = off)",
+    )
     ppo.add_argument("--eval-every", type=int, default=1)
     ppo.add_argument("--seed", type=int, default=1234)
     ppo.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
