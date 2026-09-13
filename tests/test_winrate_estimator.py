@@ -39,7 +39,12 @@ def test_unseen_cards_exclude_visible_faces(snapshot: Snapshot) -> None:
 
     unseen = _unseen_cards(snapshot)
     visible_keys = {
-        (info["tier"], info["colour"], info["points"], tuple(sorted(info["cost"].items())))
+        (
+            info["tier"],
+            info["colour"],
+            info["points"],
+            tuple(sorted(info["cost"].items())),
+        )
         for row in snapshot["dealt"]
         for info in row
         if info is not None
@@ -53,12 +58,13 @@ def test_unseen_cards_exclude_visible_faces(snapshot: Snapshot) -> None:
     assert len(unseen) < 90
 
 
-def test_two_player_smoke(
-    snapshot: Snapshot, estimator: WinRateEstimator
-) -> None:
+def test_two_player_smoke(snapshot: Snapshot, estimator: WinRateEstimator) -> None:
     result = estimator.estimate(
-        snapshot, actor_seat=snapshot["my_seat"] or 1,
-        n_rollouts=2, max_steps=400, seed=11,
+        snapshot,
+        actor_seat=snapshot["my_seat"] or 1,
+        n_rollouts=2,
+        max_steps=400,
+        seed=11,
     )
     assert len(result.win_rates) == 2
     assert all(0.0 <= rate <= 1.0 for rate in result.win_rates)
@@ -129,6 +135,38 @@ def test_actor_seat_mismatch_fails_loudly(
     snapshot: Snapshot, estimator: WinRateEstimator
 ) -> None:
     with pytest.raises(ValueError):
-        estimator.estimate(
-            snapshot, actor_seat=9, n_rollouts=1, max_steps=5, seed=1
+        estimator.estimate(snapshot, actor_seat=9, n_rollouts=1, max_steps=5, seed=1)
+
+
+@pytest.fixture(scope="module")
+def multi_estimator() -> WinRateEstimator:
+    model = QNetwork(input_dim=337, output_dim=3510, feature_version="public-v2-multi")
+    model.eval()
+    return WinRateEstimator(model)
+
+
+@pytest.mark.parametrize("seats", [2, 3, 4])
+def test_public_v2_multi_estimator_accepts_two_to_four_seats(
+    snapshot: Snapshot, multi_estimator: WinRateEstimator, seats: int
+) -> None:
+    """Roadmap E4: the multi-seat schema unlocks 2..4-seat estimation."""
+    result = multi_estimator.estimate(
+        _board_with_seats(snapshot, seats),
+        actor_seat=1,
+        n_rollouts=1,
+        max_steps=400,
+        seed=11,
+    )
+    assert len(result.win_rates) == seats
+
+
+def test_legacy_public_v2_estimator_still_rejects_three_seats(
+    snapshot: Snapshot,
+) -> None:
+    model = QNetwork(input_dim=312, output_dim=3510, feature_version="public-v2")
+    model.eval()
+    legacy = WinRateEstimator(model)
+    with pytest.raises(ValueError, match="exactly 2 seats"):
+        legacy.estimate(
+            _board_with_seats(snapshot, 3), actor_seat=1, n_rollouts=1, max_steps=5
         )

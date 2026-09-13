@@ -124,21 +124,21 @@ class WinRateEstimator:
         start = time.monotonic()
         n_players = len(snapshot["panels"])
         # v1's metric block reserves MAX_RIVALS score slots on each side of the
-        # observer, so 2-4 seats all vectorize; public-v2 encodes exactly two.
+        # observer, so 2-4 seats all vectorize; public-v2-multi generalizes the
+        # rival panels to MAX_RIVALS slots (roadmap B1/E4). Only the legacy
+        # public-v2 schema remains hard-coded to exactly two players.
         if not MIN_SEATS <= n_players <= MAX_SEATS:
             raise ValueError(
                 f"win-rate estimation supports {MIN_SEATS}..{MAX_SEATS} seats, "
                 f"got {n_players}"
             )
-        if self._feature_version != "v1" and n_players != PLAYERS:
+        if self._feature_version == "public-v2" and n_players != PLAYERS:
             raise ValueError(
                 f"feature schema {self._feature_version!r} encodes exactly "
                 f"{PLAYERS} seats, got {n_players}"
             )
         if actor_seat not in range(1, n_players + 1):
-            raise ValueError(
-                f"actor_seat {actor_seat} outside 1..{n_players}"
-            )
+            raise ValueError(f"actor_seat {actor_seat} outside 1..{n_players}")
         actor_index = actor_seat - 1
 
         rollouts: list[tuple[SplendorState, int]] = []
@@ -238,9 +238,7 @@ class WinRateEstimator:
         for state, index in rollouts:
             legal = self._rule.getLegalActions(state, index)
             mask = create_legal_actions_mask(legal, state, index)
-            batch_obs.append(
-                extract_observation(state, index, self._feature_version)
-            )
+            batch_obs.append(extract_observation(state, index, self._feature_version))
             batch_mask.append(mask)
             prepared.append((state, index, legal))
         obs = torch.from_numpy(np.stack(batch_obs)).float()
@@ -290,10 +288,10 @@ def _unseen_cards(snapshot: Snapshot) -> list[Card]:
         for info in row:
             if info is not None:
                 visible_codes.add(lookup_card(**_registry_args(info)).code)
-    visible_codes.update(lookup_card(**_registry_args(info)).code for info in snapshot["my_reserved"])
-    return [
-        card for card in CARD_REGISTRY.values() if card.code not in visible_codes
-    ]
+    visible_codes.update(
+        lookup_card(**_registry_args(info)).code for info in snapshot["my_reserved"]
+    )
+    return [card for card in CARD_REGISTRY.values() if card.code not in visible_codes]
 
 
 def _registry_args(info: Mapping[str, Any]) -> dict[str, Any]:
@@ -306,9 +304,7 @@ def _registry_args(info: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _pop_random(
-    unseen: list[Card], tier: int, rng: random.Random
-) -> Card | None:
+def _pop_random(unseen: list[Card], tier: int, rng: random.Random) -> Card | None:
     """Remove and return a random unseen card of ``tier`` (None if empty)."""
     candidates = [i for i, card in enumerate(unseen) if card.deck_id == tier]
     if not candidates:
