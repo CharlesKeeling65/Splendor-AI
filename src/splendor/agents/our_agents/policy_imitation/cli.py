@@ -632,6 +632,12 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
         default="q-softmax",
     )
     distill.add_argument("--temperature", type=float, default=1.0)
+    distill.add_argument(
+        "--feature-version",
+        choices=("v1", "public-v2", "public-v2-multi"),
+        default=None,
+        help="override the dataset-derived schema (must match the teacher)",
+    )
     distill.add_argument("--learning-rate", type=float, default=1e-3)
     distill.add_argument("--epochs", type=int, default=10)
     distill.add_argument("--batch-size", type=int, default=256)

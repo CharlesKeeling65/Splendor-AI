@@ -267,14 +267,15 @@ def evaluate_distillation(
 ) -> float:
     """Mean masked KL between student and teacher over the dataset."""
     model.eval()
+    device = next(model.parameters()).device
     observations = torch.from_numpy(data.observations).float()
     masks = torch.from_numpy(data.legal_masks).float()
     total = 0.0
     with torch.no_grad():
         for start in range(0, data.size, config.batch_size):
             batch = slice(start, min(start + config.batch_size, data.size))
-            obs = observations[batch]
-            mask = masks[batch]
+            obs = observations[batch].to(device)
+            mask = masks[batch].to(device)
             targets = teacher_log_probs(
                 teacher,
                 obs,
