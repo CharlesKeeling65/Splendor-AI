@@ -48,8 +48,21 @@
 | DQN corrected 基线（旧） | vs random 99.3% / heuristic 39.3% / minimax 52.7% | DQN_ROUND2_RESULTS_20260907 |
 | PPO 稳定化基线（旧） | vs random 100% / heuristic 32% / minimax 48.7% / GA 54% | PPO_STABILIZATION_RESULTS_20260908 |
 
-### 待回填（训练进行中，2026-09-13 启动）
+### 2026-09-13 训练批次回填
 
-- C2 规模化自博弈 500×16×3 seed（c2_training 种子段）：EV 曲线、验证选模、独立测试 vs random/minimax（M3 门槛）。
-- D1 DQN 200k×3（pool random:0.5,minimax:0.5）：M2（vs random ≥90%）与 M3（vs minimax ≥55%/100 局）逐 seed 报告。
-- C4 league 体检矩阵（G1 门槛：vs minimax ≥60%、vs heuristic ≥60%、vs GA ≥55%）。
+- **C2 规模化自博弈**（500 updates×16 局×3 seed，c2_training 段）：EV(last3)
+  0.34–0.48（试点期 0.12–0.23）；独立测试（c2_test 段，50 局/对手/seed）
+  均值 vs random **100%** / heuristic **37%** / minimax **52%** / GA **45%**。
+- **C4 league 体检**（ppo-best=seed42，independent_test 段 wrap，每对手 150 局）：
+  vs random **100%**、vs minimax **57.3%**（仓库历史最佳）、vs GA **47.3%**、
+  vs heuristic **38.7%**、vs rush 38.0%、vs hoard 43.0%。
+  G1 门槛（minimax ≥60 / heuristic ≥60 / GA ≥55）**未达**，heuristic 族缺口
+  归因与药方见 `docs/C2_SELFPLAY_C4_LEAGUE_REPORT_20260913.md`。
+- **D1 DQN 200k×3**（pool random:0.5,minimax:0.5）：M2 vs random 98%/82%/93%
+  （2/3 seed 达标）；**M3 vs minimax 14%/3%/16% 全败** —— 训练量假设对 M3
+  被否定，minimax 实力依赖 experiment.py 专用管线（guidance/EMA/审计），
+  见 `docs/D1_200K_COURSE_REPORT_20260913.md`。
+- **F1 价值标定**：return 模式 critic 的胜率判别 AUC 0.525 < 0.75，
+  不可用作搜索先验（否定结果入档）。
+- 排名（2p，对 minimax）：**C2-PPO 57.3% > DQN-corrected 52.7% > 旧 PPO 48.7%**；
+  对 heuristic：GA/minimax 族启发式仍领先（62%），学习型策略最大缺口。
