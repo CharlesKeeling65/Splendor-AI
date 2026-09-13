@@ -7,6 +7,7 @@ loopback, no browser.
 
 import json
 import threading
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -74,7 +75,7 @@ def test_store_deep_busy_and_reset_flag() -> None:
 
 # ----- HTTP surface ---------------------------------------------------------------
 @pytest.fixture(name="server_url")
-def server_url_fixture() -> str:
+def server_url_fixture() -> Generator[str, None, None]:
     store = AdvisorStore()
     store.set_state(_payload())
     server = start_server(store, 0)  # ephemeral port

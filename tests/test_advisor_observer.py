@@ -41,14 +41,16 @@ class _RotatingDriver(MockBrowserDriver):
 
     def __init__(self, pages: list[str]) -> None:
         super().__init__()
-        self._pages = pages
+        # Not the base class's _pages (its url->html map): this is the
+        # temporal page sequence for snapshot reads.
+        self._sequence = pages
         self._read_count = 0
 
     def evaluate(self, js: str) -> object:
         if SNAPSHOT_JS_MARKER in js:
-            index = min(self._read_count, len(self._pages) - 1)
+            index = min(self._read_count, len(self._sequence) - 1)
             self._read_count += 1
-            self.set_html(self._pages[index])
+            self.set_html(self._sequence[index])
         return super().evaluate(js)
 
 

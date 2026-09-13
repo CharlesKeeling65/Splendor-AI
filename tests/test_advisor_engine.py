@@ -14,7 +14,7 @@ plus synthetic snapshots - no browser, no network.
 
 import copy
 import random
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -25,7 +25,11 @@ from splendor.agents.our_agents.minmax import MiniMaxAgent
 from splendor.browser.advisor.engine import AdvisorEngine
 from splendor.browser.advisor.tracker import ReservationTracker
 from splendor.browser.card_registry import CARD_REGISTRY
-from splendor.browser.dom_extractor import COLOR_INDEX_TO_NAME, FACE_INDEX_TO_NAME
+from splendor.browser.dom_extractor import (
+    COLOR_INDEX_TO_NAME,
+    FACE_INDEX_TO_NAME,
+    Snapshot,
+)
 from splendor.splendor.splendor_model import Card, SplendorGameRule
 
 _T0_CARDS = sorted((c for c in CARD_REGISTRY.values() if c.deck_id == 0), key=lambda c: c.code)
@@ -74,12 +78,14 @@ def _snapshot(  # noqa: PLR0913 - fixture builder mirrors the Snapshot shape
     my_seat: int = 1,
     my_reserved: list[dict[str, Any]] | None = None,
     status: str = "等待你操作",
-) -> dict[str, Any]:
+) -> Snapshot:
     # Deep-copy on purpose: the tracker/engine diff consecutive snapshots,
     # and the real extract hands them a fresh object every frame - tests
     # must not get away with mutating one shared dict between frames.
-    return copy.deepcopy(
-        {
+    return cast(
+        Snapshot,
+        copy.deepcopy(
+            {
             "dealt": dealt or [[None] * 4 for _ in range(3)],
             "deck_counts": list(deck_counts),
             "nobles": [],
@@ -90,13 +96,14 @@ def _snapshot(  # noqa: PLR0913 - fixture builder mirrors the Snapshot shape
             "status": status,
             "payment_options": None,
             "noble_options": None,
-        }
+            }
+        )
     )
 
 
-def _opening_snapshot() -> dict[str, Any]:
+def _opening_snapshot() -> Snapshot:
     """A plausible 2-player opening: 12 dealt cards, full decks minus dealt."""
-    dealt = [
+    dealt: list[list[Any]] = [
         [_info(_BLUE_T0), _info(_RED_T0), None, None],
         [_info(_GREEN_T1), None, None, None],
         [None, None, None, None],
@@ -163,14 +170,14 @@ def test_reconstruction_conserves_deck_counts() -> None:
 def test_reconstruction_places_tracked_faces() -> None:
     tracker = ReservationTracker()
     # Frame 1: one tier-0 card dealt (deck 40-1=39), nothing reserved.
-    dealt_before = [
+    dealt_before: list[list[Any]] = [
         [_info(_BLUE_T0), None, None, None],
         [None, None, None, None],
         [None, None, None, None],
     ]
     # Frame 2: the blue card moved to the rival's reserve (table reserve,
     # face known) plus a deck-top reserve from tier 2 (deck 20-1=19).
-    dealt_after = [
+    dealt_after: list[list[Any]] = [
         [None, None, None, None],
         [None, None, None, None],
         [None, None, None, None],
@@ -288,7 +295,7 @@ def test_affordability_rows() -> None:
     cost3 = {**_info(_RED_T0), "cost": {"white": 3}}  # affordable via production+gem
     cost4 = {**_info(_GREEN_T1), "cost": {"white": 4}}  # short 1, gold covers
     cost5 = {**_info(_BLUE_T0), "cost": {"white": 5}}  # short 2 > gold 1
-    dealt = [[cost3, cost4, cost5, None], [None] * 4, [None] * 4]
+    dealt: list[list[Any]] = [[cost3, cost4, cost5, None], [None] * 4, [None] * 4]
     snapshot_any: dict[str, Any] = _snapshot([my_panel, _panel(2)], dealt=dealt)
 
     engine = AdvisorEngine(2, 0, seed=1)

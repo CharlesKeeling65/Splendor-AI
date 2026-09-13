@@ -7,7 +7,7 @@ seen-face accumulation.
 """
 
 import copy
-from typing import Any
+from typing import Any, cast
 
 from splendor.browser.advisor.tracker import (
     EVENT_INIT,
@@ -68,12 +68,14 @@ def _snapshot(  # noqa: PLR0913 - fixture builder mirrors the Snapshot shape
     my_seat: int = 1,
     my_reserved: list[dict[str, Any]] | None = None,
     status: str = "等待玩家2操作",
-) -> dict[str, Any]:
+) -> Snapshot:
     # Deep-copy on purpose: the tracker diffs consecutive snapshots, and the
     # real extract hands it a fresh object every frame - tests must not get
     # away with mutating one shared dict between frames.
-    return copy.deepcopy(
-        {
+    return cast(
+        Snapshot,
+        copy.deepcopy(
+            {
             "dealt": dealt or [[None] * 4 for _ in range(3)],
             "deck_counts": list(deck_counts),
             "nobles": [],
@@ -84,7 +86,8 @@ def _snapshot(  # noqa: PLR0913 - fixture builder mirrors the Snapshot shape
             "status": status,
             "payment_options": None,
             "noble_options": None,
-        }
+            }
+        )
     )
 
 
