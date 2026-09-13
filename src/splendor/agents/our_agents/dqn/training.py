@@ -410,6 +410,8 @@ def collect_from_browser(
     buffer: ReplayBuffer,
     n_games: int,
     q_net: QNetwork | None = None,
+    *,
+    drop_parity_anomalous: bool = True,
 ) -> dict[str, float]:
     """
     Fold completed web games into the local replay buffer (off-policy).
@@ -428,10 +430,14 @@ def collect_from_browser(
     :param q_net: when given, actions come from its greedy policy; otherwise
                   transitions are collected under the random-in-mask policy
                   (useful to seed the buffer before any checkpoint exists).
+    :param drop_parity_anomalous: roadmap D2 payment-semantic whitelist - skip
+                  folding games whose mask-parity monitor reported anomalies,
+                  keeping the replay inside the engine state distribution.
     :return: {"games", "steps", "avg_score"} - harvest statistics for logs.
     """
     total_steps = 0
     total_score = 0.0
+    anomalous_games = 0
 
     for _ in range(n_games):
         obs, _info = browser_env.reset()
@@ -444,6 +450,12 @@ def collect_from_browser(
             if q_net is not None
             else torch.device("cpu")
         )
+        game_obs: list[NDArray[np.float32]] = []
+        game_actions: list[int] = []
+        game_rewards: list[float] = []
+        game_next_obs: list[NDArray[np.float32]] = []
+        game_next_mask: list[NDArray[np.float32]] = []
+        game_dones: list[bool] = []
         while not terminated:
             if q_net is not None:
                 action = q_net.act(
@@ -459,16 +471,38 @@ def collect_from_browser(
                 if terminated
                 else np.asarray(browser_env.get_legal_actions_mask(), dtype=np.float32)
             )
-            buffer.add(obs, action, float(reward), next_obs, next_mask, terminated)
+            game_obs.append(obs)
+            game_actions.append(int(action))
+            game_rewards.append(float(reward))
+            game_next_obs.append(next_obs)
+            game_next_mask.append(next_mask)
+            game_dones.append(bool(terminated))
             obs, mask = next_obs, next_mask
             total_steps += 1
             # the browser env's rewards are panel score deltas, so their sum
             # telescopes to the final score (no terminal wrapper on the web)
             game_reward += float(reward)
         total_score += game_reward
+        parity_report = list(getattr(browser_env, "last_parity_report", []) or [])
+        if drop_parity_anomalous and parity_report:
+            anomalous_games += 1
+            total_steps -= len(game_obs)
+            total_score -= game_reward
+            continue
+        for transition in zip(
+            game_obs,
+            game_actions,
+            game_rewards,
+            game_next_obs,
+            game_next_mask,
+            game_dones,
+            strict=True,
+        ):
+            buffer.add(*transition)
 
     return {
         "games": float(n_games),
         "steps": float(total_steps),
         "avg_score": total_score / n_games,
+        "anomalous_games_dropped": float(anomalous_games),
     }
