@@ -200,3 +200,57 @@ def test_shaping_config_validation() -> None:
     assert ShapingConfig(kind="potential").kind == "potential"
     with pytest.raises(ValueError):
         ShapingConfig(kind="magic")
+
+
+# ----- Roadmap E2: ranking utilities -----------------------------------------
+
+
+def test_rank_utilities_map_and_average_ties() -> None:
+    from splendor.agents.our_agents.policy_imitation.shaping import (
+        RANK_UTILITIES,
+        rank_of,
+        rank_utility,
+    )
+
+    assert RANK_UTILITIES == {1: 1.0, 2: 0.0, 3: -0.5, 4: -1.0}
+    scores = [15.0, 12.0, 8.0, 3.0]
+    assert [rank_of(scores, s) for s in range(4)] == [1, 2, 3, 4]
+    assert [rank_utility(scores, s) for s in range(4)] == [1.0, 0.0, -0.5, -1.0]
+    # tied firsts share (1 + 0) / 2
+    tied = [15.0, 15.0, 8.0, 3.0]
+    assert rank_of(tied, 0) == 1 and rank_of(tied, 1) == 1
+    assert rank_utility(tied, 0) == pytest.approx(0.5)
+    assert rank_utility(tied, 1) == pytest.approx(0.5)
+    assert rank_utility(tied, 2) == pytest.approx(-0.5)
+    with pytest.raises(ValueError):
+        rank_of(scores, 4)
+
+
+def test_rank_utility_wrapper_terminal_reward() -> None:
+    from splendor.agents.our_agents.policy_imitation.shaping import (
+        RankUtilityWrapper,
+    )
+    from splendor.template import Agent as Dummy
+
+    class _Random(Dummy):
+        pass
+
+    env = gym.make(
+        "splendor-v1", agents=[RandomAgent(1), RandomAgent(2), RandomAgent(3)]
+    )
+    wrapped = RankUtilityWrapper(env, terminal_scale=10.0)
+    rng = np.random.default_rng(825_501)
+    _seed_triple(825_501)
+    obs, info = wrapped.reset(seed=825_501)
+    terminated = truncated = False
+    total = 0.0
+    steps = 0
+    while not (terminated or truncated):
+        mask = wrapped.unwrapped.get_legal_actions_mask()
+        action = int(rng.choice(np.flatnonzero(mask)))
+        obs, reward, terminated, truncated, _info = wrapped.step(action)
+        total += float(reward)
+        steps += 1
+    wrapped.close()
+    assert steps >= 1
+    assert np.isfinite(total)

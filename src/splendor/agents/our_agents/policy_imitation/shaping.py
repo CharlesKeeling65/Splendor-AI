@@ -26,6 +26,7 @@ in interface: they wrap a trainer-side reward without touching the base
 environment, and they work on top of any ``SplendorEnvBase`` implementation.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast, override
 
@@ -294,4 +295,81 @@ class EventShapingWrapper(gym.Wrapper):
         reward = float(reward) + self.shaper.bonus(
             engine_action, state_after, splendor_env.game_rule, self.my_id
         )
+        return obs, reward, terminated, truncated, info
+
+
+# ----- Roadmap E2: ranking utilities for 3/4-player training -----------------
+
+#: Suphx-style utility per final rank (1 = best).  In a 4-player game the
+#: third-vs-fourth gap matters as much as first-vs-second, which a binary
+#: win/loss terminal signal cannot express.
+RANK_UTILITIES: dict[int, float] = {1: 1.0, 2: 0.0, 3: -0.5, 4: -1.0}
+
+
+def rank_of(scores: Sequence[float], seat: int) -> int:
+    """1-based competition rank of ``seat`` within ``scores`` (ties share)."""
+    if not 0 <= seat < len(scores):
+        raise ValueError(f"seat {seat} outside 0..{len(scores) - 1}")
+    own = float(scores[seat])
+    return 1 + sum(1 for s in scores if float(s) > own)
+
+
+def rank_utility(scores: Sequence[float], seat: int) -> float:
+    """Utility of ``seat``'s final rank; tied seats average their utilities.
+
+    Ties are averaged so a shared first place scores (1 + 0) / 2 = 0.5 rather
+    than handing both seats the full first-place utility.
+    """
+    own = float(scores[seat])
+    better = sum(1 for s in scores if float(s) > own)
+    tied = sum(1 for s in scores if float(s) == own)
+    utilities = [RANK_UTILITIES[better + offset + 1] for offset in range(tied)]
+    return sum(utilities) / len(utilities)
+
+
+class RankUtilityWrapper(gym.Wrapper):
+    """Terminal ranking utility for n-seat self-play (roadmap E2).
+
+    Composes exactly like :class:`TerminalRewardWrapper`: the per-step score
+    deltas pass through untouched and the terminal step receives the seat's
+    rank utility scaled by ``terminal_scale`` (default 10.0 keeps the reward
+    magnitude comparable to the 2p ±10 win bonus).
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        terminal_scale: float = 10.0,
+    ) -> None:
+        super().__init__(env)
+        if terminal_scale <= 0:
+            raise ValueError("terminal_scale must be positive")
+        self.terminal_scale = terminal_scale
+        self.my_id: int = -1
+
+    @override
+    def reset(
+        self, *, seed: int | None = None, options: dict | None = None
+    ) -> tuple[NDArray, dict]:
+        obs, info = self.env.reset(seed=seed, options=options)
+        self.my_id = int(info["my_id"])
+        return obs, info
+
+    @override
+    def step(
+        self, action: int, payment: int | None = None
+    ) -> tuple[NDArray, float, bool, bool, dict]:
+        if payment is None:
+            obs, reward, terminated, truncated, info = self.env.step(action)
+        else:
+            env = cast(SplendorEnvBase, self.env)
+            obs, reward, terminated, truncated, info = env.step(action, payment)
+        reward = float(reward)
+        if terminated:
+            splendor_env = cast(SplendorEnv, self.env.unwrapped)
+            state = splendor_env.state
+            rule = splendor_env.game_rule
+            scores = [float(rule.calScore(state, agent.id)) for agent in state.agents]
+            reward += self.terminal_scale * rank_utility(scores, self.my_id)
         return obs, reward, terminated, truncated, info
