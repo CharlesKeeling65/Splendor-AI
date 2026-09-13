@@ -1,54 +1,68 @@
-"""Versioned, public-information-only DQN observations; v1 stays unchanged."""
+"""Versioned, public-information-only DQN observations; v1 stays unchanged.
+
+The public-v2 implementations live in the engine layer
+(:mod:`splendor.splendor.features_v2`, roadmap 2026-09-12 §B1); this module
+re-exports them so every existing importer keeps working unchanged.
+"""
 
 import numpy as np
 from numpy.typing import NDArray
 
-from splendor.splendor.constants import NORMAL_COLORS, WINNING_SCORE_TRESHOLD
 from splendor.splendor.features import extract_metrics_with_cards
+from splendor.splendor.features_v2 import (
+    COLORS,
+    KNOWN_SCHEMAS,
+    LEGACY_PLAYERS,
+    PANEL_DIM,
+    SCHEMA_PUBLIC_V2,
+    SCHEMA_PUBLIC_V2_MULTI,
+    SCHEMA_V1,
+    V1_DIM,
+    V2_DIM,
+    V2_MULTI_DIM,
+    agent_panel,
+    extract_observation_public_v2,
+    extract_observation_public_v2_multi,
+    extract_observation_v2,
+    noble_costs,
+    observation_dim,
+)
 from splendor.splendor.splendor_model import SplendorState
 
-V1_DIM = 265
-V2_DIM = 312
-COLORS = (*NORMAL_COLORS, "yellow")
-PLAYERS = 2
+#: Backward-compatible alias; the legacy 312-dim schema is two-seat only.
+PLAYERS = LEGACY_PLAYERS
 
-
-def observation_dim(version: str) -> int:
-    """Validate the schema name rather than silently reading wrong weights."""
-    if version not in {"v1", "public-v2"}:
-        raise ValueError(f"Unknown DQN feature schema: {version}")
-    return V1_DIM if version == "v1" else V2_DIM
+__all__ = [
+    "COLORS",
+    "KNOWN_SCHEMAS",
+    "LEGACY_PLAYERS",
+    "PANEL_DIM",
+    "PLAYERS",
+    "SCHEMA_PUBLIC_V2",
+    "SCHEMA_PUBLIC_V2_MULTI",
+    "SCHEMA_V1",
+    "V1_DIM",
+    "V2_DIM",
+    "V2_MULTI_DIM",
+    "agent_panel",
+    "extract_observation",
+    "extract_observation_public_v2",
+    "extract_observation_public_v2_multi",
+    "extract_observation_v2",
+    "noble_costs",
+    "observation_dim",
+]
 
 
 def extract_observation(
     state: SplendorState, seat: int, version: str = "v1"
 ) -> NDArray[np.float32]:
-    """Append supply, both panels, noble requirements, seat and endgame flag.
+    """Append supply, panels, noble requirements, seat and endgame flag.
 
     Rival reserved *count* is public; identities, deck order and purchased-card
-    identities never enter v2. Two-player-only v2 keeps seat semantics explicit.
-    The original v1 prefix is byte-for-byte unchanged.
+    identities never enter v2. The original v1 prefix is byte-for-byte
+    unchanged.
     """
-    observation_dim(version)
-    base = extract_metrics_with_cards(state, seat).astype(np.float32)
-    if version == "v1":
-        return base
-    if len(state.agents) != PLAYERS:
-        raise ValueError("public-v2 currently supports two players only")
-    extra = [float(state.board.gems.get(c, 0)) for c in COLORS]
-    for index in (seat, 1 - seat):
-        agent = state.agents[index]
-        extra.extend(float(agent.gems.get(c, 0)) for c in COLORS)
-        extra.extend(float(len(agent.cards[c])) for c in NORMAL_COLORS)
-        extra.append(float(len(agent.cards["yellow"])))
-    nobles = state.board.nobles
-    for index in range(3):
-        cost = nobles[index][1] if index < len(nobles) else {}
-        extra.extend(float(cost.get(c, 0)) for c in NORMAL_COLORS)
-    extra.extend(
-        [
-            float(seat),
-            float(any(a.score >= WINNING_SCORE_TRESHOLD for a in state.agents)),
-        ]
-    )
-    return np.concatenate((base, np.asarray(extra, dtype=np.float32)))
+    if version == SCHEMA_V1:
+        return extract_metrics_with_cards(state, seat).astype(np.float32)
+    return extract_observation_v2(state, seat, version)

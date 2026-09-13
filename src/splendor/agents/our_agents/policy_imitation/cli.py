@@ -533,7 +533,7 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     collect.add_argument("--teacher", choices=DEFAULT_CANDIDATES, required=True)
     collect.add_argument("--opponent", choices=DEFAULT_OPPONENTS, default="random")
     collect.add_argument("--seed-group", default="training")
-    collect.add_argument("--feature-version", choices=("v1", "public-v2"), default="v1")
+    collect.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default="v1")
     _add_snapshot_arguments(collect)
     collect.set_defaults(handler=_collect_bc)
 
@@ -541,7 +541,7 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     train.add_argument("manifest", type=Path)
     train.add_argument("--dataset", type=Path, required=True)
     train.add_argument("--output", type=Path, required=True)
-    train.add_argument("--feature-version", choices=("v1", "public-v2"), default=None)
+    train.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default=None)
     train.add_argument(
         "--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128]
     )
@@ -559,7 +559,7 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     dagger.add_argument("--student-checkpoint", type=Path, required=True)
     dagger.add_argument("--opponent", choices=DEFAULT_OPPONENTS, default="random")
     dagger.add_argument("--seed-group", default="training")
-    dagger.add_argument("--feature-version", choices=("v1", "public-v2"), default=None)
+    dagger.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default=None)
     dagger.add_argument("--round", type=int, required=True)
     _add_snapshot_arguments(dagger)
     dagger.set_defaults(handler=_dagger_round)
@@ -577,7 +577,7 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     ppo.add_argument("--output", type=Path, required=True)
     ppo.add_argument("--opponent-pool", default="ga:1,heuristic:1,current:1")
     ppo.add_argument("--validation-opponents", default="random,heuristic,minimax")
-    ppo.add_argument("--feature-version", choices=("v1", "public-v2"), default="v1")
+    ppo.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default="v1")
     ppo.add_argument(
         "--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128]
     )

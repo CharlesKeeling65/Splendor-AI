@@ -22,6 +22,10 @@ from torch import optim
 # import this to register splendor as one of gym's environments.
 # pylint: disable=unused-import
 import splendor.splendor.gym  # noqa: F401
+from splendor.agents.our_agents.policy_imitation.shaping import (
+    EventShapingWrapper,
+    PotentialShapingWrapper,
+)
 from splendor.agents.our_agents.ppo.arguments_parsing import (
     DEFAULT_OPPONENT,
     DEFAULT_TEST_OPPONENT,
@@ -143,6 +147,7 @@ class DQNArguments(TypedDict):
     target_update_freq: Required[int]
     save_every: Required[int]
     eval_every: Required[int]
+    shaping: Required[str]
 
 
 # pylint: disable=too-many-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-positional-arguments
@@ -162,6 +167,7 @@ def train(  # noqa: C901, PLR0912, PLR0913, PLR0915
     target_update_freq: int = TARGET_UPDATE_FREQ,
     save_every: int = SAVE_EVERY,
     eval_every: int = EVAL_EVERY,
+    shaping: str = "none",
 ) -> QNetwork:
     """
     Train a DQN agent.
@@ -239,9 +245,15 @@ def train(  # noqa: C901, PLR0912, PLR0913, PLR0915
     models_folder = folder / "models"
     models_folder.mkdir(parents=True)
 
-    train_env = TerminalRewardWrapper(
+    train_env: gym.Env = TerminalRewardWrapper(
         gym.make("splendor-v1", agents=opponents), win_bonus=win_bonus
     )
+    if shaping == "potential":
+        train_env = PotentialShapingWrapper(train_env)
+    elif shaping == "event":
+        train_env = EventShapingWrapper(train_env)
+    elif shaping != "none":
+        raise ValueError(f"Unknown shaping kind: {shaping!r}")
 
     params = DQNParams(
         lr=learning_rate,
@@ -601,6 +613,17 @@ def parse_args() -> DQNArguments:
         default=EVAL_EVERY,
         type=int,
         help="How often (in steps) to run the greedy evaluation",
+    )
+    parser.add_argument(
+        "--shaping",
+        default="none",
+        type=str,
+        choices=("none", "potential", "event"),
+        help=(
+            "Training-side reward shaping (roadmap B2). 'potential' is the "
+            "policy-invariant default candidate; 'event' is the experimental "
+            "non-invariant control group."
+        ),
     )
 
     options: argparse.Namespace = parser.parse_args()
