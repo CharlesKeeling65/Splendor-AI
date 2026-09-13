@@ -51,3 +51,5 @@
 | 2026-09-13 | league 冒烟（random×random, m=10, CI 两次） | validation | 828000–828019 | `/tmp/league-smoke*`（不入库） |
 | 2026-09-13 | C1 critic 消融（5 分支 × 3 seed × 128 局） | stabilization（沿 2026-09-08 协议） | 820000–821127 等 | `runs/c1-critic-ablation/` |
 | 2026-09-13 | C2 启动（500 updates × 16 局 × 3 seed） | c2_training / c2_validation / c2_test | 830000–854009 / 855000–855024 | `runs/c2-selfplay-500/` |
+| 2026-09-13 | C4 league 体检（7 agent × 42 对阵 × 75 局，wrap=50） | independent_test | 829000–829049 循环 | `runs/c4-league-20260913/` |
+| 2026-09-13 | E1 多席冒烟（3p/4p 各 1×16 局） | training（训练种子） | 826000 段派生 | `runs/e1-smoke-{3,4}p/` |
