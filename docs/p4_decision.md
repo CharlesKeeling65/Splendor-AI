@@ -40,3 +40,22 @@ P4 的每一项都有明确的**触发条件**（来自 P3 归因），而本次
 因此 P1 交付代码与单元测试（网络/buffer/更新目标），M1–M3 训练课程、P1 人工验收（曲线审查/观战/3-seed）、
 P3 的 50 局部署均待具备训练条件后执行。P4 的触发证据链依赖后者，故一并延后。
 本决策不改变 plan 的完成定义（phase-5 §6），只推迟其达成时间。
+
+## 附：复审记录 2026-09-13 —— B 阶段特征升级的部分重开（roadmap B1）
+
+重开理由（对应路线图 §3 纪律红线）：
+1. **训练条件已解除**——2026-09-08 稳定化运行与 2026-09-13 预算冒烟证实 P5000
+   训练管线可用（本机"不做训练"约束于 PPO 稳定化时解除）；
+2. **文献与归因证据**——ALGORITHM_SURVEY §5.3.3/§10.4 指出观测缺公共宝石供给是
+   学习型策略的共享瓶颈，public-v2 已验证可行（DQN 搜索实验），多席化是 3/4p
+   训练（G4）的前提；
+3. **范围受控**——仅重开 P4 的"特征升级"子项：legacy v1（265 维）与 public-v2
+   （312 维）逐字节保留（`tests/test_feature_parity.py` 仍锁 v1、
+   `tests/test_features_v2.py` 锁 v2 逐位等价），新增 `public-v2-multi`（337 维）
+   走版本化 schema，checkpoint 携带 feature_version。P4 其余四项（支付头、
+   部署落差驱动项）仍维持暂缓，等待 sim-to-real 归因数据。
+
+裁决：**部分重开**。生效文件 `src/splendor/splendor/features_v2.py`
+（引擎层共享模块）、`dqn/features.py`（re-export）、`policy_imitation` CLI
+`--feature-version public-v2-multi`。浏览器侧仅当 v2 系模型实际上网页时才需
+伪状态回填扩展（届时必须跑 `make parity` 扩展用例）。
