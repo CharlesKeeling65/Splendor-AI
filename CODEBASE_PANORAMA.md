@@ -481,3 +481,23 @@ evolve:main → parse_args → evolve
 - 纠错后基线 vs minimax 52.7%，引导版 53.3%，但两强对手均值后者更低，
   不宣称整体提升。120 tests passed / 1 skipped，DQN Ruff/mypy 通过。
 - 详情与参数见 [第二轮报告](docs/DQN_ROUND2_RESULTS_20260907.md)。
+
+### 7.9 提升路径阶段 A/B/C1/C3/D2/D3/E2/E4/F2 代码（2026-09-13，按 docs/IMPROVEMENT_ROADMAP_20260912.md 实施）
+
+| 任务 | 交付 | 要点 |
+|---|---|---|
+| A1 league 评测器 | `src/splendor/league.py` + console script `splendor-league` | 全配对 ordered-seat round-robin、Wilson 区间、行为度量（买卡/预留/拿宝石/达 15 分轮数/卡数 tie-break）、JSON manifest + Markdown 矩阵、可选进程池；`tests/test_league_runner.py`（冒烟 + 配对种子可复现） |
+| A2 种子段注册 | `src/splendor/seed_registry.py` + `docs/seed_registry.md` | 声明段/封存段/历史禁区，`allocate_seeds` 扩容需显式改注册表；C1/C2 消费记录入文档 |
+| A3 预算冒烟 | `runs/budget-smoke/`（不入库），数字入路线图 §2 | PPO 2.1 s/训练局；DQN 29 步/s（solo CUDA） |
+| B1 特征 v2 多席化 | `src/splendor/splendor/features_v2.py`，DQN 改 re-export | legacy 312 维逐位保留；新增 337 维 `public-v2-multi`（rival 面板 MAX_RIVALS 槽位、显式席位特征、2 席前缀 = legacy）；`tests/test_features_v2.py` |
+| B2 奖励塑形 | `policy_imitation/shaping.py` + dqn `--shaping` | potential-based（Ng 1999，势能复用 calScore + noble coverage）；event 对照组显式标注非策略不变；γ 空间与 γ=1 telescoping 测试；健康检查：塑形 5k vs random 46% > 无塑形 25%，vs heuristic 持平 |
+| C1 critic 消融 | `PPOConfig.critic_learning_rate/critic_hidden_dim` + stabilization 4 旋钮 | 5 分支 × 3 seed 配对消融：value1（+35% EV）> critic-lr5（+23%）> base ≈ warmup5 > critichid（−31%）；报告 `docs/PPO_CRITIC_ABLATION_20260913.md`；C2 采纳 value1+critic-lr5 |
+| C3 对手池风格化 | `WeightedHeuristicAgent`（rush/hoard）+ `--pool-names` | 默认权重精确复刻 frozen heuristic；池组合入 manifest |
+| D2 网页回流混采 | `dqn/web_replay.py` + `collect_from_browser` 奇偶过滤 | 独立 web buffer 按比例混采（默认 20%）、特征 schema fail-closed 校验、奇偶异常局默认整局丢弃；夹具离线测试 |
+| D3 价值先验蒸馏 | `policy_imitation/distillation.py` + `policy-imitation distill-dqn` | masked-KL 蒸馏（q-softmax 任意 checkpoint / policy-head 双模式）；NaN-safe 手工掩码 KL；确定性 seed 切分入元数据 |
+| E2 排名效用 | shaping.py `RANK_UTILITIES` + `RankUtilityWrapper` | {1:+1, 2:0, 3:−0.5, 4:−1}，同分平均；wrapper 与 TerminalRewardWrapper 同构组合 |
+| E4 胜率估计器多席化 | `remote/rollout.py` 守卫放宽 | 仅 legacy public-v2 锁 2 席；multi schema 支持 2..4 席，测试覆盖 |
+| F2 多确定化树搜索 | `dqn/search.py` `multi_tree_search_policy` | 每树一次隐藏采样树内复用 + 预算分配（uniform/root-value spread priority）+ 树间根访问分布平均；原单样本 PUCT 零改动 |
+
+C2 规模化自博弈（500×16×3 seed，c2_training 种子段）与 D1 DQN 200k×3 课程已启动
+（结果回填待训练完成）；E1 席位参数化与 F1 价值标定待上述训练产物。
