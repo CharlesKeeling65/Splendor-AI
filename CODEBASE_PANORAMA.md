@@ -508,3 +508,20 @@ vs heuristic 38.7%、vs GA 47.3% —— G1 门槛未达，heuristic 族缺口归
 先验**（`runs/f1-calibration/`）。E1 席位参数化 + 3p/4p 冒烟零非法
 （`docs/E_PHASE_IMPLEMENTATION_20260913.md`）。D1（DQN 200k×3，pool
 random:0.5,minimax:0.5）当晚训练完成后按 M2/M3 门槛出报告。
+
+### 7.10 浏览器对局辅助面板 P7 v0/v1（2026-09-14，按 plan/phase-7-browser-advisor.md 实施）
+
+- **定位**：只读 Advisor——人在 ego-browser 窗口手动打牌，进程每 0.4s（对手回合 0.25s）
+  轮询 DOM 并输出走法排名/牌堆直方图/可负担性/预留记忆；零点击（advisor 包禁 import
+  `action_executor`，AST 级测试强制），礼仪约束由构造保证。
+- **交付**：`browser/advisor/`（observer 去抖观察回路 + tracker 预留记忆重建 + engine
+  确定性重建与建议 + server/dashboard.html stdlib 仪表盘）+ `play_advisor.py` 入口 +
+  console script `play-advisor`；`describe_action` 三件套平移至 `splendor/action_text.py`
+  （原位 re-export，advisor 不背 torch）。
+- **关键技术裁决**：打分必在**确定性重建状态**上进行——伪状态牌堆为空（F9）且引擎不枚举
+  牌堆预留动作；重建 = 伪状态 + tracker 已识别预留落位 + 未知按 tier 从未见牌池采样
+  （比 rollout.py 盲采样更紧）；牌堆直方图带 `deck_counts` 守恒自检。
+- **质量门**：advisor 专属测试 48 项（observer/tracker/engine/cli/server，全部夹具离线）；
+  全量 pytest 377 passed + parity 通过；advisor 文件 ruff/mypy 全绿。
+- **待办**：E7 实验（对手预留瞬间 DOM 证据，tracker 证据钩子已留位）→ 油猴叠加（可选）→
+  真实房间人工验收（§5.2 清单）。commit 序列 11b949f→8731e90→43ff2db→171ed86→ac3f7f0。

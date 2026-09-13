@@ -10,6 +10,12 @@
 - [策略模仿与自博弈实施计划](policy-imitation-selfplay.md)：教师评测 → BC → DAgger → PPO 对手池训练；保留 corrected DQN 对照，MCTS 按收益门槛进入。**待实施**，不代表已完成训练或替换部署模型。
 - 依据：[DQN 第二轮结果与选模纠错](../docs/DQN_ROUND2_RESULTS_20260907.md)；已有实验协议见 [dqn-round2.md](dqn-round2.md)。
 
+### 对局辅助面板计划（2026-09-14）
+
+- [Phase-7：浏览器对局辅助面板](phase-7-browser-advisor.md)：只读 Advisor（GA 快评 + minimax 深评 +
+  牌堆差集直方图 + 对手预留记忆重建），复用 P2 浏览器层与 P3 部署链路，零执行器依赖。
+  **v0/v1 已实现（2026-09-14，离线质量门全绿）**；E7 实验、油猴叠加与真实房间验收待执行。
+
 以下 P0–P5 保留原有升级计划；上述文档补充后续训练路线，不覆盖引擎、浏览器及存量算法的兼容约束。
 
 ```
@@ -21,6 +27,8 @@ plan/
 ├── phase-3-web-deployment.md        P3 网页部署（sim-to-real 首秀）
 ├── phase-4-enhancements.md          P4 高保真与增强（可选，按 P3 数据决策）
 ├── phase-5-engineering.md           P5 工程化固化（测试/CI/文档）
+├── phase-6-remote-inference.md      P6 本地浏览器控制 + 远程推理 + 实时胜率仪表盘
+├── phase-7-browser-advisor.md       P7 浏览器对局辅助面板（只读 Advisor，v0/v1 已实现）
 └── reference/                       四份原始文档（依据归档，内容未改动）
     ├── UPGRADE_ROADMAP.md           架构裁决与勘误（含 5 项源码验证裁决）
     ├── DQN_GUIDE.md                 DQN 算法完整方案（超参/骨架/陷阱）

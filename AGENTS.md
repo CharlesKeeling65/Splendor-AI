@@ -31,6 +31,7 @@ ppo          # PPO 训练（console script）
 dqn          # DQN 训练（Dueling + Double DQN + n-step replay）
 evolve       # 遗传算法训练
 play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI）
+play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进程输出走法建议+牌堆直方图（P7）
 # 快捷入口：make test / make parity / make train-dqn / make play-web
 ```
 
@@ -98,6 +99,7 @@ CJK 全角标点（`，（）；`）是本仓库的**内容而非笔误**（状�
 | `docs/TRAINING_GUIDE.md` | **DQN 训练实操手册**（课程/参数/监控/验收，操作者视角） |
 | `docs/WEB_DEPLOYMENT_GUIDE.md` | **浏览器部署与可视化手册**（人机对战/挂机/双开/旁观/回流） |
 | `docs/REMOTE_DEPLOYMENT_GUIDE.md` | **本地控制 + 远程推理部署手册**（phase-6：inference-server / play-web-remote / play-dashboard，Z8 部署与隧道） |
+| `plan/phase-7-browser-advisor.md` | **浏览器对局辅助面板设计裁决与任务清单**（P7：只读 advisor，零点击） |
 | `docs/web_experiments.md` | **E1-E6 网页规则实测记录 + M0.2 吞吐留档 + 规则差异 ADR** |
 | `docs/p4_decision.md` | P4 go/no-go 决策（全部暂缓，复审条件） |
 | `docs/s2r_report.md` | sim-to-real 对照报告模板（数字待部署后回填） |
