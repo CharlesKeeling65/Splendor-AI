@@ -162,7 +162,14 @@ def test_pool_history_bucket_is_fixed_and_zero_current_is_respected() -> None:
     weights = {entry.name: entry.weight for entry in pool}
     assert weights["first"] == 1.0
     assert weights["current"] == 0.0
-    assert set(weights) == {"first", "current", "history-2", "history-3", "history-4", "history-5"}
+    assert set(weights) == {
+        "first",
+        "current",
+        "history-2",
+        "history-3",
+        "history-4",
+        "history-5",
+    }
     assert sum(weights[name] for name in weights if name.startswith("history-")) == 2.0
     assert all(weights[name] == 0.5 for name in weights if name.startswith("history-"))
 
@@ -182,7 +189,8 @@ def _single_transition(model: PolicyValueNetwork) -> PPOTransition:
     legal_mask = np.ones(3510, dtype=np.uint8)
     with torch.no_grad():
         logits, value = model(
-            torch.from_numpy(observation), torch.from_numpy(legal_mask.astype(np.float32))
+            torch.from_numpy(observation),
+            torch.from_numpy(legal_mask.astype(np.float32)),
         )
         log_probability = float(
             distributions.Categorical(logits=logits).log_prob(torch.tensor(0)).item()
@@ -241,9 +249,17 @@ def test_reference_kl_uses_the_legal_mask() -> None:
 
 def test_critic_warmup_does_not_change_actor_or_trunk() -> None:
     model = PolicyValueNetwork(265, feature_version="v1", hidden_layers=(8,))
-    trunk_before = {name: value.detach().clone() for name, value in model.trunk.state_dict().items()}
-    policy_before = {name: value.detach().clone() for name, value in model.policy_head.state_dict().items()}
-    value_before = {name: value.detach().clone() for name, value in model.value_head.state_dict().items()}
+    trunk_before = {
+        name: value.detach().clone() for name, value in model.trunk.state_dict().items()
+    }
+    policy_before = {
+        name: value.detach().clone()
+        for name, value in model.policy_head.state_dict().items()
+    }
+    value_before = {
+        name: value.detach().clone()
+        for name, value in model.value_head.state_dict().items()
+    }
     transition = _single_transition(model)
     transition = PPOTransition(
         transition.observation,
@@ -267,9 +283,18 @@ def test_critic_warmup_does_not_change_actor_or_trunk() -> None:
         ),
     )
     assert metrics["optimizer_steps"] == 2
-    assert all(torch.equal(value, model.trunk.state_dict()[name]) for name, value in trunk_before.items())
-    assert all(torch.equal(value, model.policy_head.state_dict()[name]) for name, value in policy_before.items())
-    assert any(not torch.equal(value, model.value_head.state_dict()[name]) for name, value in value_before.items())
+    assert all(
+        torch.equal(value, model.trunk.state_dict()[name])
+        for name, value in trunk_before.items()
+    )
+    assert all(
+        torch.equal(value, model.policy_head.state_dict()[name])
+        for name, value in policy_before.items()
+    )
+    assert any(
+        not torch.equal(value, model.value_head.state_dict()[name])
+        for name, value in value_before.items()
+    )
 
 
 def test_kl_stop_is_nonnegative_and_preoptimizer() -> None:
@@ -286,7 +311,9 @@ def test_kl_stop_is_nonnegative_and_preoptimizer() -> None:
         transition.seed,
         transition.seat,
     )
-    before = {name: value.detach().clone() for name, value in model.state_dict().items()}
+    before = {
+        name: value.detach().clone() for name, value in model.state_dict().items()
+    }
     metrics = ppo_update(
         model,
         optim.Adam(model.parameters(), lr=1e-3),
@@ -305,7 +332,9 @@ def test_kl_stop_is_nonnegative_and_preoptimizer() -> None:
     assert metrics["early_stopped"]
     assert metrics["optimizer_steps"] == 0
     assert metrics["approx_kl"] >= 0.0
-    assert all(torch.equal(value, model.state_dict()[name]) for name, value in before.items())
+    assert all(
+        torch.equal(value, model.state_dict()[name]) for name, value in before.items()
+    )
 
 
 @pytest.mark.parametrize(
@@ -406,9 +435,7 @@ def test_configured_fake_fast_env_smoke_writes_incremental_status(
     assert (output / "initial.pth").is_file()
     assert (output / "status.json").is_file()
     assert (output / "result.json").is_file()
-    assert result["logs"][1]["opponent_pool"][
-        "history_weight_redistributed_to_current"
-    ]
+    assert result["logs"][1]["opponent_pool"]["history_weight_redistributed_to_current"]
     assert not result["logs"][2]["opponent_pool"][
         "history_weight_redistributed_to_current"
     ]
@@ -478,3 +505,19 @@ def test_ppo_training_round_trip_from_bc(tmp_path: Path) -> None:
     assert Path(result["final"]).is_file()
     assert result["logs"][0]["teacher_queries"] == 0
     assert result["logs"][0]["training_failed_games"] == 0
+
+
+def test_outcome_mode_rejects_unrepresentable_terminal_value() -> None:
+    """Roadmap audit 2026-09-13: the tanh outcome critic cannot fit ±10 targets.
+
+    The pre-2026-09-08 runs trained exactly this mismatch (tanh [-1, 1] critic
+    against GAE returns carrying terminal ±10); the guard turns the silent
+    handicap into a configuration error.
+    """
+    from splendor.agents.our_agents.policy_imitation.ppo_selfplay import PPOConfig
+
+    with pytest.raises(ValueError, match="unrepresentable"):
+        PPOConfig(value_mode="outcome", terminal_value=10.0)
+    # the coherent pair still validates
+    PPOConfig(value_mode="outcome", terminal_value=1.0)
+    PPOConfig(value_mode="return", terminal_value=10.0)

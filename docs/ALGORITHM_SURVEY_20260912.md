@@ -312,7 +312,10 @@ target KL 0.02、**终局 ±10（calScore 口径，与 DQN 同口径）**、对�
 各 25%（current=自博弈，history=最多 4 个冻结快照）、BC（DAgger-2）初始化点火、anchor 变体加
 reference-KL 0.02。结果：+18/+12/+4.7 pp（对 GA/heuristic/minimax）但未全面超过 corrected DQN。
 
-**关键诊断（结果文档自带）**：**价值解释方差仅 0.03–0.21**。策略梯度方法的方差近似
+**关键诊断（结果文档自带）**：**价值解释方差仅 0.03–0.21**。〔勘误 2026-09-13：该低 EV 的
+成因之一是当时 critic 经 tanh 输出被压在 [-1,1]，而 GAE 回归目标含终局 ±10——目标不可表示。
+2026-09-08 稳定化已修（`value_mode="return"` 无界输出为默认，见 PPO_STABILIZATION_RESULTS_20260908 §99），
+修复后 EV 提升至 0.34–0.48（C2 500 updates）。〕策略梯度方法的方差近似
 $\propto (1-\mathrm{EV})$——critic 这么弱等于 PPO 在和被废掉 critic 的自己比赛；advantage 全靠
 GAE 硬扛。此外训练胜率与实力倒挂（scratch 训练胜 41–61/128、fixed 只 8–10/128）：对手池强弱混杂
 且快照贪心/学习者采样不对称，**训练胜率不是实力指标**。

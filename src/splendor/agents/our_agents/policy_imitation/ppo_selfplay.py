@@ -349,6 +349,13 @@ class PPOConfig:
             raise ValueError("n_seats must lie in [2, 4]")
         if self.shaping_kind not in ("none", "potential", "event"):
             raise ValueError(f"unknown shaping kind {self.shaping_kind!r}")
+        if self.value_mode == "outcome" and self.terminal_value > 1.0:
+            raise ValueError(
+                "value_mode='outcome' bounds the critic to [-1, 1] via tanh, "
+                f"so terminal_value={self.terminal_value} is unrepresentable "
+                "(the 2026-09-07 era ran exactly this mismatch; use "
+                "value_mode='return' for score/terminal-scale targets)"
+            )
         if not np.isfinite(self.shaping_kappa) or self.shaping_kappa < 0:
             raise ValueError("shaping_kappa must be finite and non-negative")
         if self.n_seats > MIN_SEATS and self.feature_version != "public-v2-multi":
