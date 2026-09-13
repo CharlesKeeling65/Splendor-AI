@@ -289,3 +289,47 @@ C1 + D1 + D3 ──────────────────┘
 - **文档回填**：每个阶段完成后在 `ALGORITHM_COMPARISON.md` 补录同口径数字，并在
   `CODEBASE_PANORAMA.md` §7 增量记账。
 - **本计划完成判据**：§1.2 的 G1–G5 全部达成或明确记录未达成原因与下一步。
+
+---
+
+## 11. 进度审计（2026-09-13，第一轮实施完成）
+
+### 阶段任务清单
+
+| 阶段 | 任务 | 状态 | 证据 |
+|---|---|---|---|
+| A1 | league 评测器 | ✅ 落地 | `splendor-league` + `tests/test_league_runner.py`（配对种子可复现） |
+| A2 | 种子段管理 | ✅ 落地 | `seed_registry.py` + `docs/seed_registry.md` + manifest 校验 |
+| A3 | 预算冒烟 | ✅ 落地 | §2 A3 实测数字（PPO 2.1s/局、DQN 29 步/s） |
+| B1 | 特征 v2 多席化 | ✅ 落地 | `features_v2.py`（legacy 逐位保留 + 337 维 multi）+ `tests/test_features_v2.py` |
+| B2 | 奖励塑形 | ✅ 落地 | `shaping.py` + telescoping 测试 + DQN 5k 健康检查达标 |
+| C1 | critic 消融 | ✅ 完成 | `docs/PPO_CRITIC_ABLATION_20260913.md`（value1+critic-lr5 胜出） |
+| C2 | 规模化自博弈 | ✅ 完成 | 500×16×3；EV 0.34–0.48；`docs/C2_SELFPLAY_C4_LEAGUE_REPORT_20260913.md` |
+| C3 | 池风格化 | ✅ 落地 | rush/hoard 变体 + `--pool-names` |
+| C4 | 独立测试体检 | ✅ 完成 | league 矩阵（每对手 150 局）；**G1 未达（如实记录）** |
+| D1 | 200k 课程 | ✅ 完成 | M2 2/3 seed；**M3 被否定（如实记录）**；`docs/D1_200K_COURSE_REPORT_20260913.md` |
+| D2 | 回流混采 | ✅ 落地 | 白名单语义修正后全测试绿；真实回流按计划留待 G1 后部署 |
+| D3 | 价值蒸馏 | ⚠️ 机制落地，验收未达 | 2/60 vs 22/60（教师弱）；`docs/D3_DISTILLATION_RESULT_20260913.md` |
+| E1 | per-seat 入口 | ✅ 落地 | 3p/4p 冒烟零非法；`docs/E_PHASE_IMPLEMENTATION_20260913.md` |
+| E2 | 排名效用 | ✅ 落地 | `RankUtilityWrapper` + 测试（E3 训练排期待启动） |
+| E3 | 3/4p league 建档 | ⏸ 未启动 | 依赖 E3 训练排期（入口与 league 均已就绪） |
+| E4 | 估计器多席化 | ✅ 落地 | `rollout.py` + 测试 |
+| F1 | 价值标定 | ✅ 完成 | AUC 0.525 < 0.75，**记录为不可用作搜索先验** |
+| F2 | 多树搜索对照 | ⚠️ 机制落地 | 多树 PUCT + 预算分配 + 等墙钟 harness；实验待合格教师（F1 否定当前头） |
+
+### G1–G5 总目标判定（§1.2）
+
+| 目标 | 量化验收 | 现状 | 判定 |
+|---|---|---|---|
+| G1 | vs minimax ≥60 / heuristic ≥60 / GA ≥55（≥150 局独立段） | 57.3% / 38.7% / 47.3% | **未达成**（minimax 已超 DQN 基线 52.7%；heuristic 族缺口归因入 C4 报告） |
+| G2 | PPO critic EV ≥0.5；DQN TD 稳定 | EV 0.34–0.48（未平台）；DQN 无发散段 | **接近**（seed42 0.483） |
+| G3 | DQN 200k×3 seed；PPO ≥8,000 局/seed | 双双达成（C2 8,000 局/seed ×3；D1 200k×3） | **达成**（M3 门槛除外，见 G1 行与 D1 报告） |
+| G4 | 3p/4p per-seat 模型与 league 基线 | 冒烟达成（E1）；完整训练未启动 | **部分**（E3 待排期） |
+| G5 | league 评测器 + 行为度量 + 种子段封存 | 全部落地并在 C4 实际使用 | **达成** |
+
+### 下一轮优先级（按预期收益排序）
+
+1. C2 主线加大规模（EV 未平台，2000 updates 外推 ~14h/seed）+ B2 塑形接入 PPO。
+2. heuristic 族缺口专项：池权重倾斜 / rush-教师蒸馏（待 corrected 教师）。
+3. corrected DQN（auxiliary heads）经 experiment.py 重训 → F1 复标定 → D3 重试。
+4. E3：3p/4p 各 1 seed × 500 updates → league 首表（入口已就绪）。
