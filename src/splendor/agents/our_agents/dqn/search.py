@@ -173,3 +173,209 @@ def search_policy(  # noqa: C901, PLR0912, PLR0913, PLR0915 - bounded PUCT trave
             }
         )
     return pi
+
+
+# ----- Roadmap F2: multi-determinized-tree search -----------------------------
+
+
+def allocate_tree_budget(
+    simulations: int,
+    n_trees: int,
+    allocation: str,
+    root_value_stds: NDArray[np.float64] | None = None,
+) -> NDArray[np.int64]:
+    """Split ``simulations`` across trees (uniform or value-spread priority).
+
+    ``priority`` gives every tree an equal base share and distributes the
+    remaining ``simulations - base * n_trees``... it re-allocates the full
+    budget in proportion to each tree's root value standard deviation (a
+    simplified dynamic-allocation axis from arXiv 2607.13007): trees whose
+    root evaluations disagree more across determinizations get more work.
+    """
+    if simulations < n_trees:
+        raise ValueError("simulations must be at least n_trees")
+    if allocation == "uniform":
+        base, remainder = divmod(simulations, n_trees)
+        budget = np.full(n_trees, base, dtype=np.int64)
+        budget[:remainder] += 1
+        return budget
+    if allocation == "priority":
+        if root_value_stds is None or len(root_value_stds) != n_trees:
+            raise ValueError("priority allocation needs per-tree root value stds")
+        weights = np.asarray(root_value_stds, dtype=np.float64)
+        if not np.isfinite(weights).all() or weights.sum() <= 0:
+            weights = np.ones(n_trees, dtype=np.float64)
+        raw = simulations * weights / weights.sum()
+        budget = np.floor(raw).astype(np.int64)
+        deficit = simulations - int(budget.sum())
+        order = np.argsort(-(raw - budget))
+        for tree in order[:deficit]:
+            budget[tree] += 1
+        budget = np.maximum(budget, 1)
+        excess = int(budget.sum()) - simulations
+        while excess > 0:
+            largest = int(np.argmax(budget))
+            budget[largest] -= 1
+            excess -= 1
+        return budget
+    raise ValueError(f"unknown allocation {allocation!r}")
+
+
+@torch.no_grad()
+def multi_tree_search_policy(  # noqa: C901, PLR0913, PLR0915 - tree traversal
+    net: QNetwork,
+    rule: SplendorGameRule,
+    simulations: int,
+    rng: np.random.Generator,
+    *,
+    n_trees: int = 4,
+    allocation: str = "uniform",
+    max_depth: int = 24,
+    stats: dict[str, float | int] | None = None,
+) -> NDArray[np.float32]:
+    """Root visits averaged over ``n_trees`` determinized MCTS trees.
+
+    Each tree samples the hidden state (unseen decks + rival reservations)
+    *once* and reuses that determinization for all of its simulations - the
+    opposite extreme of :func:`search_policy`, which resamples every rollout.
+    Both strategies estimate the same expectation; multi-tree trades within-
+    tree consistency for across-tree variance reduction, at equal wall clock.
+
+    ``allocation`` splits the budget: ``uniform`` gives every tree an equal
+    share; ``priority`` re-splits in proportion to each tree's root value
+    standard deviation after evaluating all roots once.
+    """
+    if simulations < n_trees or n_trees < 1:
+        raise ValueError("need simulations >= n_trees >= 1")
+    if rule.num_of_agent != PLAYERS or not net.auxiliary_heads:
+        raise ValueError("search needs two players and trained policy/value heads")
+    if rule.gameEnds():
+        raise ValueError("cannot search a terminal position")
+    device = next(net.parameters()).device
+    root_seat = rule.current_agent_index
+
+    def make_leaf(
+        current: SplendorGameRule, tree: dict[bytes, Node]
+    ) -> tuple[Node, float]:
+        seat = current.current_agent_index
+        state = current.current_game_state
+        mapping = create_action_mapping(
+            current.getLegalActions(state, seat), state, seat
+        )
+        indices = np.asarray(sorted(mapping), dtype=np.int64)
+        obs = extract_observation(state, seat, net.feature_version)
+        key = bytes([seat]) + obs.tobytes() + indices.tobytes()
+        if key in tree:
+            return tree[key], 0.0
+        mask = np.zeros(ACTION_DIM, dtype=np.float32)
+        mask[indices] = 1
+        logits, value = net.policy_value(
+            torch.from_numpy(obs).to(device), torch.from_numpy(mask).to(device)
+        )
+        prior = logits.softmax(-1)[0, indices].cpu().numpy().astype(np.float64)
+        prior /= prior.sum()
+        node = Node(
+            seat, indices, prior, np.zeros(len(indices)), np.zeros(len(indices))
+        )
+        tree[key] = node
+        return node, float(value.item())
+
+    def traverse(
+        det_rule: SplendorGameRule,
+        tree: dict[bytes, Node],
+        budget: int,
+    ) -> Node:
+        """One PUCT tree over a fixed determinization; returns its root."""
+        root, _ = make_leaf(det_rule, tree)
+        for _ in range(budget):
+            current = deepcopy(det_rule)
+            path: list[tuple[Node, int]] = []
+            value = 0.0
+            value_seat = root_seat
+            for _depth in range(max_depth):
+                value_seat = current.current_agent_index
+                if current.gameEnds():
+                    value = outcome(current, value_seat)
+                    break
+                previous_size = len(tree)
+                node, value = make_leaf(current, tree)
+                if len(tree) > previous_size:
+                    break
+                scores = node.total / np.maximum(node.visits, 1) + (
+                    1.5
+                    * node.prior
+                    * np.sqrt(node.visits.sum() + 1)
+                    / (1 + node.visits)
+                )
+                edge = int(np.argmax(scores))
+                path.append((node, edge))
+                state = current.current_game_state
+                mapping = create_action_mapping(
+                    current.getLegalActions(state, value_seat), state, value_seat
+                )
+                current.update(mapping[int(node.actions[edge])])
+            else:
+                value_seat = current.current_agent_index
+                if current.gameEnds():
+                    value = outcome(current, value_seat)
+                else:
+                    obs = extract_observation(
+                        current.current_game_state, value_seat, net.feature_version
+                    )
+                    _, predicted = net.policy_value(
+                        torch.from_numpy(obs).to(device),
+                        torch.ones(ACTION_DIM, device=device),
+                    )
+                    value = float(predicted.item())
+            for node, edge in path:
+                node.visits[edge] += 1
+                node.total[edge] += value if node.seat == value_seat else -value
+        return root
+
+    trees: list[dict[bytes, Node]] = []
+    roots: list[Node] = []
+    root_values: list[float] = []
+    determinizations: list[SplendorGameRule] = []
+    for _tree in range(n_trees):
+        determinizations.append(sample_hidden(rule, root_seat, rng))
+        tree: dict[bytes, Node] = {}
+        root_node, root_value = make_leaf(determinizations[-1], tree)
+        trees.append(tree)
+        roots.append(root_node)
+        root_values.append(root_value)
+
+    # Priority weights: each tree's root value only has one observation, so
+    # rank trees by their deviation from the cross-tree mean (the spread of
+    # the root-value ensemble) - the simplified dynamic-allocation axis.
+    mean_value = float(np.mean(root_values))
+    per_tree_spread = np.asarray(
+        [abs(value - mean_value) for value in root_values], dtype=np.float64
+    )
+    budget = allocate_tree_budget(
+        simulations, n_trees, allocation, root_value_stds=per_tree_spread
+    )
+    for tree_index, tree_budget in enumerate(budget):
+        if tree_budget > 0:
+            traverse(determinizations[tree_index], trees[tree_index], int(tree_budget))
+
+    combined = np.zeros(ACTION_DIM, dtype=np.float32)
+    for root in roots:
+        if root.visits.sum() > 0:
+            combined[root.actions] += (root.visits / root.visits.sum()).astype(
+                np.float32
+            )
+        else:
+            combined[root.actions] += (root.prior / root.prior.sum()).astype(np.float32)
+    combined /= combined.sum()
+    if stats is not None:
+        stats.update(
+            {
+                "simulations": simulations,
+                "n_trees": n_trees,
+                "allocation": 1 if allocation == "priority" else 0,
+                "tree_nodes": sum(len(tree) for tree in trees),
+                "budget_min": int(budget.min()),
+                "budget_max": int(budget.max()),
+            }
+        )
+    return combined
