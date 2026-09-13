@@ -5,8 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 from .bc_training import BCConfig, train_bc
 from .dagger import aggregate_dagger_datasets, collect_dagger_dataset
+from .distillation import DistillConfig, distill_dqn_teacher
 from .evaluation import collect_teacher_dataset, evaluate_matrix
 from .information_audit import audit_candidate_information
 from .manifest import (
@@ -219,6 +223,59 @@ def _train_bc(args: argparse.Namespace) -> None:
         source_manifest=str(args.manifest),
     )
     print(f"BC training written to {result['best']}")
+
+
+def _distill_dqn(args: argparse.Namespace) -> None:
+    """Distill a DQN value prior into a BC checkpoint (roadmap D3)."""
+    dataset = TrajectoryDataset.load(args.dataset)
+    if args.feature_version and dataset.feature_version != args.feature_version:
+        raise ValueError(
+            f"dataset schema {dataset.feature_version!r} != requested "
+            f"{args.feature_version!r}"
+        )
+    # Deterministic split on deal seeds: every 5th seed (sorted) becomes
+    # validation; recorded in the output metadata for audit.
+    seeds = sorted(dataset.seed_set)
+    validation_seeds = {seed for index, seed in enumerate(seeds) if index % 5 == 0}
+    masks = np.array(
+        [seed in validation_seeds for seed in dataset.deal_seeds.tolist()], dtype=bool
+    )
+
+    def _subset(keep: NDArray[np.bool_]) -> TrajectoryDataset:
+        return TrajectoryDataset(
+            dataset.observations[keep],
+            dataset.legal_masks[keep],
+            dataset.actions[keep],
+            dataset.deal_seeds[keep],
+            dataset.seats[keep],
+            dataset.plies[keep],
+            dataset.steps_in_episode[keep],
+            dataset.rewards[keep],
+            dataset.terminals[keep],
+            dict(dataset.metadata),
+        )
+
+    training = _subset(~masks)
+    validation = _subset(masks)
+    config = DistillConfig(
+        feature_version=dataset.feature_version,
+        temperature=args.temperature,
+        teacher_mode=args.teacher_mode,
+        learning_rate=args.learning_rate,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        seed=args.seed,
+        device_name=args.device,
+    )
+    result = distill_dqn_teacher(
+        args.teacher,
+        training,
+        validation,
+        args.output,
+        config=config,
+        source_manifest=args.manifest if hasattr(args, "manifest") else None,
+    )
+    print(f"DQN distillation written to {result['best']}")
 
 
 def _dagger_round(args: argparse.Namespace) -> None:
@@ -535,7 +592,11 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     collect.add_argument("--teacher", choices=DEFAULT_CANDIDATES, required=True)
     collect.add_argument("--opponent", choices=DEFAULT_OPPONENTS, default="random")
     collect.add_argument("--seed-group", default="training")
-    collect.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default="v1")
+    collect.add_argument(
+        "--feature-version",
+        choices=("v1", "public-v2", "public-v2-multi"),
+        default="v1",
+    )
     _add_snapshot_arguments(collect)
     collect.set_defaults(handler=_collect_bc)
 
@@ -543,7 +604,11 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     train.add_argument("manifest", type=Path)
     train.add_argument("--dataset", type=Path, required=True)
     train.add_argument("--output", type=Path, required=True)
-    train.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default=None)
+    train.add_argument(
+        "--feature-version",
+        choices=("v1", "public-v2", "public-v2-multi"),
+        default=None,
+    )
     train.add_argument(
         "--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128]
     )
@@ -554,6 +619,26 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     train.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
     train.set_defaults(handler=_train_bc)
 
+    distill = subparsers.add_parser(
+        "distill-dqn",
+        help="Distill a DQN value prior into a BC checkpoint (roadmap D3)",
+    )
+    distill.add_argument("--teacher", type=Path, required=True)
+    distill.add_argument("--dataset", type=Path, required=True)
+    distill.add_argument("--output", type=Path, required=True)
+    distill.add_argument(
+        "--teacher-mode",
+        choices=("q-softmax", "policy-head"),
+        default="q-softmax",
+    )
+    distill.add_argument("--temperature", type=float, default=1.0)
+    distill.add_argument("--learning-rate", type=float, default=1e-3)
+    distill.add_argument("--epochs", type=int, default=10)
+    distill.add_argument("--batch-size", type=int, default=256)
+    distill.add_argument("--seed", type=int, default=1234)
+    distill.add_argument("--device", choices=("cpu", "cuda", "mps"), default="cpu")
+    distill.set_defaults(handler=_distill_dqn)
+
     dagger = subparsers.add_parser("dagger-round")
     dagger.add_argument("manifest", type=Path)
     dagger.add_argument("--output", type=Path, required=True)
@@ -561,7 +646,11 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     dagger.add_argument("--student-checkpoint", type=Path, required=True)
     dagger.add_argument("--opponent", choices=DEFAULT_OPPONENTS, default="random")
     dagger.add_argument("--seed-group", default="training")
-    dagger.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default=None)
+    dagger.add_argument(
+        "--feature-version",
+        choices=("v1", "public-v2", "public-v2-multi"),
+        default=None,
+    )
     dagger.add_argument("--round", type=int, required=True)
     _add_snapshot_arguments(dagger)
     dagger.set_defaults(handler=_dagger_round)
@@ -579,7 +668,11 @@ def _parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - subcommands are exp
     ppo.add_argument("--output", type=Path, required=True)
     ppo.add_argument("--opponent-pool", default="ga:1,heuristic:1,current:1")
     ppo.add_argument("--validation-opponents", default="random,heuristic,minimax")
-    ppo.add_argument("--feature-version", choices=("v1", "public-v2", "public-v2-multi"), default="v1")
+    ppo.add_argument(
+        "--feature-version",
+        choices=("v1", "public-v2", "public-v2-multi"),
+        default="v1",
+    )
     ppo.add_argument(
         "--hidden-layers", nargs="+", type=int, default=[128, 128, 128, 128]
     )
