@@ -101,6 +101,9 @@ CJK 全角标点（`，（）；`）是本仓库的**内容而非笔误**（状�
 | `docs/web_experiments.md` | **E1-E6 网页规则实测记录 + M0.2 吞吐留档 + 规则差异 ADR** |
 | `docs/p4_decision.md` | P4 go/no-go 决策（全部暂缓，复审条件） |
 | `docs/s2r_report.md` | sim-to-real 对照报告模板（数字待部署后回填） |
+| `docs/ALGORITHM_SURVEY_20260912.md` | **策略算法调研**：启发式/minimax/DQN/PPO/GA 的数学本质、代码归因与 2/3/4 人局分析 |
+| `docs/SPLENDOR_LITERATURE_SURVEY_20260912.md` | **Splendor arXiv 文献调研**（Rinascimento 三部曲 + 确定性化 MCTS）与取长补短矩阵 |
+| `docs/IMPROVEMENT_ROADMAP_20260912.md` | **提升路径与分阶段实施计划**（阶段 A–F、G1–G5 验收、种子段与排期） |
 | `ALGORITHM_COMPARISON.md` | 算法对比结论（GA 最稳、PPO 需重训——DQN 要超越的目标） |
 
 关键裁决速记：牌库 **90 张**（40/30/20，"78"是发牌后剩余的误读）；四元组 `(tier, colour, points, cost)` 全库零重复；265 维观测天然与网页信息集对齐；支付方式是两侧唯一硬语义差距。
