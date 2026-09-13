@@ -27,6 +27,7 @@ for the grey entries.
 """
 
 import random
+import threading
 import zlib
 from dataclasses import dataclass
 from typing import Any, cast
@@ -45,6 +46,7 @@ from splendor.agents.our_agents.genetic_algorithm.genetic_algorithm_agent import
 from splendor.agents.our_agents.minmax import MiniMaxAgent
 from splendor.browser.card_registry import CARD_REGISTRY
 from splendor.browser.dom_extractor import CardInfo, Snapshot
+from splendor.browser.monitor import MaskParityMonitor, dom_affordances
 from splendor.browser.state_builder import _placeholder_cards, build_pseudo_state
 from splendor.splendor.action_text import COLOR_CN, describe_action
 from splendor.splendor.features import (
@@ -52,6 +54,7 @@ from splendor.splendor.features import (
     extract_metrics,
     normalize_metrics,
 )
+from splendor.splendor.gym.envs.utils import create_legal_actions_mask
 from splendor.splendor.splendor_model import Card, SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
 
@@ -205,6 +208,10 @@ class AdvisorEngine:
         self._seed = seed
         self._rule = SplendorGameRule(panel_count)
         self._trans = Transactor()
+        self._monitor = MaskParityMonitor()
+        # One apply/undo sequence at a time: the poll thread scores GA while
+        # the dashboard's deep worker may run minimax on the same rule.
+        self._lock = threading.Lock()
         self._ga = GeneAlgoAgent(my_index)
         self._ga_strategies = (
             self._ga.stategy_gene_1,
@@ -288,6 +295,10 @@ class AdvisorEngine:
         Rank every legal action with the evolved heuristic; the top-1 must
         equal ``GeneAlgoAgent.SelectAction`` on the same state (tested).
         """
+        with self._lock:
+            return self._ga_top_k_locked(state)
+
+    def _ga_top_k_locked(self, state: SplendorState) -> list[Advice]:
         legal = self._rule.getLegalActions(state, self._my_index)
         if not legal:
             return []
@@ -344,6 +355,12 @@ class AdvisorEngine:
                 f"minimax deep mode supports {TWO_PLAYER_SEATS} seats, "
                 f"got {len(state.agents)}"
             )
+        with self._lock:
+            return self._minimax_top_k_locked(state, depth)
+
+    def _minimax_top_k_locked(
+        self, state: SplendorState, depth: int
+    ) -> list[Advice]:
         legal = self._rule.getLegalActions(state, self._my_index)
         if not legal:
             return []
@@ -427,6 +444,17 @@ class AdvisorEngine:
             return describe_action(worst[1])
         finally:
             self._trans.undo(self._rule, root, self._my_index, snap)
+
+    # ----- parity monitoring (§3.6) ---------------------------------------------
+    def parity_report(self, snapshot: Snapshot) -> list[str]:
+        """
+        Engine-mask vs DOM-affordance attribution for this frame (the
+        §3.6 honesty line: engine mask ⊆ web legal set, direction safe).
+        """
+        pseudo = build_pseudo_state(snapshot, self._my_index)
+        legal = self._rule.getLegalActions(pseudo, self._my_index)
+        mask = create_legal_actions_mask(legal, pseudo, self._my_index)
+        return self._monitor.check(mask, dom_affordances(snapshot))
 
     # ----- deck composition + planning (§3.4) -----------------------------------
     def deck_histogram(

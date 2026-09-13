@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>璀璨宝石 · 对局辅助面板</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #12141a; color: #dfe3ea;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    background: #1b1e27; border-bottom: 1px solid #2a2e3a;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  #status { font-weight: 600; }
+  #parity { color: #ff9f43; font-size: 12px; }
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 12px; padding: 12px; }
+  section { background: #1b1e27; border: 1px solid #2a2e3a; border-radius: 8px; padding: 10px 12px; }
+  section h2 { font-size: 13px; margin: 0 0 8px; color: #9fb3d1; }
+  .board-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+  .deck-tag { font-size: 12px; color: #8b93a5; width: 74px; }
+  .card {
+    min-width: 92px; border-radius: 6px; padding: 4px 6px; font-size: 12px;
+    border: 1px solid #333; background: #22262f; color: #cfd6e4;
+  }
+  .card .cost { color: #8b93a5; }
+  .card.affordable { border-color: #58c470; }
+  .card.none { opacity: 0.25; }
+  .c-white { color: #e8eaf0; } .c-blue { color: #6fa8ff; } .c-green { color: #63d489; }
+  .c-red { color: #ff7b72; } .c-black { color: #b0a99a; } .c-yellow { color: #ffd166; }
+  .advice-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .advice-rank { width: 18px; color: #8b93a5; }
+  .advice-best { color: #ffd166; font-weight: 700; }
+  .advice-second { color: #cfd6e4; }
+  .bar { color: #4f8cff; letter-spacing: 1px; }
+  .reasons { color: #7f8aa0; font-size: 12px; padding-left: 26px; }
+  .hist-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+  .chip { display: inline-block; padding: 0 6px; border-radius: 8px; background: #22262f; margin-right: 4px; font-size: 12px; }
+  .grey { color: #7f8aa0; }
+  button {
+    background: #2b6cb0; color: white; border: 0; border-radius: 6px;
+    padding: 5px 12px; cursor: pointer; font-size: 13px;
+  }
+  button:disabled { background: #3a3f4d; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 3px 4px; text-align: left; }
+  th { color: #9fb3d1; font-weight: 500; }
+  #stale { color: #ff9f43; font-size: 12px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>璀璨宝石 · 辅助面板（只读）</h1>
+  <span id="status">等待数据…</span>
+  <span id="parity"></span>
+  <span id="stale">数据未更新——请检查 advisor 进程</span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>桌面</h2>
+      <div id="board"></div>
+      <h2 style="margin-top:10px">贵族</h2>
+      <div id="nobles">—</div>
+      <h2 style="margin-top:10px">牌堆剩余（未翻开，按颜色）</h2>
+      <div id="hist"></div>
+    </section>
+    <section style="margin-top:12px">
+      <h2>各座位</h2>
+      <table id="players"><thead><tr><th>座位</th><th>分数</th><th>已购(色)</th><th>宝石</th><th>预留</th></tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>建议 · GA 快评</h2>
+      <div id="ga"></div>
+      <h2 style="margin-top:10px">深算 · minimax
+        <button id="deep-btn" onclick="requestDeep()">深算</button>
+        <span id="deep-meta" class="grey"></span>
+      </h2>
+      <div id="deep"></div>
+    </section>
+    <section style="margin-top:12px">
+      <h2>可负担性</h2>
+      <div id="afford"></div>
+    </section>
+    <section style="margin-top:12px">
+      <h2>预留记忆 <button style="float:right" onclick="resetTracker()">重置</button></h2>
+      <div id="tracker"></div>
+    </section>
+  </div>
+</main>
+<script>
+const CN = {white:"白", blue:"蓝", green:"绿", red:"红", black:"黑", yellow:"金"};
+let lastSeq = -1, lastSeen = 0;
+
+function costText(cost) {
+  return Object.entries(cost || {}).map(([c, n]) => `<span class="c-${c}">${CN[c]}${n}</span>`).join("");
+}
+function cardCell(info, affordable) {
+  if (!info) return `<div class="card none">空</div>`;
+  const pts = info.points ? `${info.points}分` : "";
+  return `<div class="card ${affordable ? "affordable" : ""}">
+    <div><span class="c-${info.colour}">${CN[info.colour]}卡</span> ${pts}</div>
+    <div class="cost">${costText(info.cost)}</div></div>`;
+}
+function renderAdvice(el, rows, icons) {
+  if (!rows || !rows.length) { el.textContent = "—"; return; }
+  const values = rows.map(r => r.value);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  el.innerHTML = rows.map((r, i) => {
+    const filled = hi === lo ? 10 : Math.round((r.value - lo) / (hi - lo) * 10);
+    const bar = "█".repeat(filled) + "·".repeat(10 - filled);
+    const icon = icons[i] || "";
+    const reasons = (r.reasons || []).map(x => `<div class="reasons">· ${x}</div>`).join("");
+    return `<div class="advice-row"><span class="advice-rank">${i + 1}</span>
+      <span class="${icon === "★" ? "advice-best" : icon === "☆" ? "advice-second" : ""}">${icon} ${r.text}</span>
+      <span class="bar">${bar}</span><span>${r.value.toFixed(2)}</span></div>${reasons}`;
+  }).join("");
+}
+async function requestDeep() {
+  const r = await fetch("/api/deep", {method: "POST"});
+  const j = await r.json();
+  document.getElementById("deep-meta").textContent = j.queued ? "已排队…" : (j.reason || "");
+}
+async function resetTracker() { await fetch("/api/reset", {method: "POST"}); }
+
+async function poll() {
+  try {
+    const state = await (await fetch("/api/state")).json();
+    if (!state.ready) return;
+    document.getElementById("stale").style.display = "none";
+    lastSeen = Date.now();
+    document.getElementById("status").textContent = `${state.status} ｜ ${state.phase_label}`;
+    const anomalies = (state.parity || []).filter(l => l.startsWith("PAGE REDESIGN") || l.startsWith("DOM EXTRACTION BUG")).length;
+    document.getElementById("parity").textContent = anomalies ? `⚠ 掩码异常 ${anomalies}` : "";
+
+    const A = state.afford.map || {};
+    const boardRow = (row, tier) =>
+      `<div class="board-row"><span class="deck-tag">T${tier + 1} · 堆余 ${state.deck_hist.rows[tier].deck_count}</span>` +
+      row.map((info, col) => {
+        const a = info ? A[tier + ":" + col] : null;
+        return cardCell(info, !!(a && a.affordable));
+      }).join("") + "</div>";
+    const reservedRow = `<div class="board-row"><span class="deck-tag">我的预留</span>` +
+      (state.my_reserved.length
+        ? state.my_reserved.map((info, idx) => {
+            const a = A["r:" + idx];
+            return cardCell(info, !!(a && a.affordable));
+          }).join("")
+        : `<span class="grey">无</span>`) + `</div>`;
+    document.getElementById("board").innerHTML =
+      reservedRow + state.dealt.map(boardRow).reverse().join("");
+
+    document.getElementById("nobles").innerHTML = state.nobles.length
+      ? state.nobles.map(n => {
+          const miss = Object.entries(n.missing || {}).map(([c, v]) => `<span class="c-${c}">${CN[c]}${v}</span>`).join(" ");
+          return `<div>${costText(n.requirements)} ${miss ? `<span class="grey">还差 ${miss}</span>` : '<span class="c-green">可访问</span>'}</div>`;
+        }).join("")
+      : "—";
+
+    document.getElementById("hist").innerHTML = state.deck_hist.rows.map(r => {
+      const chips = Object.entries(r.counts).map(([c, n]) => `<span class="chip c-${c}">${CN[c]}${n}</span>`).join("");
+      const grey = r.grey ? ` <span class="grey">+ 灰 ${r.grey}</span>` : "";
+      return `<div class="hist-row"><span class="deck-tag">T${r.tier + 1}</span>${chips || "<span class='grey'>空</span>"}${grey}</div>`;
+    }).join("") + state.deck_hist.warnings.map(w => `<div class="grey">⚠ ${w}</div>`).join("");
+
+    document.querySelector("#players tbody").innerHTML = state.players.map(p =>
+      `<tr><td>${p.seat === state.my_seat ? "我" : "座" + p.seat}</td><td>${p.score}</td>
+       <td>${Object.entries(p.card_counts).filter(([c, n]) => n).map(([c, n]) => `<span class="c-${c}">${CN[c]}${n}</span>`).join(" ") || "—"}</td>
+       <td>${Object.entries(p.gems).filter(([c, n]) => n).map(([c, n]) => `<span class="c-${c}">${CN[c]}${n}</span>`).join(" ") || "—"}</td>
+       <td>${p.reserved_summary}</td></tr>`).join("");
+
+    renderAdvice(document.getElementById("ga"), state.advice.ga, ["★", "☆"]);
+    renderAdvice(document.getElementById("deep"), state.deep.rows, ["★", "☆"]);
+    document.getElementById("deep-meta").textContent =
+      state.deep.error ? `失败: ${state.deep.error}` :
+      state.deep.elapsed_ms ? `${Math.round(state.deep.elapsed_ms)}ms` : "";
+    document.getElementById("deep-btn").disabled = state.deep.running;
+
+    document.getElementById("afford").innerHTML =
+      `<div>可支付 ${state.afford.affordable_count}/${state.afford.total} 张</div>` +
+      (state.afford.closest ? `<div class="reasons">最近缺口：${state.afford.closest.text}（${state.afford.closest.source === "reserved" ? "我的预留" : "桌面"}） ${state.afford.closest.missing_text}</div>` : "");
+
+    document.getElementById("tracker").innerHTML =
+      `<div>已识别 ${state.tracker.known} / 未知 ${state.tracker.unknown}</div>` +
+      state.tracker.recent_events.map(e => `<div class="reasons">· ${e}</div>`).join("");
+    lastSeq = state.frame_seq;
+  } catch (e) {
+    document.getElementById("stale").style.display = "inline";
+  }
+}
+setInterval(poll, 1000);
+setInterval(() => {
+  if (Date.now() - lastSeen > 4000) document.getElementById("stale").style.display = "inline";
+}, 2000);
+poll();
+</script>
+</body>
+</html>

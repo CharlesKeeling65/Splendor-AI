@@ -8,20 +8,21 @@ Zero-click contract: the advisor never imports the action executor and
 never mutates page state - the etiquette constraint (plan phase-2 M2.5)
 is satisfied by construction, not by pacing.
 
-Per adopted (debounce-stable) frame the CLI prints:
+Per adopted (debounce-stable) frame :class:`AdvisorCli` computes one
+JSON-ready *view* (tracker fold-in, GA top-k on my turn, deck histogram,
+affordability, parity attribution) and then
 
-* the ranked GA advice (最优/次优 marked, feature attributions indented),
-  plus the minimax deep ranking when ``--depth`` is set;
-* the undealt-deck colour histogram per tier (the tracker's grey bucket
-  included) and the affordability ruler;
-* the reservation-memory coverage with its latest events.
+* renders it as the v0 console block, and
+* publishes it to the localhost dashboard (``AdvisorStore``), whose deep
+  button runs minimax in a worker thread against the latest my-turn
+  reconstruction.
 
-Run against an offline fixture for a no-network smoke:
-``play-advisor --fixture-html <file> --max-frames 2``.
+Offline smoke: ``play-advisor --fixture-html <file> --max-frames 2``.
 """
 
 import argparse
 import random
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -30,8 +31,10 @@ from typing import Any
 import numpy as np
 
 from splendor.browser.advisor.engine import (
+    TWO_PLAYER_SEATS,
     AdvisorEngine,
     DeckHistogram,
+    DeckRow,
     _missing_text,
 )
 from splendor.browser.advisor.observer import (
@@ -40,11 +43,14 @@ from splendor.browser.advisor.observer import (
     AdvisorSession,
     Phase,
 )
+from splendor.browser.advisor.server import AdvisorStore, start_server
 from splendor.browser.advisor.tracker import (
     ReservationTracker,
     ReservedEvent,
 )
 from splendor.browser.dom_extractor import (
+    CardInfo,
+    PanelInfo,
     Snapshot,
     SnapshotSchemaError,
     looks_like_game_over,
@@ -52,18 +58,27 @@ from splendor.browser.dom_extractor import (
 from splendor.browser.driver import BrowserDriver, MockBrowserDriver
 from splendor.browser.ego_driver import EgoBrowserDriver
 from splendor.splendor.action_text import COLOR_CN
+from splendor.splendor.constants import NUMBER_OF_TIERS
 
 DEFAULT_TASK_SPACE = "splendor-advisor"
+DEFAULT_PORT = 8900  # play-dashboard uses 8899
+_MIN_GAME_PANELS = TWO_PLAYER_SEATS  # below this the page is not in-game
 
 _ADVICE_ICONS = ("★", "☆", " ")
 _MIN_BAR_SAMPLES = 2
-_MIN_GAME_PANELS = 2  # below this the page is not an in-game view
+
+_EVENT_TEXT: dict[str, str] = {
+    "init": "接入(未知)",
+    "reset": "新局重置",
+    "reserve_table": "预留桌面牌(已识别)",
+    "reserve_deck": "预留牌堆(已识别)",
+    "reserve_unknown": "预留牌堆(未知)",
+    "purchase": "购买预留牌",
+}
 
 
 def _format_scores(snapshot: Snapshot, my_seat: int) -> str:
     """``我=5 | 座2=3`` from the live panel snapshot."""
-    if not snapshot["panels"]:
-        return "(无面板)"
     parts = []
     for panel in snapshot["panels"]:
         label = "我" if panel["seat"] == my_seat else f"座{panel['seat']}"
@@ -78,6 +93,12 @@ def _bar(values: list[float], value: float, width: int = 10) -> str:
     span = max(values) - min(values)
     filled = round((value - min(values)) / span * width)
     return "█" * filled + "·" * (width - filled)
+
+
+def _event_text(event: ReservedEvent) -> str:
+    seat = f"座{event.seat}" if event.seat else "-"
+    card = f" {event.card.code}" if event.card is not None else ""
+    return f"{seat} {_EVENT_TEXT.get(event.kind, event.kind)}{card}"
 
 
 def _histogram_lines(histogram: DeckHistogram) -> list[str]:
@@ -95,27 +116,62 @@ def _histogram_lines(histogram: DeckHistogram) -> list[str]:
     return lines
 
 
-def _event_text(event: ReservedEvent) -> str:
-    seat = f"座{event.seat}" if event.seat else "-"
-    kind_cn = {
-        "init": "接入(未知)",
-        "reset": "新局重置",
-        "reserve_table": "预留桌面牌(已识别)",
-        "reserve_deck": "预留牌堆(已识别)",
-        "reserve_unknown": "预留牌堆(未知)",
-        "purchase": "购买预留牌",
-    }.get(event.kind, event.kind)
-    card = f" {event.card.code}" if event.card is not None else ""
-    return f"{seat} {kind_cn}{card}"
+def _card_view(info: CardInfo) -> dict[str, Any]:
+    """DOM CardInfo -> display dict (colour names kept in English keys)."""
+    return {
+        "colour": info["colour"],
+        "points": info["points"],
+        "cost": info["cost"],
+        "text": (
+            f"{info['tier'] + 1}级{COLOR_CN.get(info['colour'], info['colour'])}卡"
+            + (f"{info['points']}分" if info["points"] else "")
+        ),
+    }
+
+
+def _advice_rows(advice: list) -> list[dict[str, Any]]:
+    """Advice dataclasses -> JSON-ready rows (actions stay engine-side)."""
+    return [
+        {
+            "text": item.text,
+            "value": item.value,
+            "reasons": list(item.reasons),
+            "source": item.source,
+        }
+        for item in advice
+    ]
+
+
+def _dealt_count(snapshot: Snapshot) -> int:
+    return sum(1 for row in snapshot["dealt"] for info in row if info is not None)
+
+
+def _dealt_key(snapshot: Snapshot, visible_index: int) -> str:
+    """``tier:col`` of the visible_index-th non-None dealt card."""
+    seen = 0
+    for tier in range(NUMBER_OF_TIERS):
+        for col, info in enumerate(snapshot["dealt"][tier]):
+            if info is not None:
+                if seen == visible_index:
+                    return f"{tier}:{col}"
+                seen += 1
+    return f"{visible_index}:-"
+
+
+def _reserved_summary(panel: PanelInfo) -> str:
+    tiers = panel["reserved_tiers"]
+    if not tiers:
+        return "—"
+    return ",".join(f"T{tier + 1}" for tier in tiers) + "（背）"
 
 
 class AdvisorCli:
     """
-    Frame consumer behind the v0 console output.
+    Frame consumer: compute one JSON-ready view per in-game frame, render
+    it as console text and (optionally) publish it to the dashboard store.
 
-    Wires observer frames through the tracker and the engine and emits one
-    text block per relevant change. ``emit`` is injectable so tests can
-    collect lines instead of watching stdout.
+    ``emit`` is injectable so tests can collect lines instead of watching
+    stdout; ``store`` is None in pure-CLI mode.
     """
 
     def __init__(
@@ -124,11 +180,13 @@ class AdvisorCli:
         depth: int = 0,
         top_k: int = 5,
         seed: int = 0,
+        store: AdvisorStore | None = None,
         emit: Callable[[str], None] = print,
     ) -> None:
         self._depth = depth
         self._top_k = top_k
         self._seed = seed
+        self._store = store
         self._emit = emit
         self._tracker = ReservationTracker()
         self._engine: AdvisorEngine | None = None
@@ -138,38 +196,135 @@ class AdvisorCli:
         self._my_turns = 0
         self._standby_announced = False
 
+    @property
+    def engine(self) -> AdvisorEngine | None:
+        """The live engine (the harness shares it with the deep worker)."""
+        return self._engine
+
     # ----- frame handling ------------------------------------------------------
     def on_frame(self, frame: AdvisorFrame) -> None:
+        if self._store is not None and self._store.pop_reset_request():
+            self._tracker.reset("dashboard manual reset")
         snapshot = frame.snapshot
         if frame.phase is Phase.NO_BOARD:
             self._announce_standby(frame)
             return
         self._standby_announced = False
-        if not snapshot["panels"]:
-            return
         if len(snapshot["panels"]) < _MIN_GAME_PANELS:
-            return  # not an in-game view (single-panel fixture / lobby)
+            return  # not an in-game view (single-panel close-up / lobby)
+        view = self._compute(frame)
+        if view is None:
+            return
+        if self._store is not None:
+            self._store.set_state(view)
+        self._render(view)
+
+    # ----- computation (shared by console + dashboard) ---------------------------
+    def _compute(self, frame: AdvisorFrame) -> dict[str, Any] | None:
+        snapshot = frame.snapshot
         self._tracker.update(snapshot, frame.frame_seq)
         my_index = frame.my_index
         if my_index is None:
-            self._emit("   （未入座：仅展示局面与牌堆，不产生建议）")
-            self._emit_block(frame, None, None)
-            return
+            return None  # unseated: no advice, no engine
         self._ensure_engine(len(snapshot["panels"]), my_index)
-        if frame.phase is Phase.MY_TURN:
-            self._advise(frame)
-        else:
-            self._emit_block(frame, None, None)
-        self._prev_phase = frame.phase
+        assert self._engine is not None
 
-    # ----- internals -----------------------------------------------------------
-    def _announce_standby(self, frame: AdvisorFrame) -> None:
-        if self._standby_announced:
-            return
-        self._standby_announced = True
-        status = frame.snapshot["status"]
-        suffix = "（终局）" if looks_like_game_over(status, board_present=False) else ""
-        self._emit(f"⏸ 未检测到对局棋盘{suffix}——待机轮询中")
+        started = time.perf_counter()
+        ga_rows: list[dict[str, Any]] = []
+        deep_rows: list[dict[str, Any]] | None = None
+        if frame.phase is Phase.MY_TURN:
+            if self._prev_phase is not Phase.MY_TURN:
+                self._my_turns += 1
+            state = self._engine.build_reconstruction(
+                snapshot, self._tracker, turns=self._my_turns
+            )
+            ga_rows = _advice_rows(self._engine.ga_top_k(state))
+            if self._depth > 0:
+                deep_rows = _advice_rows(
+                    self._engine.minimax_top_k(state, depth=self._depth)
+                )
+            if self._store is not None:
+                self._store.set_deep_source(state, self._depth)
+        self._prev_phase = frame.phase
+        elapsed_ms = (time.perf_counter() - started) * 1000
+
+        histogram = self._engine.deck_histogram(snapshot, self._tracker)
+        afford_rows = self._engine.affordability(snapshot)
+        afford_map: dict[str, dict[str, Any]] = {}
+        dealt_total = _dealt_count(snapshot)
+        keys = [_dealt_key(snapshot, i) for i in range(dealt_total)] + [
+            f"r:{j}" for j in range(len(snapshot["my_reserved"]))
+        ]
+        for key, row in zip(keys, afford_rows, strict=True):
+            afford_map[key] = {
+                "affordable": row.affordable,
+                "missing_text": _missing_text(row.missing, row.gold_covers),
+                "text": row.text,
+                "source": row.source,
+            }
+        closest = next((row for row in reversed(afford_rows) if row.missing), None)
+        return {
+            "frame_seq": frame.frame_seq,
+            "status": snapshot["status"],
+            "phase": frame.phase.value,
+            "phase_label": PHASE_LABELS[frame.phase],
+            "my_seat": snapshot["my_seat"],
+            "players": [
+                {
+                    "seat": panel["seat"],
+                    "score": panel["score"],
+                    "card_counts": panel["card_counts"],
+                    "gems": panel["gems"],
+                    "reserved_summary": _reserved_summary(panel),
+                }
+                for panel in snapshot["panels"]
+            ],
+            "dealt": [
+                [_card_view(info) if info is not None else None for info in row]
+                for row in snapshot["dealt"]
+            ],
+            "my_reserved": [_card_view(info) for info in snapshot["my_reserved"]],
+            "supply": snapshot["supply"],
+            "nobles": self._engine.noble_progress(snapshot),
+            "advice": {"ga": ga_rows, "deep_sync": deep_rows},
+            "deck_hist": {
+                "rows": [
+                    {
+                        "tier": row.tier,
+                        "counts": row.counts,
+                        "grey": row.grey,
+                        "deck_count": row.deck_count,
+                    }
+                    for row in histogram.rows
+                ],
+                "warnings": list(histogram.warnings),
+            },
+            "afford": {
+                "affordable_count": sum(1 for r in afford_rows if r.affordable),
+                "total": len(afford_rows),
+                "map": afford_map,
+                "closest": (
+                    {
+                        "text": closest.text,
+                        "source": closest.source,
+                        "missing_text": _missing_text(
+                            closest.missing, closest.gold_covers
+                        ),
+                    }
+                    if closest is not None
+                    else None
+                ),
+            },
+            "tracker": {
+                "known": len(self._tracker.known_reserved_faces()),
+                "unknown": self._tracker.unknown_reserved_count(),
+                "recent_events": [
+                    _event_text(event) for event in self._tracker.events_log()[-3:]
+                ],
+            },
+            "parity": self._engine.parity_report(snapshot),
+            "elapsed_ms": elapsed_ms,
+        }
 
     def _ensure_engine(self, panel_count: int, my_index: int) -> None:
         key = (panel_count, my_index)
@@ -179,113 +334,144 @@ class AdvisorCli:
             )
             self._engine_key = key
 
-    def _advise(self, frame: AdvisorFrame) -> None:
-        assert self._engine is not None
-        if self._prev_phase is not Phase.MY_TURN:
-            self._my_turns += 1
-        state = self._engine.build_reconstruction(
-            frame.snapshot, self._tracker, turns=self._my_turns
-        )
-        advice = self._engine.ga_top_k(state)
-        deep = (
-            self._engine.minimax_top_k(state, depth=self._depth)
-            if self._depth > 0
-            else None
-        )
-        self._emit_block(frame, advice, deep)
+    # ----- console rendering -----------------------------------------------------
+    def _announce_standby(self, frame: AdvisorFrame) -> None:
+        if self._standby_announced:
+            return
+        self._standby_announced = True
+        status = frame.snapshot["status"]
+        suffix = "（终局）" if looks_like_game_over(status, board_present=False) else ""
+        self._emit(f"⏸ 未检测到对局棋盘{suffix}——待机轮询中")
 
-    def _emit_block(
-        self,
-        frame: AdvisorFrame,
-        advice: list | None,
-        deep: list | None,
-    ) -> None:
-        assert self._engine is not None
-        snapshot = frame.snapshot
-        key = (self._block_key(snapshot), frame.phase.value)
+    def _render(self, view: dict[str, Any]) -> None:
+        key = (self._state_key(view), view["phase"])
         if key == self._last_key:
             return
         self._last_key = key
 
         self._emit(
-            f"▶ {snapshot['status']} | 比分: "
-            f"{_format_scores(snapshot, snapshot['my_seat'])} | "
-            f"{PHASE_LABELS[frame.phase]}"
+            f"▶ {view['status']} | 比分: {_scores_view(view)} | {view['phase_label']}"
         )
-        if advice is not None:
-            self._emit_advice("建议（GA 快评，★最优 ☆次优）:", advice)
-        if deep is not None:
-            self._emit_advice(f"深算（minimax depth={self._depth}）:", deep)
-        if frame.phase in (Phase.MY_DISCARD, Phase.MY_NOBLE, Phase.PAYMENT):
-            self._emit("   （子流程需要手动点击，建议暂停）")
-        histogram = self._engine.deck_histogram(snapshot, self._tracker)
-        self._emit("  牌堆剩余（未翻开部分，按颜色）:")
-        for line in _histogram_lines(histogram):
-            self._emit(line)
-        self._emit_afford(snapshot)
-        known = len(self._tracker.known_reserved_faces())
-        unknown = self._tracker.unknown_reserved_count()
-        events = self._tracker.events_log()[-3:]
-        self._emit(
-            f"  预留记忆: 已识别 {known} / 未知 {unknown}"
-            + (f" | 最近: {'; '.join(_event_text(e) for e in events)}" if events else "")
-        )
-
-    def _block_key(self, snapshot: Snapshot) -> str:
-        """Cheap state signature for print dedupe (score+dealt+backs)."""
-        dealt = tuple(
-            (info["colour"], info["points"], tuple(sorted(info["cost"].items())))
-            if info is not None
-            else ()
-            for row in snapshot["dealt"]
-            for info in row
-        )
-        backs = tuple(
-            tuple(panel["reserved_tiers"]) for panel in snapshot["panels"]
-        )
-        scores = tuple(panel["score"] for panel in snapshot["panels"])
-        supply = tuple(snapshot["supply"][c] for c in sorted(snapshot["supply"]))
-        return f"{scores}|{supply}|{dealt}|{backs}"
-
-    def _emit_advice(self, title: str, advice: list) -> None:
-        self._emit(f"  {title}")
-        values = [a.value for a in advice]
-        for rank, item in enumerate(advice, start=1):
-            icon = _ADVICE_ICONS[rank - 1] if rank <= len(_ADVICE_ICONS) else " "
-            self._emit(
-                f"   {rank}. {icon} {item.text}  {_bar(values, item.value)} "
-                f"{item.value:+.2f}"
+        if view["advice"]["ga"]:
+            self._emit_advice("建议（GA 快评，★最优 ☆次优）:", view["advice"]["ga"])
+        if view["advice"]["deep_sync"]:
+            self._emit_advice(
+                f"深算（minimax depth={self._depth}）:", view["advice"]["deep_sync"]
             )
-            for reason in item.reasons:
-                self._emit(f"      · {reason}")
-
-    def _emit_afford(self, snapshot: Snapshot) -> None:
-        assert self._engine is not None
-        rows = self._engine.affordability(snapshot)
-        affordable = [row for row in rows if row.affordable]
+        if view["phase"] in (Phase.MY_DISCARD.value, Phase.MY_NOBLE.value, Phase.PAYMENT.value):
+            self._emit("   （子流程需要手动点击，建议暂停）")
+        self._emit("  牌堆剩余（未翻开部分，按颜色）:")
+        for line in _histogram_lines(
+            DeckHistogram(
+                rows=tuple(_row_from_view(row) for row in view["deck_hist"]["rows"]),
+                warnings=tuple(view["deck_hist"]["warnings"]),
+            )
+        ):
+            self._emit(line)
+        self._emit_afford(view)
+        tracker = view["tracker"]
         self._emit(
-            f"  可负担: {len(affordable)}/{len(rows)} 张"
+            f"  预留记忆: 已识别 {tracker['known']} / 未知 {tracker['unknown']}"
             + (
-                "（" + "；".join(row.text for row in affordable[:3]) + "）"
-                if affordable
+                f" | 最近: {'; '.join(tracker['recent_events'])}"
+                if tracker["recent_events"]
                 else ""
             )
         )
-        for row in rows:
-            if not row.affordable and row.missing:
-                self._emit(
-                    f"   · {row.text}（{'我的预留' if row.source == 'reserved' else '桌面'}）"
-                    f" {_missing_text(row.missing, row.gold_covers)}"
-                )
-                break  # one closest-gap line is enough on the console
+
+    def _state_key(self, view: dict[str, Any]) -> str:
+        dealt = tuple(
+            (card["colour"], card["points"], tuple(sorted(card["cost"].items())))
+            if card is not None
+            else ()
+            for row in view["dealt"]
+            for card in row
+        )
+        backs = tuple(p["reserved_summary"] for p in view["players"])
+        scores = tuple(p["score"] for p in view["players"])
+        supply = tuple(view["supply"][c] for c in sorted(view["supply"]))
+        return f"{scores}|{supply}|{dealt}|{backs}"
+
+    def _emit_advice(self, title: str, rows: list[dict[str, Any]]) -> None:
+        self._emit(f"  {title}")
+        values = [row["value"] for row in rows]
+        for rank, row in enumerate(rows, start=1):
+            icon = _ADVICE_ICONS[rank - 1] if rank <= len(_ADVICE_ICONS) else " "
+            self._emit(
+                f"   {rank}. {icon} {row['text']}  {_bar(values, row['value'])} "
+                f"{row['value']:+.2f}"
+            )
+            for reason in row["reasons"]:
+                self._emit(f"      · {reason}")
+
+    def _emit_afford(self, view: dict[str, Any]) -> None:
+        afford = view["afford"]
+        affordable_texts = [
+            entry["text"] for entry in afford["map"].values() if entry["affordable"]
+        ]
+        self._emit(
+            f"  可负担: {afford['affordable_count']}/{afford['total']} 张"
+            + ("（" + "；".join(affordable_texts[:3]) + "）" if affordable_texts else "")
+        )
+        closest = afford["closest"]
+        if closest is not None:
+            self._emit(
+                f"   · {closest['text']}"
+                f"（{'我的预留' if closest['source'] == 'reserved' else '桌面'}）"
+                f" {closest['missing_text']}"
+            )
 
 
+def _row_from_view(row: dict[str, Any]) -> DeckRow:
+    return DeckRow(
+        tier=row["tier"],
+        counts=dict(row["counts"]),
+        grey=row["grey"],
+        deck_count=row["deck_count"],
+    )
+
+
+def _scores_view(view: dict[str, Any]) -> str:
+    parts = []
+    for player in view["players"]:
+        label = "我" if player["seat"] == view["my_seat"] else f"座{player['seat']}"
+        parts.append(f"{label}={player['score']}")
+    return " | ".join(parts)
+
+
+# ----- deep worker (dashboard button) ---------------------------------------------
+def deep_worker(store: AdvisorStore, engine_getter: Callable[[], AdvisorEngine | None]) -> None:
+    """
+    Wait for deep requests and run minimax on the latest reconstruction.
+
+    The engine lock (inside ``minimax_top_k``) serialises against the poll
+    thread's GA scoring; failures degrade to a payload error, never a crash.
+    """
+    while True:
+        job = store.wait_deep_request(timeout=2.0)
+        if job is None:
+            continue
+        current = engine_getter()
+        if current is None or job.state is None:
+            store.set_deep_error("暂无可深算的局面（等待我的回合）")
+            continue
+        started = time.perf_counter()
+        try:
+            rows = _advice_rows(current.minimax_top_k(job.state, depth=job.depth))
+            store.set_deep_result(
+                rows, elapsed_ms=(time.perf_counter() - started) * 1000
+            )
+        except Exception as error:  # deep must never kill the advisor
+            store.set_deep_error(str(error))
+
+
+# ----- entry point ------------------------------------------------------------------
 def _parse_args() -> dict[str, Any]:
     parser = argparse.ArgumentParser(
         prog="play-advisor",
         description=(
             "Read-only Splendor advisor: watch the seat you play manually "
-            "and print ranked move advice (plan phase-7)."
+            "and rank your legal moves (plan phase-7)."
         ),
     )
     parser.add_argument(
@@ -300,9 +486,7 @@ def _parse_args() -> dict[str, Any]:
         "--profile-id", type=str, default=None,
         help="ego-browser profile pinning the login identity.",
     )
-    parser.add_argument(
-        "--poll", type=float, default=0.4, help="Base poll interval (s).",
-    )
+    parser.add_argument("--poll", type=float, default=0.4, help="Base poll interval (s).")
     parser.add_argument(
         "--fast-poll", type=float, default=0.25,
         help="Poll interval while an opponent is acting (s).",
@@ -311,12 +495,15 @@ def _parse_args() -> dict[str, Any]:
         "--seed", type=int, default=0,
         help="Seed for every sampling path (deck reconstruction).",
     )
-    parser.add_argument(
-        "--topk", type=int, default=5, help="How many advice rows to show.",
-    )
+    parser.add_argument("--topk", type=int, default=5, help="Advice rows to show.")
     parser.add_argument(
         "--depth", type=int, default=0,
-        help="minimax deep mode depth on my turns (0 = off, 2-3 sensible).",
+        help="Synchronous minimax depth on my turns (0 = off; the dashboard's "
+        "deep button works regardless).",
+    )
+    parser.add_argument(
+        "--port", type=int, default=DEFAULT_PORT,
+        help="Dashboard port (0 = disable dashboard).",
     )
     parser.add_argument(
         "--fixture-html", type=Path, default=None,
@@ -356,13 +543,38 @@ def main() -> None:
     if options["room_url"] is not None and options["fixture_html"] is None:
         driver.navigate(options["room_url"])
 
+    store: AdvisorStore | None = None
+    engine_holder: dict[str, AdvisorEngine | None] = {"engine": None}
+    if options["port"]:
+        store = AdvisorStore()
+        server = start_server(store, options["port"])
+        threading.Thread(
+            target=server.serve_forever, daemon=True, name="advisor-dashboard"
+        ).start()
+        threading.Thread(
+            target=deep_worker,
+            args=(store, lambda: engine_holder["engine"]),
+            daemon=True,
+            name="advisor-deep",
+        ).start()
+        print(f"📊 仪表盘: http://localhost:{options['port']}", flush=True)
+
+    cli = AdvisorCli(
+        depth=options["depth"],
+        top_k=options["topk"],
+        seed=options["seed"],
+        store=store,
+    )
+
+    def on_frame(frame: AdvisorFrame) -> None:
+        cli.on_frame(frame)
+        if cli.engine is not None:
+            engine_holder["engine"] = cli.engine
+
     session = AdvisorSession(
         driver,
         poll_interval=options["poll"],
         fast_poll_interval=options["fast_poll"],
-    )
-    cli = AdvisorCli(
-        depth=options["depth"], top_k=options["topk"], seed=options["seed"]
     )
     print(
         "▶ play-advisor 只读辅助已启动（零点击：本进程从不执行页面操作）"
@@ -383,12 +595,8 @@ def main() -> None:
         return True
 
     start = time.monotonic()
-
-    def on_frame(frame: AdvisorFrame) -> None:
-        cli.on_frame(frame)
-
     try:
-        session.run(cli.on_frame, should_stop=should_stop, on_schema_error=on_schema_error)
+        session.run(on_frame, should_stop=should_stop, on_schema_error=on_schema_error)
     except SnapshotSchemaError as error:
         print(f"✖ 快照 schema 持续失败，退出: {error}", flush=True)
         raise SystemExit(2) from error
