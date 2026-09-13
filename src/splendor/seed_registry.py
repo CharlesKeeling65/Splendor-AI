@@ -60,6 +60,14 @@ C2_TRAINING = SeedSegment("c2_training", 830_000, 854_000, "C2 500-update self-p
 C2_VALIDATION = SeedSegment("c2_validation", 854_000, 854_100, "C2 model selection", False)
 C2_TEST = SeedSegment("c2_test", 855_000, 855_100, "C2 final reported evaluation", True)
 
+#: Roadmap C2 round-2 scale-up (amended 2026-09-13): 2000 updates x 16 games
+#: x 3 seeds = 96000 training deals. The 900000-940000 historical range forces
+#: the block above it; seeds above 1e6 are plain integers with no consumer
+#: assumption attached.
+C2R2_TRAINING = SeedSegment("c2r2_training", 940_000, 1_036_000, "C2-R2 2000-update self-play", False)
+C2R2_VALIDATION = SeedSegment("c2r2_validation", 1_036_000, 1_036_100, "C2-R2 model selection", False)
+C2R2_TEST = SeedSegment("c2r2_test", 1_037_000, 1_037_100, "C2-R2 final reported evaluation", True)
+
 ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     STABILIZATION_TRAINING,
     STABILIZATION_VALIDATION,
@@ -71,6 +79,9 @@ ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     C2_TRAINING,
     C2_VALIDATION,
     C2_TEST,
+    C2R2_TRAINING,
+    C2R2_VALIDATION,
+    C2R2_TEST,
 )
 
 SEGMENTS_BY_NAME: dict[str, SeedSegment] = {

@@ -183,6 +183,9 @@ class StabilizationConfig:
     seats: int = 2
     # Roadmap E1: override the BC-derived schema (needed for >2 seats).
     feature_version_override: str | None = None
+    # Roadmap B2->C2-R2: training-side reward shaping.
+    shaping_kind: str = "none"
+    shaping_kappa: float = 0.05
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output", Path(self.output))
@@ -234,6 +237,8 @@ class TrainingJob:
     pool_names: tuple[str, ...] = TRAINING_POOL_NAMES
     seats: int = 2
     feature_version_override: str | None = None
+    shaping_kind: str = "none"
+    shaping_kappa: float = 0.05
 
     @property
     def name(self) -> str:
@@ -495,6 +500,8 @@ def make_training_jobs(
                     pool_names=config.pool_names,
                     seats=config.seats,
                     feature_version_override=config.feature_version_override,
+                    shaping_kind=config.shaping_kind,
+                    shaping_kappa=config.shaping_kappa,
                 )
             )
             job_index += 1
@@ -519,6 +526,8 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
     value_coefficient: float = 0.5,
     seats: int = 2,
     feature_version_override: str | None = None,
+    shaping_kind: str = "none",
+    shaping_kappa: float = 0.05,
 ) -> dict[str, Any]:
     """Return the frozen PPO configuration for one stabilisation branch."""
     if variant not in VARIANTS:
@@ -556,6 +565,8 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
         "critic_learning_rate": critic_learning_rate,
         "critic_hidden_dim": critic_hidden_dim,
         "n_seats": seats,
+        "shaping_kind": shaping_kind,
+        "shaping_kappa": shaping_kappa,
     }
 
 
@@ -611,6 +622,8 @@ def _make_ppo_config(  # noqa: PLR0913 - mirror per-run configuration inputs
     value_coefficient: float = 0.5,
     seats: int = 2,
     feature_version_override: str | None = None,
+    shaping_kind: str = "none",
+    shaping_kappa: float = 0.05,
 ) -> PPOConfig:
     """Instantiate the promised PPOConfig surface with no silent fallback."""
     schema = feature_version_override or feature_version
@@ -628,6 +641,8 @@ def _make_ppo_config(  # noqa: PLR0913 - mirror per-run configuration inputs
         value_coefficient=value_coefficient,
         seats=seats,
         feature_version_override=feature_version_override,
+        shaping_kind=shaping_kind,
+        shaping_kappa=shaping_kappa,
     )
     try:
         return PPOConfig(**kwargs)
@@ -1110,6 +1125,8 @@ def _run_training_job(job: TrainingJob) -> dict[str, Any]:
             value_coefficient=job.value_coefficient,
             seats=job.seats,
             feature_version_override=job.feature_version_override,
+            shaping_kind=job.shaping_kind,
+            shaping_kappa=job.shaping_kappa,
         )
         pool = _build_training_pool(device=job.device, names=job.pool_names)
         validation_opponents = tuple(
@@ -1388,6 +1405,8 @@ def fixed_config_manifest(config: StabilizationConfig, *, feature_version: str) 
         "pool_names": list(config.pool_names),
         "seats": config.seats,
         "feature_version_override": config.feature_version_override,
+        "shaping_kind": config.shaping_kind,
+        "shaping_kappa": config.shaping_kappa,
     }
     return {
         "common": common,
@@ -1950,6 +1969,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Roadmap C1 ablation: value-loss weight in the PPO total loss",
     )
     parser.add_argument(
+        "--shaping",
+        choices=("none", "potential", "event"),
+        default="none",
+        help=(
+            "Roadmap B2: training-side reward shaping; 'potential' is the "
+            "policy-invariant default (kappa via --shaping-kappa)"
+        ),
+    )
+    parser.add_argument(
+        "--shaping-kappa",
+        type=float,
+        default=0.05,
+        help="noble-coverage weight in the potential function",
+    )
+    parser.add_argument(
         "--feature-version",
         choices=("v1", "public-v2", "public-v2-multi"),
         default=None,
@@ -2009,6 +2043,8 @@ def config_from_args(args: argparse.Namespace) -> StabilizationConfig:
         ),
         seats=args.seats,
         feature_version_override=args.feature_version,
+        shaping_kind=args.shaping,
+        shaping_kappa=args.shaping_kappa,
     )
 
 

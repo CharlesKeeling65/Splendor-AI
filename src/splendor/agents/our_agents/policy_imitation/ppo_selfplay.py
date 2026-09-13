@@ -16,6 +16,10 @@ from torch import distributions, nn, optim
 
 from splendor.agents.our_agents.dqn.constants import HIDDEN_DIMS, HUGE_NEG
 from splendor.agents.our_agents.dqn.features import extract_observation, observation_dim
+from splendor.agents.our_agents.policy_imitation.shaping import (
+    EventRewardShaper,
+    PotentialRewardShaper,
+)
 from splendor.splendor.gym.envs.utils import (
     create_action_mapping,
     create_legal_actions_mask,
@@ -286,6 +290,9 @@ class PPOConfig:
     critic_hidden_dim: int = 0
     # Roadmap E1: seat count for self-play games (2 by default, frozen run).
     n_seats: int = 2
+    # Roadmap B2->C: training-side reward shaping ("none" = frozen run).
+    shaping_kind: str = "none"
+    shaping_kappa: float = 0.05
     initialization: InitializationMode = "bc"
     eval_every: int = 1
     seed: int = 1234
@@ -340,6 +347,10 @@ class PPOConfig:
             raise ValueError("critic_hidden_dim must be non-negative")
         if not MIN_SEATS <= self.n_seats <= MAX_SEATS:
             raise ValueError("n_seats must lie in [2, 4]")
+        if self.shaping_kind not in ("none", "potential", "event"):
+            raise ValueError(f"unknown shaping kind {self.shaping_kind!r}")
+        if not np.isfinite(self.shaping_kappa) or self.shaping_kappa < 0:
+            raise ValueError("shaping_kappa must be finite and non-negative")
         if self.n_seats > MIN_SEATS and self.feature_version != "public-v2-multi":
             raise ValueError(
                 "training with more than two seats requires the "
@@ -500,7 +511,7 @@ def _outcome(rule: SplendorGameRule, seat: int) -> int:
     return int(own > best_rival) - int(own < best_rival)
 
 
-def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
+def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is explicit
     model: PolicyValueNetwork,
     opponent_pool: Sequence[OpponentPoolEntry],
     *,
@@ -534,11 +545,36 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
 
     with isolated_seed(seed):
         rule = LimitRoundsGameRule(n_seats)
+        # Roadmap B2->C: potential shaping is anchored at the first focal
+        # decision and credits each transition when the next focal state (or
+        # the terminal state) arrives - gamma*phi(s') - phi(s) telescopes.
+        potential_shaper: PotentialRewardShaper | None = None
+        event_shaper: EventRewardShaper | None = None
+        if config.shaping_kind == "potential":
+            potential_shaper = PotentialRewardShaper(
+                kappa=config.shaping_kappa,
+                discount_factor=config.discount_factor,
+            )
+        elif config.shaping_kind == "event":
+            event_shaper = EventRewardShaper()
+        shaper_anchored = False
+        pending_bonus_index: int | None = None
         while not rule.gameEnds():
             state = rule.current_game_state
             turn = rule.current_agent_index
             legal_actions = rule.getLegalActions(state, turn)
             if turn == seat:
+                if potential_shaper is not None:
+                    if not shaper_anchored:
+                        potential_shaper.reset(state, seat, rule)
+                        shaper_anchored = True
+                    elif pending_bonus_index is not None:
+                        shaping_bonus = potential_shaper.advance(state, seat, rule)
+                        transitions[pending_bonus_index] = replace(
+                            transitions[pending_bonus_index],
+                            reward=transitions[pending_bonus_index].reward + shaping_bonus,
+                        )
+                        pending_bonus_index = None
                 score_before = state.agents[seat].score
                 try:
                     (
@@ -557,6 +593,13 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
                     }
                     break
                 rule.update(action)
+                base_reward = float(
+                    rule.current_game_state.agents[seat].score - score_before
+                )
+                if event_shaper is not None:
+                    base_reward += event_shaper.bonus(
+                        action, rule.current_game_state, rule, seat
+                    )
                 transitions.append(
                     PPOTransition(
                         observation=observation,
@@ -564,14 +607,13 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
                         action_index=action_index,
                         old_log_probability=old_log_probability,
                         old_value=old_value,
-                        reward=float(
-                            rule.current_game_state.agents[seat].score - score_before
-                        ),
+                        reward=base_reward,
                         terminal=rule.gameEnds(),
                         seed=seed,
                         seat=seat,
                     )
                 )
+                pending_bonus_index = len(transitions) - 1
             else:
                 opponent_queries += 1
                 try:
@@ -592,6 +634,15 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
 
     completed = failure is None and rule.gameEnds()
     terminal_outcome = _outcome(rule, seat) if completed else None
+    if completed and potential_shaper is not None and pending_bonus_index is not None:
+        shaping_bonus = potential_shaper.advance(
+            rule.current_game_state, seat, rule
+        )
+        transitions[pending_bonus_index] = replace(
+            transitions[pending_bonus_index],
+            reward=transitions[pending_bonus_index].reward + shaping_bonus,
+        )
+        pending_bonus_index = None
     if completed and transitions:
         assert terminal_outcome is not None
         last = transitions[-1]
