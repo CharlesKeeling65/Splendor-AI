@@ -179,6 +179,10 @@ class StabilizationConfig:
     pool_names: tuple[str, ...] = TRAINING_POOL_NAMES
     # Roadmap A2: scalable training-seed group (registry-declared segment).
     training_seed_count: int = TRAINING_SEED_COUNT
+    # Roadmap E1: self-play seat count for the training jobs (2 = frozen run).
+    seats: int = 2
+    # Roadmap E1: override the BC-derived schema (needed for >2 seats).
+    feature_version_override: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output", Path(self.output))
@@ -228,6 +232,8 @@ class TrainingJob:
     critic_warmup_epochs: int = 2
     value_coefficient: float = 0.5
     pool_names: tuple[str, ...] = TRAINING_POOL_NAMES
+    seats: int = 2
+    feature_version_override: str | None = None
 
     @property
     def name(self) -> str:
@@ -487,6 +493,8 @@ def make_training_jobs(
                     critic_warmup_epochs=config.critic_warmup_epochs,
                     value_coefficient=config.value_coefficient,
                     pool_names=config.pool_names,
+                    seats=config.seats,
+                    feature_version_override=config.feature_version_override,
                 )
             )
             job_index += 1
@@ -509,6 +517,8 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
     critic_hidden_dim: int = 0,
     critic_warmup_epochs: int = 2,
     value_coefficient: float = 0.5,
+    seats: int = 2,
+    feature_version_override: str | None = None,
 ) -> dict[str, Any]:
     """Return the frozen PPO configuration for one stabilisation branch."""
     if variant not in VARIANTS:
@@ -545,6 +555,7 @@ def ppo_config_kwargs(  # noqa: PLR0913 - explicit per-run experiment parameters
         "eval_every": eval_every,
         "critic_learning_rate": critic_learning_rate,
         "critic_hidden_dim": critic_hidden_dim,
+        "n_seats": seats,
     }
 
 
@@ -598,11 +609,14 @@ def _make_ppo_config(  # noqa: PLR0913 - mirror per-run configuration inputs
     critic_hidden_dim: int = 0,
     critic_warmup_epochs: int = 2,
     value_coefficient: float = 0.5,
+    seats: int = 2,
+    feature_version_override: str | None = None,
 ) -> PPOConfig:
     """Instantiate the promised PPOConfig surface with no silent fallback."""
+    schema = feature_version_override or feature_version
     kwargs = ppo_config_kwargs(
         variant,
-        feature_version=feature_version,
+        feature_version=schema,
         model_seed=model_seed,
         updates=updates,
         games_per_update=games_per_update,
@@ -612,6 +626,8 @@ def _make_ppo_config(  # noqa: PLR0913 - mirror per-run configuration inputs
         critic_hidden_dim=critic_hidden_dim,
         critic_warmup_epochs=critic_warmup_epochs,
         value_coefficient=value_coefficient,
+        seats=seats,
+        feature_version_override=feature_version_override,
     )
     try:
         return PPOConfig(**kwargs)
@@ -1092,6 +1108,8 @@ def _run_training_job(job: TrainingJob) -> dict[str, Any]:
             critic_hidden_dim=job.critic_hidden_dim,
             critic_warmup_epochs=job.critic_warmup_epochs,
             value_coefficient=job.value_coefficient,
+            seats=job.seats,
+            feature_version_override=job.feature_version_override,
         )
         pool = _build_training_pool(device=job.device, names=job.pool_names)
         validation_opponents = tuple(
@@ -1368,6 +1386,8 @@ def fixed_config_manifest(config: StabilizationConfig, *, feature_version: str) 
         "critic_warmup_epochs": config.critic_warmup_epochs,
         "value_coefficient": config.value_coefficient,
         "pool_names": list(config.pool_names),
+        "seats": config.seats,
+        "feature_version_override": config.feature_version_override,
     }
     return {
         "common": common,
@@ -1930,6 +1950,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Roadmap C1 ablation: value-loss weight in the PPO total loss",
     )
     parser.add_argument(
+        "--feature-version",
+        choices=("v1", "public-v2", "public-v2-multi"),
+        default=None,
+        help=(
+            "Roadmap E1: override the BC-derived observation schema; required "
+            "with --seats 3/4 (public-v2-multi) unless the BC already matches"
+        ),
+    )
+    parser.add_argument(
+        "--seats",
+        type=int,
+        default=2,
+        choices=(2, 3, 4),
+        help=(
+            "Roadmap E1: self-play seat count for training jobs; >2 requires "
+            "the public-v2-multi feature schema and scratch initialization"
+        ),
+    )
+    parser.add_argument(
         "--pool-names",
         type=str,
         default=",".join(TRAINING_POOL_NAMES),
@@ -1968,6 +2007,8 @@ def config_from_args(args: argparse.Namespace) -> StabilizationConfig:
         pool_names=tuple(
             name.strip() for name in args.pool_names.split(",") if name.strip()
         ),
+        seats=args.seats,
+        feature_version_override=args.feature_version,
     )
 
 

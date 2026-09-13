@@ -51,6 +51,10 @@ def _validate_initialization(initialization: str) -> InitializationMode:
     return cast(InitializationMode, initialization)
 
 
+MIN_SEATS = 2
+MAX_SEATS = 4
+
+
 class PolicyValueNetwork(nn.Module):
     """Masked policy and configurable value heads for imitation PPO.
 
@@ -59,7 +63,7 @@ class PolicyValueNetwork(nn.Module):
     trained around terminal outcome targets.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - mirrors the checkpoint config surface
         self,
         input_dim: int,
         *,
@@ -280,12 +284,14 @@ class PPOConfig:
     # Roadmap C1 critic-repair knobs; defaults preserve the shared-lr model.
     critic_learning_rate: float | None = None
     critic_hidden_dim: int = 0
+    # Roadmap E1: seat count for self-play games (2 by default, frozen run).
+    n_seats: int = 2
     initialization: InitializationMode = "bc"
     eval_every: int = 1
     seed: int = 1234
     device_name: DeviceName = "cpu"
 
-    def __post_init__(self) -> None:  # noqa: C901 - validate each independent configuration bound
+    def __post_init__(self) -> None:  # noqa: C901, PLR0912 - validate each bound
         _validate_value_mode(self.value_mode)
         _validate_initialization(self.initialization)
         if not np.isfinite(self.learning_rate) or not np.isfinite(
@@ -332,6 +338,13 @@ class PPOConfig:
             raise ValueError("critic_learning_rate must be positive when set")
         if self.critic_hidden_dim < 0:
             raise ValueError("critic_hidden_dim must be non-negative")
+        if not MIN_SEATS <= self.n_seats <= MAX_SEATS:
+            raise ValueError("n_seats must lie in [2, 4]")
+        if self.n_seats > MIN_SEATS and self.feature_version != "public-v2-multi":
+            raise ValueError(
+                "training with more than two seats requires the "
+                "public-v2-multi feature schema (roadmap B1/E1)"
+            )
         if self.seed < 0:
             raise ValueError("PPO seed must be non-negative")
 
@@ -469,11 +482,22 @@ def _policy_step(
 
 
 def _outcome(rule: SplendorGameRule, seat: int) -> int:
-    """Use calScore's card-count tie-break for terminal utility."""
+    """Use calScore's card-count tie-break for terminal utility.
+
+    Seat-count agnostic: the outcome is judged against the *best* rival, so
+    two-player games keep the original semantics exactly.
+    """
     state = rule.current_game_state
     own = float(rule.calScore(state, seat))
-    rival = float(rule.calScore(state, 1 - seat))
-    return int(own > rival) - int(own < rival)
+    best_rival = max(
+        (
+            float(rule.calScore(state, agent.id))
+            for agent in state.agents
+            if agent.id != seat
+        ),
+        default=own,
+    )
+    return int(own > best_rival) - int(own < best_rival)
 
 
 def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
@@ -487,12 +511,19 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
     game_index: int,
 ) -> tuple[dict[str, Any], list[PPOTransition]]:
     """Collect one on-policy game without teacher labels or policy switching."""
-    if seat not in (0, 1):
-        raise ValueError(f"seat must be 0 or 1, got {seat}")
+    n_seats = config.n_seats
+    if seat not in range(n_seats):
+        raise ValueError(f"seat must lie in [0, {n_seats}), got {seat}")
     device = next(model.parameters()).device
     pool_rng = random.Random(seed + 1_000_003 * (update_index + 1) + game_index)
     selected_entry = _sample_pool_entry(opponent_pool, pool_rng)
-    rival = selected_entry.candidate.build(1 - seat)
+    rivals: dict[int, Any] = {}
+
+    def rival_for(turn: int) -> Agent:
+        """Build each rival seat once per game from the sampled entry."""
+        if turn not in rivals:
+            rivals[turn] = selected_entry.candidate.build(turn)
+        return rivals[turn]
     transitions: list[PPOTransition] = []
     failure: dict[str, str] | None = None
     opponent_queries = 0
@@ -502,7 +533,7 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
     started = time.perf_counter()
 
     with isolated_seed(seed):
-        rule = LimitRoundsGameRule(2)
+        rule = LimitRoundsGameRule(n_seats)
         while not rule.gameEnds():
             state = rule.current_game_state
             turn = rule.current_agent_index
@@ -544,7 +575,7 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
             else:
                 opponent_queries += 1
                 try:
-                    decision = select_action(rival, legal_actions, state, rule)
+                    decision = select_action(rival_for(turn), legal_actions, state, rule)
                 except TeacherDecisionError as exc:
                     opponent_illegal += int(exc.illegal)
                     opponent_search_nodes += exc.search_nodes
@@ -571,7 +602,14 @@ def collect_ppo_game(  # noqa: PLR0913,PLR0915 - game accounting is explicit
         )
     state = rule.current_game_state
     score = float(rule.calScore(state, seat))
-    rival_score = float(rule.calScore(state, 1 - seat))
+    rival_score = max(
+        (
+            float(rule.calScore(state, agent.id))
+            for agent in state.agents
+            if agent.id != seat
+        ),
+        default=0.0,
+    )
     record: dict[str, Any] = {
         "update": update_index,
         "game_index": game_index,
@@ -1085,6 +1123,39 @@ def _pool_metadata(
     }
 
 
+def _build_initial_model(
+    bc_model: BehaviorCloningNetwork, config: PPOConfig
+) -> PolicyValueNetwork:
+    """Build the PPO model from the BC initializer (roadmap E1).
+
+    Same schema: the established from_bc path (including normalizer transfer).
+    Cross-schema with ``scratch`` initialization: build directly at the
+    target schema with an unfitted (identity) normalizer - the only way to
+    cold-start 3/4-seat training before a multi-seat BC exists.  Any other
+    cross-schema combination stays a hard error.
+    """
+    if bc_model.feature_version == config.feature_version:
+        return PolicyValueNetwork.from_bc(
+            bc_model,
+            initialization=config.initialization,
+            value_mode=config.value_mode,
+            critic_hidden_dim=config.critic_hidden_dim,
+        )
+    if config.initialization != "scratch":
+        raise ValueError(
+            f"BC checkpoint schema {bc_model.feature_version!r} differs from "
+            f"config schema {config.feature_version!r}; cross-schema starts "
+            "require initialization='scratch'"
+        )
+    return PolicyValueNetwork(
+        observation_dim(config.feature_version),
+        feature_version=config.feature_version,
+        hidden_layers=config.hidden_layers,
+        value_mode=config.value_mode,
+        critic_hidden_dim=config.critic_hidden_dim,
+    )
+
+
 def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is explicit
     initial_bc: Path,
     output_dir: Path,
@@ -1111,14 +1182,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     seed_everything(config.seed)
     device = resolve_device(config.device_name)
     bc_model = load_bc_checkpoint(initial_bc, device_name=config.device_name)
-    if bc_model.feature_version != config.feature_version:
-        raise ValueError("BC checkpoint and PPO config feature schemas differ")
-    model = PolicyValueNetwork.from_bc(
-        bc_model,
-        initialization=config.initialization,
-        value_mode=config.value_mode,
-        critic_hidden_dim=config.critic_hidden_dim,
-    ).to(device)
+    model = _build_initial_model(bc_model, config).to(device)
     reference_model: BehaviorCloningNetwork | None = None
     if config.reference_kl_coefficient > 0:
         reference_model = bc_model.to(device).eval()

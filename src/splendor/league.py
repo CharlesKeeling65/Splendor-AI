@@ -267,7 +267,7 @@ def play_task(task: GameTask) -> GameRecord:
     return GameRecord(
         matchup_index=task.matchup_index,
         seat_assignment=task.seat_assignment,
-        names=task.names,
+        names=tuple(task.names[i] for i in task.seat_assignment),
         seed=task.seed,
         scores=scores,
         winner_seats=winners,
@@ -287,7 +287,7 @@ def play_task_safe(task: GameTask) -> GameRecord:
         return GameRecord(
             matchup_index=task.matchup_index,
             seat_assignment=task.seat_assignment,
-            names=task.names,
+            names=tuple(task.names[i] for i in task.seat_assignment),
             seed=task.seed,
             scores=[],
             winner_seats=[],
@@ -604,7 +604,8 @@ def _execute(  # noqa: PLR0913 - mirrors run_league's signature split
     manifest: dict[str, Any] = {
         "schema": SCHEMA_VERSION,
         **runtime,
-        "agents": [asdict(spec) for spec in specs],
+        # "roster", not "agents": the aggregate section owns that key.
+        "roster": [asdict(spec) for spec in specs],
         "seats": seats,
         "games_per_matchup": games_per_matchup,
         "game_rule": "LimitRoundsGameRule",
