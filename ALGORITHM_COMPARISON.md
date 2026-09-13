@@ -33,3 +33,23 @@
 - 架构：Dueling Double DQN（InputNormalization + 4×[Linear128+LayerNorm+ReLU] + V/A 头）+ n-step(3) replay + 终局 ±10 奖励包装（calScore 口径）
 - 相对 PPO 的独有能力：off-policy 经验回流——网页对局数据可直接混入本地 replay（`collect_from_browser`）
 - **当前状态：代码与单元测试就绪（83 tests 全绿），尚未训练**——本机约束暂不做训练（见 `docs/p4_decision.md` 附录），M1→M3 课程门槛（vs random >90% / vs minimax ≥55%，plan/phase-1 §2）达成后本表将同口径补录 DQN 结果与 3-seed 方差
+
+## 提升路径增量（2026-09-13，按 docs/IMPROVEMENT_ROADMAP_20260912.md 实施中）
+
+> 本节随阶段推进回填同口径数字；训练完成的最终数字回填到 §结论上方的新小节。
+
+### 已测得的中期数字
+
+| 项 | 数字 | 来源 |
+|---|---|---|
+| C1 critic 消融：EV(last3) 均值 | value1 0.164 > critic-lr5 0.149 > base 0.122 ≈ warmup5 0.117 > critichid 0.084（8 updates 试点，3 seed 配对） | `docs/PPO_CRITIC_ABLATION_20260913.md` |
+| B2 塑形健康检查（DQN 5k 冒烟） | 塑形 vs random 46% / vs heuristic 0%；无塑形 vs random 25% / vs heuristic 0%（非结论性） | `runs/budget-smoke/b2-health-check.json` |
+| A3 预算基线 | PPO 2.1 s/训练局；DQN 29 步/s（solo CUDA） | 路线图 §2 A3 |
+| DQN corrected 基线（旧） | vs random 99.3% / heuristic 39.3% / minimax 52.7% | DQN_ROUND2_RESULTS_20260907 |
+| PPO 稳定化基线（旧） | vs random 100% / heuristic 32% / minimax 48.7% / GA 54% | PPO_STABILIZATION_RESULTS_20260908 |
+
+### 待回填（训练进行中，2026-09-13 启动）
+
+- C2 规模化自博弈 500×16×3 seed（c2_training 种子段）：EV 曲线、验证选模、独立测试 vs random/minimax（M3 门槛）。
+- D1 DQN 200k×3（pool random:0.5,minimax:0.5）：M2（vs random ≥90%）与 M3（vs minimax ≥55%/100 局）逐 seed 报告。
+- C4 league 体检矩阵（G1 门槛：vs minimax ≥60%、vs heuristic ≥60%、vs GA ≥55%）。
