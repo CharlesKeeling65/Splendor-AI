@@ -1864,6 +1864,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=DEFAULT_EVAL_EVERY,
+        help="validation-evaluation interval in updates (every N updates)",
+    )
     parser.add_argument("--workers", type=int, default=MAX_WORKERS)
     parser.add_argument("--updates", type=int, default=8)
     parser.add_argument("--games-per-update", type=int, default=16)
@@ -1954,6 +1960,7 @@ def config_from_args(args: argparse.Namespace) -> StabilizationConfig:
         repo=args.repo,
         seed_base=args.seed_base,
         training_seed_count=args.training_seed_count,
+        eval_every=args.eval_every,
         critic_learning_rate=args.critic_learning_rate,
         critic_hidden_dim=args.critic_hidden_dim,
         critic_warmup_epochs=args.critic_warmup_epochs,
