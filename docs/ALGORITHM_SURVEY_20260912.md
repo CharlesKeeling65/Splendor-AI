@@ -30,7 +30,9 @@
 
 Splendor 是一个**随机、回合制、多人扩展式博弈**，可形式化为元组
 
-$$\Gamma = \left(\mathcal{N},\ \mathcal{H},\ P(h),\ \mathcal{A}(h),\ \{u_i\}_{i\in\mathcal{N}},\ \mathcal{F}\right),$$
+$$
+\Gamma = \bigl(\mathcal{N},\ \mathcal{H},\ P(h),\ \mathcal{A}(h),\ \{u_i\}_{i\in\mathcal{N}},\ \mathcal{F}\bigr),
+$$
 
 其中 $\mathcal{N}=\{0,\dots,n-1\}$（$n\in\{2,3,4\}$）为席位集合，$\mathcal{H}$ 为历史（状态）集合，
 $P(h)$ 决定当前行动者，$\mathcal{A}(h)$ 为合法动作集，$u_i$ 为 $i$ 的终局效用，$\mathcal{F}$ 为机会
@@ -125,12 +127,14 @@ Splendor 的核心策略构念在数学上都是**多步反事实量**，一步�
 
 无学习、无模拟的单步动作打分：
 
-$$a^\* = \arg\max_{a\in\mathcal{A}(s)} f(a,s),\qquad f(a,s)=
+$$
+a^* = \arg\max_{a\in\mathcal{A}(s)} f(a,s),\qquad f(a,s)=
 \begin{cases}
 3.0\cdot\mathbb{1}[\text{a 含贵族}] + 2p(c) + 1 + \dfrac{1}{1+N_{\text{col}(c)}} & a=\text{buy}(c)\\[2ex]
 3.0\cdot\mathbb{1}[\text{a 含贵族}] + 0.2\sum_{g}\dfrac{n_g}{1+G_g + N_g} & a=\text{collect}\\[2ex]
 -0.1 & a=\text{reserve}
-\end{cases}$$
+\end{cases}
+$$
 
 其中 $p(c)$ 为卡分，$N_{\text{col}}$ 为已购同色卡数，$G_g,N_g$ 为持有宝石/已购卡数。两个设计点有
 真实的领域含义：$1/(1+N_{\text{col}})$ 是**卡位边际收益递减**；$1/(1+G_g+N_g)$ 是**宝石边际递减**
@@ -154,17 +158,17 @@ $$a^\* = \arg\max_{a\in\mathcal{A}(s)} f(a,s),\qquad f(a,s)=
 
 对二人零和完全信息有限博弈，定义状态价值
 
-$$V^\*(s) = \begin{cases}
-\displaystyle\max_{a\in\mathcal{A}(s)} V^\*(T(s,a)) & s\text{ 轮到我}\\[1ex]
-\displaystyle\min_{a\in\mathcal{A}(s)} V^\*(T(s,a)) & s\text{ 轮到对手}\\[1ex]
+$$V^*(s) = \begin{cases}
+\displaystyle\max_{a\in\mathcal{A}(s)} V^*(T(s,a)) & s\text{ 轮到我}\\[1ex]
+\displaystyle\min_{a\in\mathcal{A}(s)} V^*(T(s,a)) & s\text{ 轮到对手}\\[1ex]
 u(s) & s\text{ 终局}
 \end{cases}$$
 
-逆推归纳保证 $V^\*$ 存在且最优纯策略可取得极小极大值。α-β 剪枝在最优排序下把复杂度从
+逆推归纳保证 $V^*$ 存在且最优纯策略可取得极小极大值。α-β 剪枝在最优排序下把复杂度从
 $O(b^d)$ 降到 $O(b^{d/2})$；实现为（`minmax.py:43-88`）固定深度 $d=2$ 的带剪枝递归 +
 `generateSuccessor`/`generatePredecessor` 原地配对回滚。
 
-评估函数是 $V^\*$ 的**线性代理**（`minmax.py:90-136`）：
+评估函数是 $V^*$ 的**线性代理**（`minmax.py:90-136`）：
 
 $$\hat V(s) = 2\,\text{score}_i + 0.7\,N_{\text{cards}} + c_G\,\textstyle\sum G
 \;-\;0.2\,\mathrm{Var}(G)\;-\;\sum_{c}\big|cost(c) - (G_{\text{col}(c)}+N_{\text{col}(c)})\big|\cdot 0.1\,(p(c)+1+0.5\,r(c))$$
@@ -218,10 +222,10 @@ $$r_T \mathrel{+}= B\cdot z,\qquad z=\mathrm{sign}\big(\mathrm{calScore}(s,i)-\m
 
 Bellman 最优算子 $\;(TQ)(s,a) = \mathbb{E}\big[r + \gamma \max_{a'} Q(s',a')\big]$ 在 $\gamma<1$ 时是
 $\ell_\infty$ 上的 **γ-压缩映射**（$\|TQ_1-TQ_2\|_\infty\le\gamma\|Q_1-Q_2\|_\infty$），由 Banach
-不动点定理，$Q\to Q^\*$ 唯一收敛。实践中以 TD 误差
-$\delta = r + \gamma\,\hat Q(s',a^\*) - Q(s,a)$ 做自举。
+不动点定理，$Q \to Q^*$ 唯一收敛。实践中以 TD 误差
+$\delta = r + \gamma\,\hat Q(s',a^*) - Q(s,a)$ 做自举。
 
-- **Double DQN**：$a^\*=\arg\max_{a'} Q_{\text{online}}(s',a')$，目标值用 $Q_{\text{target}}(s',a^\*)$
+- **Double DQN**：$a^*=\arg\max_{a'} Q_{\text{online}}(s',a')$，目标值用 $Q_{\text{target}}(s',a^*)$
   评估，解耦 argmax 与评估，缓解过估计。过估计的数学根源是 Jensen 不等式的直接推论：
 
   $$\mathbb{E}\Big[\max_{a\in\mathcal{A}} X_a\Big] \;\ge\; \max_{a\in\mathcal{A}} \mathbb{E}[X_a],$$
@@ -334,7 +338,7 @@ GAE 硬扛。此外训练胜率与实力倒挂（scratch 训练胜 41–61/128�
 - **基因型**：70 维指标上的线性权重 $w\in[-20,20]^{70}$ ×3 组（`StrategyGene`，`genes.py:89-100`）+
   ManagerGene $M\in\mathbb{R}^{70\times3}$ 按状态在 3 组策略间门控（`genes.py:103-125`）。
 - **表型（决策）**：对每个合法动作做 1 步 successor 评估（`genetic_algorithm_agent.py:82-98`）：
-  $$a^\* = \arg\max_a\; w_{\sigma(s)}^\top \phi_{\text{norm}}(T(s,a)),\qquad \sigma(s)=\arg\max_k\; (M^\top\phi_{\text{norm}}(s))_k.$$
+  $$a^* = \arg\max_a\; w_{\sigma(s)}^\top \phi_{\text{norm}}(T(s,a)),\qquad \sigma(s)=\arg\max_k\; (M^\top\phi_{\text{norm}}(s))_k.$$
   即**进化出的 1-ply 线性评估器**——结构上是 minimax($d$=1) × 学习版 $\hat V$。
 - **fitness**：种群 round-robin 对局的**累计分数**（`evolve.py:227-247`；`WINNER_BONUS=0`），且
   **天生打 4 人局**（`constants.py:11` `FOUR_PLAYERS`）。

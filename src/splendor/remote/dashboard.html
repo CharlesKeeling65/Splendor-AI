@@ -1,215 +1,710 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="3XK9Bqj5ZOECDjeDmlGHm7">
-<head data-page-node-id="nsgfxy6CYeTpYF9pK8ZwNh">
-<meta charset="utf-8" data-page-node-id="Pi1efjwe2yQ4evbxuNi6eJ">
-<title>Splendor 部署仪表盘 · 实时胜率</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="ldYcReS0RL7IQCwuf7h3oL">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Splendor 部署监控台</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --border: #e3e6ea; --text: #1f2328;
-    --muted: #6b7280; --accent: #2563eb;
+    --vault: #0e1418;
+    --panel: #151d23;
+    --panel-2: #1a242c;
+    --line: #243039;
+    --line-soft: #1e2830;
+    --ink: #e8edf0;
+    --haze: #8a9ba8;
+    --faint: #5c6e7c;
+    --gold: #d4a84b;
+    --gold-dim: rgba(212, 168, 75, 0.14);
+    --ok: #4cb98a;
+    --warn: #e8a03c;
+    --alarm: #e05d4e;
+    --gem-1: #5aa7e8;
+    --gem-2: #e05d4e;
+    --gem-3: #4cb98a;
+    --gem-4: #d4a84b;
+    --radius: 10px;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+            "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
-  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-           padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  header h1 { font-size: 17px; margin: 0; }
-  header .room a { color: var(--accent); text-decoration: none; }
-  header .status { color: var(--muted); font-size: 12px; margin-left: auto; }
-  main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
-         gap: 16px; padding: 16px 20px; align-items: start; }
-  .panel { background: var(--panel); border: 1px solid var(--border);
-           border-radius: 10px; padding: 14px 16px; }
-  .panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
-  #chart-box { position: relative; height: 380px; }
-  table.stats { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-  table.stats th, table.stats td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
-  table.stats th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  #log { max-height: 420px; overflow-y: auto; font-size: 12.5px; }
-  #log .entry { padding: 3px 0; border-bottom: 1px dashed var(--border); display: flex; gap: 8px; }
-  #log .time { color: var(--muted); flex: none; }
-  #log .entry.discard { background: #fef2f2; }
-  #log .entry.warn { color: #b45309; }
-  #log .entry .seat { flex: none; font-weight: 600; }
-  .definition { color: var(--muted); font-size: 12px; margin-top: 10px; }
-  #ranking-box { margin-top: 0; }
-  table.ranking { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  table.ranking th, table.ranking td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
-  table.ranking th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  table.ranking tr.chosen { background: #eff6ff; font-weight: 600; }
-  table.ranking td.q { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .board-line { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--vault);
+    color: var(--ink);
+    font: 13px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--gold); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
+  }
+
+  /* ── header ─────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 0 20px;
+    height: 52px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+  }
+  .brand h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .brand .tag {
+    font: 10px/1 var(--mono);
+    color: var(--gold);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 3px 6px;
+    border: 1px solid rgba(212, 168, 75, 0.35);
+    border-radius: 4px;
+  }
+  .header-room {
+    font-size: 12px;
+    color: var(--haze);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .header-room:empty { display: none; }
+  .header-status {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font: 11px/1 var(--mono);
+    color: var(--haze);
+    white-space: nowrap;
+  }
+  .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: -1px;
+  }
+  .live-dot.bad { background: var(--alarm); }
+  @media (prefers-reduced-motion: no-preference) {
+    .live-dot:not(.bad) { animation: pulse 2s ease-in-out infinite; }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+
+  /* ── KPI strip ──────────────────────────────────────── */
+  .kpis {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    padding: 0 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .kpi {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 14px;
+    border-right: 1px solid var(--line-soft);
+    min-width: 0;
+  }
+  .kpi:last-child { border-right: none; }
+  .kpi .k {
+    font-size: 11px;
+    color: var(--faint);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .kpi .v {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .kpi .v.ok { color: var(--ok); }
+  .kpi .v.warn { color: var(--warn); }
+  .kpi .v.alarm { color: var(--alarm); }
+  .kpi .v.gold { color: var(--gold); }
+  .kpi-msg {
+    flex: 1 1 200px;
+    min-width: 0;
+    border-right: none;
+  }
+  .kpi-msg .v {
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--haze);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+  }
+  .kpi-msg .v.warn { color: var(--warn); }
+
+  /* ── layout ─────────────────────────────────────────── */
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(268px, 300px);
+    grid-template-areas:
+      "chart rail"
+      "decision log";
+    gap: 14px;
+    padding: 14px 20px 20px;
+    align-items: start;
+    max-width: 1480px;
+    margin: 0 auto;
+  }
+  #chart-panel { grid-area: chart; }
+  #rail { grid-area: rail; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  #decision-panel { grid-area: decision; }
+  #log-panel { grid-area: log; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    min-width: 0;
+  }
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 0 12px;
+  }
+  .panel-head h2 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--haze);
+  }
+  .panel-head .sub {
+    font: 11px/1 var(--mono);
+    color: var(--gold);
+    font-variant-numeric: tabular-nums;
+  }
+  .panel-head .sub:empty { display: none; }
+
+  /* ── chart ──────────────────────────────────────────── */
+  .chart-wrap {
+    position: relative;
+    height: 340px;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  #chart { display: block; width: 100%; height: 100%; }
+  .chart-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--faint);
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .chart-empty[hidden] { display: none; }
+  #tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(14, 20, 24, 0.94);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--ink);
+    max-width: 280px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    z-index: 5;
+    display: none;
+  }
+  #tooltip .t-seat { font-weight: 600; }
+  #tooltip .t-meta { color: var(--haze); margin-top: 2px; }
+  .chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 18px;
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--haze);
+  }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .lg-dot, .lg-sq {
+    width: 8px; height: 8px; flex: none;
+  }
+  .lg-dot { border-radius: 50%; border: 1.5px solid currentColor; background: transparent; }
+  .lg-sq { border-radius: 1px; background: currentColor; }
+  .lg-line { width: 14px; height: 0; border-top: 1.5px dashed currentColor; flex: none; }
+  details.defs {
+    margin-top: 10px;
+    font-size: 11.5px;
+    color: var(--haze);
+  }
+  details.defs summary {
+    cursor: pointer;
+    color: var(--faint);
+    font-size: 11px;
+    user-select: none;
+  }
+  details.defs summary:hover { color: var(--haze); }
+  details.defs p { margin: 8px 0 0; line-height: 1.55; }
+
+  /* ── seat gauges ────────────────────────────────────── */
+  .gauge {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line-soft);
+    min-width: 0;
+  }
+  .gauge:last-child { border-bottom: none; padding-bottom: 4px; }
+  .gauge .seat {
+    font-size: 12px;
+    color: var(--haze);
+    white-space: nowrap;
+    margin-bottom: 6px;
+    min-width: 0;
+  }
+  .seat-swatch {
+    width: 9px; height: 9px; border-radius: 2px;
+    display: inline-block;
+    vertical-align: -1px;
+    margin-right: 6px;
+  }
+  /* Live readout sits inline after the seat name — a separate flex/grid
+     column has clipped on narrow viewports under headless capture. */
+  .gauge .pct {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin-left: 6px;
+    white-space: nowrap;
+  }
+  @media (max-width: 480px) {
+    .gauge .pct { font-size: 18px; }
+  }
+  .gauge .spark {
+    width: 100%;
+    height: 26px;
+    display: block;
+  }
+  .gauge .delta {
+    font: 10px/1 var(--mono);
+    color: var(--faint);
+    margin-left: 4px;
+  }
+  .gauge .delta.up { color: var(--ok); }
+  .gauge .delta.down { color: var(--alarm); }
+
+  /* ── cumulative stats ───────────────────────────────── */
+  table.stats {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  table.stats th, table.stats td {
+    padding: 6px 4px;
+    border-bottom: 1px solid var(--line-soft);
+    text-align: left;
+  }
+  table.stats tr:last-child td { border-bottom: none; }
+  table.stats th {
+    color: var(--faint);
+    font-weight: 500;
+    font-size: 11px;
+  }
+  table.stats td.num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  table.stats td.seat-cell {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .rate-bar {
+    display: inline-block;
+    height: 3px;
+    border-radius: 2px;
+    background: currentColor;
+    vertical-align: middle;
+    margin-left: 6px;
+    opacity: 0.7;
+  }
+
+  /* ── decision panel ─────────────────────────────────── */
+  .pipeline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+    font: 11px/1 var(--mono);
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--haze);
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.gold { border-color: rgba(212, 168, 75, 0.4); color: var(--gold); }
+  .chip.ok { border-color: rgba(76, 185, 138, 0.4); color: var(--ok); }
+  .chip.alarm { border-color: rgba(224, 93, 78, 0.45); color: var(--alarm); }
+  .chip .sep { color: var(--faint); }
+  .board-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .board-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: var(--panel-2);
+    font: 11px/1.3 var(--mono);
+    color: var(--haze);
+    font-variant-numeric: tabular-nums;
+  }
+  .board-chip strong { color: var(--ink); font-weight: 500; }
+  .gem-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .gem-pill i {
+    width: 7px; height: 7px; border-radius: 50%;
+    display: inline-block;
+    font-style: normal;
+  }
+  .chosen-line {
+    font-size: 12px;
+    color: var(--haze);
+    margin: 0 0 10px;
+    line-height: 1.5;
+  }
+  .chosen-line .act {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  table.ranking {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  table.ranking th, table.ranking td {
+    padding: 5px 6px;
+    border-bottom: 1px solid var(--line-soft);
+    text-align: left;
+    position: relative;
+  }
+  table.ranking tr:last-child td { border-bottom: none; }
+  table.ranking th {
+    color: var(--faint);
+    font-weight: 500;
+    font-size: 11px;
+  }
+  table.ranking td.idx {
+    font-family: var(--mono);
+    color: var(--faint);
+    width: 44px;
+    font-variant-numeric: tabular-nums;
+  }
+  table.ranking td.desc {
+    color: var(--haze);
+    max-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 55%;
+  }
+  table.ranking td.q {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--ink);
+    width: 64px;
+  }
+  table.ranking td.mark {
+    width: 22px;
+    text-align: center;
+    color: var(--gold);
+    font-weight: 700;
+  }
+  table.ranking tr.chosen {
+    background: var(--gold-dim);
+  }
+  table.ranking tr.chosen td.desc { color: var(--ink); }
+  table.ranking tr.chosen td:first-child {
+    box-shadow: inset 2px 0 0 var(--gold);
+  }
+  table.ranking td .bar {
+    position: absolute;
+    left: 0; top: 3px; bottom: 3px;
+    background: rgba(90, 167, 232, 0.12);
+    border-radius: 2px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  table.ranking tr.chosen td .bar {
+    background: rgba(212, 168, 75, 0.16);
+  }
+  table.ranking td > span { position: relative; z-index: 1; }
+  .rank-empty {
+    color: var(--faint);
+    font-size: 12px;
+    padding: 16px 4px;
+    text-align: center;
+  }
+
+  /* ── log ────────────────────────────────────────────── */
+  #log {
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+  #log .entry {
+    display: grid;
+    grid-template-columns: 52px 36px auto;
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 6px;
+    border-bottom: 1px solid var(--line-soft);
+    border-left: 2px solid transparent;
+  }
+  #log .entry:last-child { border-bottom: none; }
+  #log .time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+  #log .tag {
+    font: 10px/1.4 var(--mono);
+    color: var(--faint);
+    letter-spacing: 0.02em;
+    text-align: center;
+    border-radius: 3px;
+    padding: 1px 0;
+    background: var(--panel-2);
+  }
+  #log .tag.remote { color: var(--gold); background: var(--gold-dim); }
+  #log .tag.browser { color: var(--gem-1); background: rgba(90, 167, 232, 0.12); }
+  #log .tag.discard { color: var(--alarm); background: rgba(224, 93, 78, 0.12); }
+  #log .tag.parity { color: var(--warn); background: rgba(232, 160, 60, 0.12); }
+  #log .tag.start, #log .tag.end { color: var(--gold); background: transparent; }
+  #log .body { color: var(--haze); min-width: 0; overflow-wrap: anywhere; }
+  #log .body .who {
+    font-weight: 600;
+    margin-right: 4px;
+  }
+  #log .entry.warn { border-left-color: var(--warn); }
+  #log .entry.alarm { border-left-color: var(--alarm); }
+  #log .entry.milestone { background: rgba(212, 168, 75, 0.04); }
+  #log .empty, .table-empty {
+    color: var(--faint);
+    text-align: center;
+    padding: 20px 8px;
+    font-size: 12px;
+  }
+
+  /* ── responsive ─────────────────────────────────────── */
+  @media (max-width: 980px) {
+    main {
+      grid-template-columns: 1fr;
+      grid-template-areas: "chart" "rail" "decision" "log";
+      padding: 12px;
+    }
+    .chart-wrap { height: 280px; }
+    header { height: auto; padding: 10px 14px; }
+    .header-status { margin-left: 0; width: 100%; }
+  }
 </style>
 </head>
-<body data-page-node-id="OqmwOL9NK7XEKwzsYlnX7t">
-<header data-page-node-id="fLoMz51mZ1Npq2T8Vt860J">
-  <h1 data-page-node-id="lMLGc3rlSyNGWMDuhjVn47">璀璨宝石 · 部署仪表盘</h1>
-  <span class="room" id="room" data-page-node-id="WGE3QKcupsRKB1Ga8SoaQc"></span>
-  <span class="status" id="status" data-page-node-id="eN6eatdQ1AKw2qYrAFr8RS">连接中…</span>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>璀璨宝石 · 部署监控台</h1>
+    <span class="tag">sim-to-real</span>
+  </div>
+  <div class="header-room" id="room"></div>
+  <div class="header-status">
+    <span><span class="live-dot" id="live-dot"></span><span id="status-text">连接中…</span></span>
+    <span id="clock"></span>
+  </div>
 </header>
-<main data-page-node-id="cLuRkBBC9sIAj9eqz63g4Q">
-  <section class="panel" data-page-node-id="ELnT82yjNkVkrdhnwGtAnI">
-    <h2 data-page-node-id="5yW4oCcFuTXoeT94DyWkTw">各座位实时局面胜率（每个操作前 → 后）<span id="game-label" style="color:var(--accent);font-weight:500;margin-left:8px;"></span></h2>
-    <div id="chart-box" data-page-node-id="YMW8m7zj1HY2iycxrf77vf"><canvas id="chart" data-page-node-id="1EXEMsG4c80vh131oGpcD9"></canvas></div>
-    <p class="definition" data-page-node-id="mURLyABoeKS8AlYpPAmk42">
-      胜率定义：在当前可见局面重建的完整引擎状态上，用当前策略自对弈模拟 N 局至终局
-      （未知牌库/对手预留按注册表均匀抽样补全），某座位以最高分终局的频率
-      （同分按卡数少者 tie-break，仍并列各计 0.5）。图表只显示最近一局，
-      x 轴每局从 0 重新计数。每个操作画「前→后」两个点：
-      虚线圆点为操作前，实线方块为操作后；灰点表示该步估计失败/降级。
-    </p>
+
+<div class="kpis" role="status" aria-live="polite">
+  <div class="kpi"><span class="k">对局</span><span class="v gold" id="kpi-game">—</span></div>
+  <div class="kpi"><span class="k">步数</span><span class="v" id="kpi-seq">—</span></div>
+  <div class="kpi"><span class="k">比分</span><span class="v" id="kpi-score">—</span></div>
+  <div class="kpi"><span class="k">弃宝石</span><span class="v" id="kpi-discard">—</span></div>
+  <div class="kpi"><span class="k">奇偶异常</span><span class="v ok" id="kpi-parity">0</span></div>
+  <div class="kpi kpi-msg"><span class="k">最近警告</span><span class="v" id="kpi-msg">—</span></div>
+</div>
+
+<main>
+  <section class="panel" id="chart-panel">
+    <div class="panel-head">
+      <h2>局面胜率 · 每步操作前 → 后</h2>
+      <span class="sub" id="game-label"></span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+      <div class="chart-empty" id="chart-empty">等待事件流…</div>
+      <div id="tooltip"></div>
+    </div>
+    <div class="chart-legend" id="chart-legend"></div>
+    <details class="defs">
+      <summary>胜率怎么算？</summary>
+      <p>在当前可见局面重建的完整引擎状态上，用当前策略自对弈模拟 N 局至终局
+      （未知牌库 / 对手预留按注册表均匀抽样补全），某座位以最高分终局的频率
+      （同分按卡数少者 tie-break，仍并列各计 0.5）。图表只显示最近一局，x 轴每局从 0 重新计数。
+      同一序号画两个点：空心圆 = 操作前，实心方 = 操作后；竖细线表示该步估计失败或降级（stale）。</p>
+    </details>
   </section>
-  <aside data-page-node-id="335uFrb7BcXiedvcmzjzVe">
-    <section class="panel" data-page-node-id="laHkGPZtPu5EpZHHZmehFC">
-      <h2 data-page-node-id="6q8o44ZCDQRjJZwcQIFHGK">累计战绩</h2>
-      <table class="stats" data-page-node-id="uDZhgxFTKSnDRFlVuA3ibG">
-        <thead data-page-node-id="RBBDrMqAJ6DLAtlKxJCBw6"><tr data-page-node-id="6786oiK3Gj53upFySD5Owx"><th data-page-node-id="mVE9la99nRnqXrzGiywDPC">座位</th><th data-page-node-id="vJ23psL372OuCkCg9D5iEF">局数</th><th data-page-node-id="tTmHt2Z1hDrGrGiBsr79es">胜/平/负</th><th data-page-node-id="pLQtabZjTRrUSkDjDFJc7U">累计胜率</th></tr></thead>
-        <tbody id="stats-body" data-page-node-id="iYlRD73xAl2bsYOeXwMpdv"></tbody>
+
+  <aside id="rail">
+    <section class="panel" id="gauges-panel">
+      <div class="panel-head"><h2>当前局面</h2></div>
+      <div id="gauges"><div class="table-empty">等待动作事件…</div></div>
+    </section>
+    <section class="panel" id="stats-panel">
+      <div class="panel-head"><h2>累计战绩</h2></div>
+      <table class="stats" id="stats-table">
+        <thead><tr><th>座位</th><th style="text-align:right">局</th><th style="text-align:right">胜/平/负</th><th style="text-align:right">胜率</th></tr></thead>
+        <tbody id="stats-body"><tr><td colspan="4" class="table-empty">暂无完局</td></tr></tbody>
       </table>
     </section>
-    <section class="panel" data-page-node-id="OfqkcCTsVKD2D8bCwlfCAo">
-      <h2 data-page-node-id="t5OvBFhGYRN9DeMCyINRKg">实时对局日志（仅最新一局）</h2>
-      <div id="log" data-page-node-id="ufH3XF36Ia7umA0EEZSToA"></div>
-    </section>
   </aside>
-  <section class="panel" id="ranking-box" style="grid-column: 1 / -1;">
-    <h2>远程动作排序 · Q 值（最新一步）</h2>
-    <p class="board-line" id="board-line"></p>
-    <table class="ranking">
-      <thead><tr><th>#</th><th>动作</th><th>Q</th><th>选用</th></tr></thead>
-      <tbody id="ranking-body"><tr><td colspan="4" style="color:var(--muted)">等待 remote_act 事件…</td></tr></tbody>
+
+  <section class="panel" id="decision-panel">
+    <div class="panel-head"><h2>决策检视 · Q 值排序</h2></div>
+    <div class="pipeline" id="pipeline"><span class="chip">等待 remote_act…</span></div>
+    <div class="board-chips" id="board-chips"></div>
+    <p class="chosen-line" id="chosen-line" hidden></p>
+    <table class="ranking" id="ranking-table" hidden>
+      <thead><tr><th>#</th><th>动作</th><th style="text-align:right">Q</th><th></th></tr></thead>
+      <tbody id="ranking-body"></tbody>
     </table>
-    <p class="definition">
-      排序来自推理服务器对当前合法掩码的 top-k Q 值；「选用」= 远程回传并交给浏览器执行器的那一步。
-      对照 <code>remote_act</code> 与紧随其后的 <code>browser_act</code>（同一 seq/action）即可核对传输动作与页面执行是否一致。
-    </p>
+    <div class="rank-empty" id="rank-empty">等待 remote_act 事件…</div>
+    <details class="defs">
+      <summary>怎么核对传输与执行？</summary>
+      <p>排序来自推理服务器对当前合法掩码的 top-k Q 值；「选用」= 远程回传并交给浏览器执行器的那一步。
+      对照 <code>remote_act</code> 与紧随其后的 <code>browser_act</code>（同一 seq / action）即可核对传输动作与页面执行是否一致。</p>
+    </details>
+  </section>
+
+  <section class="panel" id="log-panel">
+    <div class="panel-head"><h2>事件流 · 最近一局</h2><span class="sub" id="log-count"></span></div>
+    <div id="log"><div class="empty">暂无事件</div></div>
   </section>
 </main>
-<script>
-const SEAT_COLORS = ["#2563eb", "#dc2626", "#059669", "#d97706"];
-const chart = new Chart(document.getElementById("chart"), {
-  type: "line",
-  data: { datasets: [] },
-  options: {
-    responsive: true, maintainAspectRatio: false, animation: false,
-    interaction: { mode: "nearest", intersect: true },
-    scales: {
-      // x MUST stay "linear": the datasets carry numeric {x, y} points
-      // (x = action index, x + 0.5 = same action after it resolved). Chart.js
-      // defaults a line chart's x axis to the "category" scale, which only
-      // registers *string* labels - numeric x is then read as a category
-      // index and, with an empty label array, clamped to range [0, -1]. That
-      // silently collapses every point onto x = 0 (no ticks, flat left edge).
-      x: { type: "linear", min: 0,
-           title: { display: true, text: "局内操作序列（每局从 0 重新计数；同一序号：操作前 → 操作后）" },
-           ticks: { precision: 0, maxRotation: 0 } },
-      y: { min: 0, max: 100, title: { display: true, text: "局面胜率 %" } }
-    },
-    plugins: {
-      legend: { labels: { boxWidth: 14, font: { size: 11 } } },
-      tooltip: {
-        callbacks: {
-          title: (items) => items[0].raw.meta || "",
-          label: (item) => `${item.dataset.label}: ${item.parsed.y.toFixed(1)}%`
-        }
-      }
-    }
-  }
-});
 
-function iconOf(e) {
-  if (e.type === "game_start") return "🏁";
-  if (e.type === "game_end") return "🏆";
-  if (e.type === "discard") return "🗑️";
-  if (e.type === "remote_act") return "📡";
-  if (e.type === "browser_act") return "🖱️";
-  if (e.type === "action") return e.actor && e.actor.startsWith("bot") ? "🤖" : "🧑";
-  if (e.type === "parity") return "⚠️";  // only emitted on real anomalies
-  return "ℹ️";
+<script>
+"use strict";
+
+/* ── tokens ─────────────────────────────────────────────── */
+const SEAT_COLORS = ["#5aa7e8", "#e05d4e", "#4cb98a", "#d4a84b"];
+const GEM_COLORS = {
+  white: "#d6dce2", blue: "#5aa7e8", green: "#4cb98a",
+  red: "#e05d4e", black: "#9aa3ad", yellow: "#d4a84b",
+};
+const GEM_ZH = { white: "白", blue: "蓝", green: "绿", red: "红", black: "黑", yellow: "金" };
+const MAX_LOG_ROWS = 80;
+const POLL_MS = 1500;
+
+/* ── helpers ────────────────────────────────────────────── */
+function seatColor(seat) {
+  return SEAT_COLORS[(seat - 1 + SEAT_COLORS.length) % SEAT_COLORS.length] || "#8a9ba8";
 }
 function fmtGems(gems) {
-  const names = { white: "白", blue: "蓝", green: "绿", red: "红", black: "黑", yellow: "金" };
-  return Object.entries(gems || {}).map(([c, n]) => `${names[c] || c}×${n}`).join(" ") || "—";
+  const parts = [];
+  for (const [c, n] of Object.entries(gems || {})) {
+    if (n) parts.push(`${GEM_ZH[c] || c}×${n}`);
+  }
+  return parts.join(" ") || "—";
+}
+function gemPills(gems, maxValue) {
+  const entries = Object.entries(gems || {}).filter(([, n]) => n > 0);
+  if (!entries.length) return '<span style="color:var(--faint)">空</span>';
+  return entries.map(([c, n]) => {
+    const color = GEM_COLORS[c] || "#8a9ba8";
+    const weight = maxValue ? Math.min(1, n / maxValue) : 0.5;
+    const dim = weight < 0.34 ? "opacity:.45" : "";
+    return `<span class="gem-pill"><i style="background:${color};${dim}"></i>${GEM_ZH[c] || c}${n}</span>`;
+  }).join("");
 }
 function timeOf(e) {
   const d = new Date((e.ts || 0) * 1000);
   return d.toTimeString().slice(0, 8);
 }
-
 function latestGameWindow(events) {
-  // Same window rule as the chart: everything since the LATEST game_start.
-  const starts = events.filter((e) => e.type === "game_start");
-  const lastStart = starts.length ? starts[starts.length - 1] : null;
-  return lastStart
-    ? events.filter((e) => (e.ts || 0) >= (lastStart.ts || 0))
-    : events;
+  let cut = 0;
+  for (const e of events) if (e.type === "game_start") cut = e.ts || 0;
+  return cut ? events.filter((e) => (e.ts || 0) >= cut) : events;
+}
+function fmtScores(scores) {
+  const parts = [];
+  for (const [s, v] of Object.entries(scores || {})) parts.push(`座${s}:${v}`);
+  return parts.join(" ") || "—";
 }
 
-function fmtBoard(e) {
-  const board = e.board;
-  if (!board) return "";
-  const scores = Object.entries(board.scores || {})
-    .map(([s, v]) => `座${s}:${v}`).join(" ");
-  return `比分[${scores}] 供给${fmtGems(board.supply)} 我持${fmtGems(board.my_gems)} 合法${e.legal_count ?? "?"}`;
-}
+/* ── view model (single pass over events) ───────────────── */
+function buildModel(events) {
+  const lastStart = [...events].reverse().find((e) => e.type === "game_start") || null;
+  const win = latestGameWindow(events);
+  const actions = win.filter((e) => e.type === "action" && !e.stale);
+  const seatCount = Math.max(
+    2,
+    ...actions.map((e) => Math.max((e.before || []).length, (e.after || []).length)),
+  );
+  const acts = win.filter((e) => e.type === "remote_act");
+  const latestAct = acts.length ? acts[acts.length - 1] : null;
+  const latestBrowser = latestAct
+    ? [...win].reverse().find(
+        (e) => e.type === "browser_act" && e.seq === latestAct.seq,
+      ) || null
+    : null;
 
-function renderLog(events) {
-  const log = document.getElementById("log");
-  log.innerHTML = "";
-  const windowEvents = latestGameWindow(events);
-  for (const e of windowEvents.slice(-80).reverse()) {
-    const div = document.createElement("div");
-    div.className = "entry" + (e.type === "discard" ? " discard" : "")
-      + (e.level === "warn" || e.type === "parity" ? " warn" : "");
-    let text = "";
-    if (e.type === "remote_act") {
-      text = `远程回传 #${e.seq} → [${e.action}] ${e.desc} · ${fmtBoard(e)}`;
-    } else if (e.type === "browser_act") {
-      const ok = e.executed ? "已执行" : "未执行";
-      text = `浏览器${ok} #${e.seq} → [${e.action}] ${e.desc}`;
-    } else if (e.type === "action") text = `${e.actor} · ${e.desc}`;
-    else if (e.type === "discard") text = `座位${e.seat} 弃宝石 ${fmtGems(e.gems)}`;
-    else if (e.type === "game_start") text = `对局开始（bot${e.bot} 坐位${e.my_seat}，${e.seats}人局）`;
-    else if (e.type === "game_end") text = `bot${e.bot} 终局 ${e.result}（${Object.entries(e.scores || {}).map(([s, v]) => `座${s}:${v}`).join(" ")}）`;
-    else if (e.type === "parity") text = `掩码奇偶：${(e.lines || []).join(" | ")}`;
-    else text = e.message || "";
-    div.innerHTML = `<span class="time">${timeOf(e)}</span><span>${iconOf(e)}</span><span>${text}</span>`;
-    log.appendChild(div);
-  }
-}
-
-function renderRanking(events) {
-  const windowEvents = latestGameWindow(events);
-  const acts = windowEvents.filter((e) => e.type === "remote_act");
-  const body = document.getElementById("ranking-body");
-  const boardLine = document.getElementById("board-line");
-  if (!acts.length) {
-    body.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">等待 remote_act 事件…</td></tr>`;
-    boardLine.textContent = "";
-    return;
-  }
-  const latest = acts[acts.length - 1];
-  const scores = Object.entries((latest.board && latest.board.scores) || {})
-    .map(([s, v]) => `座${s}:${v}`).join(" ");
-  boardLine.textContent =
-    `第 ${latest.seq} 步 · 选用 [${latest.action}] ${latest.desc} · ` +
-    `比分[${scores}] · 合法动作 ${latest.legal_count ?? "?"} · ` +
-    `状态「${(latest.board && latest.board.status) || ""}」`;
-  body.innerHTML = "";
-  for (const item of (latest.top || []).slice(0, 10)) {
-    const tr = document.createElement("tr");
-    if (item.idx === latest.action) tr.className = "chosen";
-    tr.innerHTML = `<td>${item.idx}</td><td>${item.desc || ""}</td>` +
-      `<td class="q">${Number(item.q).toFixed(3)}</td>` +
-      `<td>${item.idx === latest.action ? "✓" : ""}</td>`;
-    body.appendChild(tr);
-  }
-}
-
-function renderStats(events) {
+  // cumulative stats over the whole stream
   const perSeat = {};
   const seatOf = {};
   for (const e of events) {
@@ -217,87 +712,755 @@ function renderStats(events) {
     else if (e.type === "game_end") {
       const seat = seatOf[`${e.bot}:${e.game}`];
       if (seat == null) continue;
-      const s = perSeat[seat] = perSeat[seat] || { games: 0, win: 0, draw: 0, loss: 0 };
+      const s = (perSeat[seat] = perSeat[seat] || { games: 0, win: 0, draw: 0, loss: 0 });
       s.games += 1;
       if (e.result === "win") s.win += 1;
       else if (e.result === "draw") s.draw += 1;
       else if (e.result === "loss") s.loss += 1;
     }
   }
-  const tbody = document.getElementById("stats-body");
-  tbody.innerHTML = "";
-  const seats = Object.keys(perSeat).sort((a, b) => a - b);
-  for (const seat of seats.length ? seats : ["-"]) {
-    const s = perSeat[seat];
-    const rate = s && s.games ? (100 * s.win / s.games).toFixed(0) + "%" : "—";
-    const detail = s ? `${s.win}/${s.draw}/${s.loss}` : "—";
-    const games = s ? s.games : "—";
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${SEAT_COLORS[(seat - 1 + 4) % 4] || "#999"}"></span> 座位${seat}</td><td>${games}</td><td>${detail}</td><td>${rate}</td>`;
-    tbody.appendChild(tr);
+
+  let discards = 0;
+  let parityWarns = 0;
+  let lastWarn = null;
+  for (const e of win) {
+    if (e.type === "discard") discards += 1;
+    // Only count parity events the current emitter treats as anomalies
+    // (level=warn / anomalies>0). Older streams logged every step, healthy
+    // buckets included - those must not light up the alarm KPI.
+    if (e.type === "parity" && (e.level === "warn" || (e.anomalies || 0) > 0)) {
+      parityWarns += e.anomalies || 1;
+      lastWarn = { level: "warn", text: `掩码奇偶异常 ×${e.anomalies || 1}` };
+    }
+    if (e.type === "log" && e.level === "warn") {
+      lastWarn = { level: "warn", text: e.message || "" };
+    }
   }
+  const lastEnd = [...win].reverse().find((e) => e.type === "game_end") || null;
+  // game_end.anomalies is the same counter summed across the game - prefer
+  // that authoritative total once the game has finished, instead of adding
+  // it on top of the per-event counts.
+  if (lastEnd && (lastEnd.anomalies || 0) > 0) {
+    parityWarns = lastEnd.anomalies;
+  }
+
+  return {
+    win, actions, seatCount, lastStart, latestAct, latestBrowser,
+    perSeat, discards, parityWarns, lastWarn, lastEnd,
+    step: latestAct ? latestAct.seq : (win.length ? (win[win.length - 1].seq || null) : null),
+  };
 }
 
-function renderChart(events) {
-  // Per-game x reset: the event files are append-mode across runs and the
-  // `game` counter restarts at 1 every run, so "the current game" cannot be
-  // keyed by the `game` field alone. Slice the window at the LATEST
-  // game_start's timestamp instead - everything before it belongs to a
-  // finished game / a previous run and must not bleed into this chart
-  // (otherwise a new game would continue on the previous game's x tail).
-  const windowEvents = latestGameWindow(events);
-  const lastStart = [...events].reverse().find((e) => e.type === "game_start") || null;
-  // Only real action records (stale:false, written by the acting bot itself
-  // with both `before` and `after`). The other bot re-logs the same action as
-  // an observation with stale:true and after:null - counting those would
-  // burn one x index per duplicate and break the before->after pairing.
-  const actions = windowEvents.filter((e) => e.type === "action" && !e.stale);
-  const label = document.getElementById("game-label");
-  label.textContent = lastStart ? `· 第 ${lastStart.game} 局` : "";
-  const seatCount = Math.max(2, ...actions.map((e) =>
-    Math.max((e.before || []).length, (e.after || []).length)));
-  const datasets = [];
+/* ── canvas chart (no Chart.js) ─────────────────────────── */
+const canvas = document.getElementById("chart");
+const ctx2d = canvas.getContext("2d");
+const tooltipEl = document.getElementById("tooltip");
+const chartEmpty = document.getElementById("chart-empty");
+const legendEl = document.getElementById("chart-legend");
+
+let chartState = {
+  series: [], staleX: [], maxIdx: 0, points: [],
+  dpr: 1, w: 0, h: 0, modelKey: "",
+};
+let hover = null; // {x, y} css px inside canvas
+
+function buildSeries(actions, seatCount) {
+  const series = [];
+  const staleX = [];
+  let maxIdx = 0;
+  actions.forEach((e, idx) => {
+    maxIdx = idx;
+    const anyFresh = (e.after || []).some((v) => v != null);
+    if (!anyFresh) staleX.push(idx + 0.25);
+  });
   for (let seat = 1; seat <= seatCount; seat++) {
-    const color = SEAT_COLORS[(seat - 1) % SEAT_COLORS.length];
-    const before = [], after = [];
-    // x is the index WITHIN the current game: every new game restarts at 0.
+    const color = seatColor(seat);
+    const befores = [];
+    const afters = [];
+    const pairs = [];
     actions.forEach((e, idx) => {
       const b = (e.before || [])[seat - 1];
       const a = (e.after || [])[seat - 1];
-      if (b != null) before.push({ x: idx, y: b * 100,
-        meta: `第${e.seq}步 · ${e.actor} · ${e.desc} · 操作前` });
-      if (a != null) after.push({ x: idx + 0.5, y: a * 100,
-        meta: `第${e.seq}步 · ${e.actor} · ${e.desc} · 操作后` });
+      const meta = `第${e.seq}步 · ${e.actor || ""} · ${e.desc || ""}`;
+      if (b != null) befores.push({ x: idx, y: b * 100, meta: meta + " · 操作前" });
+      if (a != null) afters.push({ x: idx + 0.5, y: a * 100, meta: meta + " · 操作后" });
+      if (b != null && a != null) {
+        pairs.push([
+          { x: idx, y: b * 100 },
+          { x: idx + 0.5, y: a * 100 },
+        ]);
+      }
     });
-    datasets.push({ label: `座位${seat} 操作前`, data: before, borderColor: color,
-      backgroundColor: color + "55", borderDash: [4, 3], pointStyle: "circle",
-      pointRadius: 2.5, borderWidth: 1, tension: 0.2 });
-    datasets.push({ label: `座位${seat} 操作后`, data: after, borderColor: color,
-      backgroundColor: color, pointStyle: "rect", pointRadius: 3.5,
-      borderWidth: 2, tension: 0.2 });
+    series.push({ seat, color, befores, afters, pairs, afterLast: afters.length ? afters[afters.length - 1].y : null });
   }
-  chart.data.datasets = datasets;
-  chart.update();
+  return { series, staleX, maxIdx };
 }
+
+function resizeChart() {
+  const wrap = canvas.parentElement;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  if (w < 10 || h < 10) return;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  chartState.dpr = dpr;
+  chartState.w = w;
+  chartState.h = h;
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawChart();
+}
+
+function chartPad() {
+  return { l: 40, r: 14, t: 12, b: 28 };
+}
+function xToPx(x, pad) {
+  const inner = chartState.w - pad.l - pad.r;
+  const span = Math.max(chartState.maxIdx + 1, 4);
+  return pad.l + (x / span) * inner;
+}
+function yToPx(y, pad) {
+  const inner = chartState.h - pad.t - pad.b;
+  return pad.t + (1 - y / 100) * inner;
+}
+
+function drawChart() {
+  const { w, h } = chartState;
+  if (w < 10) return;
+  ctx2d.clearRect(0, 0, w, h);
+  const pad = chartPad();
+  const empty = chartState.series.every((s) => !s.befores.length && !s.afters.length);
+  chartEmpty.hidden = !empty;
+  if (empty) {
+    drawGrid(pad);
+    return;
+  }
+
+  drawGrid(pad);
+
+  // stale markers
+  ctx2d.strokeStyle = "rgba(232, 160, 60, 0.28)";
+  ctx2d.lineWidth = 1;
+  for (const sx of chartState.staleX) {
+    const x = xToPx(sx, pad);
+    ctx2d.beginPath();
+    ctx2d.moveTo(x, pad.t);
+    ctx2d.lineTo(x, h - pad.b);
+    ctx2d.stroke();
+  }
+
+  // pair connectors (before → after for one action)
+  ctx2d.lineWidth = 1;
+  for (const s of chartState.series) {
+    ctx2d.strokeStyle = s.color + "40";
+    for (const [p0, p1] of s.pairs) {
+      ctx2d.beginPath();
+      ctx2d.moveTo(xToPx(p0.x, pad), yToPx(p0.y, pad));
+      ctx2d.lineTo(xToPx(p1.x, pad), yToPx(p1.y, pad));
+      ctx2d.stroke();
+    }
+  }
+
+  // before: dashed + hollow circle
+  for (const s of chartState.series) {
+    if (!s.befores.length) continue;
+    ctx2d.strokeStyle = s.color + "aa";
+    ctx2d.lineWidth = 1;
+    ctx2d.setLineDash([4, 3]);
+    ctx2d.beginPath();
+    s.befores.forEach((p, i) => {
+      const x = xToPx(p.x, pad);
+      const y = yToPx(p.y, pad);
+      if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y);
+    });
+    ctx2d.stroke();
+    ctx2d.setLineDash([]);
+    ctx2d.fillStyle = s.color;
+    for (const p of s.befores) {
+      ctx2d.beginPath();
+      ctx2d.arc(xToPx(p.x, pad), yToPx(p.y, pad), 2.4, 0, Math.PI * 2);
+      ctx2d.strokeStyle = s.color;
+      ctx2d.lineWidth = 1.2;
+      ctx2d.stroke();
+    }
+  }
+
+  // after: solid + square
+  for (const s of chartState.series) {
+    if (!s.afters.length) continue;
+    ctx2d.strokeStyle = s.color;
+    ctx2d.lineWidth = 1.8;
+    ctx2d.beginPath();
+    s.afters.forEach((p, i) => {
+      const x = xToPx(p.x, pad);
+      const y = yToPx(p.y, pad);
+      if (i === 0) ctx2d.moveTo(x, y); else ctx2d.lineTo(x, y);
+    });
+    ctx2d.stroke();
+    ctx2d.fillStyle = s.color;
+    for (const p of s.afters) {
+      const x = xToPx(p.x, pad);
+      const y = yToPx(p.y, pad);
+      ctx2d.fillRect(x - 2.8, y - 2.8, 5.6, 5.6);
+    }
+  }
+
+  // hover highlight
+  if (hover) {
+    const near = nearestPoint(hover.x, hover.y);
+    if (near) {
+      ctx2d.strokeStyle = "rgba(232, 237, 240, 0.25)";
+      ctx2d.lineWidth = 1;
+      ctx2d.beginPath();
+      ctx2d.moveTo(near.sx, pad.t);
+      ctx2d.lineTo(near.sx, h - pad.b);
+      ctx2d.stroke();
+      ctx2d.beginPath();
+      ctx2d.arc(near.sx, near.sy, 5, 0, Math.PI * 2);
+      ctx2d.strokeStyle = near.color;
+      ctx2d.lineWidth = 1.5;
+      ctx2d.stroke();
+    }
+  }
+
+  collectHoverPoints(pad);
+}
+
+function drawGrid(pad) {
+  const { w, h } = chartState;
+  ctx2d.strokeStyle = "#1e2830";
+  ctx2d.lineWidth = 1;
+  ctx2d.fillStyle = "#5c6e7c";
+  ctx2d.font = "10px ui-monospace, Menlo, Consolas, monospace";
+  ctx2d.textAlign = "right";
+  ctx2d.textBaseline = "middle";
+  for (const y of [0, 25, 50, 75, 100]) {
+    const py = yToPx(y, pad);
+    ctx2d.beginPath();
+    ctx2d.moveTo(pad.l, py);
+    ctx2d.lineTo(w - pad.r, py);
+    ctx2d.stroke();
+    ctx2d.fillText(String(y), pad.l - 6, py);
+  }
+  // x ticks
+  const span = Math.max(chartState.maxIdx + 1, 4);
+  const step = span > 24 ? Math.ceil(span / 8) : span > 12 ? 2 : 1;
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "top";
+  for (let i = 0; i <= chartState.maxIdx; i += step) {
+    const px = xToPx(i, pad);
+    ctx2d.fillText(String(i), px, h - pad.b + 6);
+  }
+  ctx2d.fillStyle = "#5c6e7c";
+  ctx2d.textAlign = "left";
+  ctx2d.fillText("步", 8, h - pad.b + 6);
+  ctx2d.save();
+  ctx2d.translate(12, pad.t + 4);
+  ctx2d.fillText("%", 0, 0);
+  ctx2d.restore();
+}
+
+function collectHoverPoints(pad) {
+  const pts = [];
+  for (const s of chartState.series) {
+    for (const p of s.befores) {
+      pts.push({ sx: xToPx(p.x, pad), sy: yToPx(p.y, pad), color: s.color, seat: s.seat, y: p.y, meta: p.meta, kind: "前" });
+    }
+    for (const p of s.afters) {
+      pts.push({ sx: xToPx(p.x, pad), sy: yToPx(p.y, pad), color: s.color, seat: s.seat, y: p.y, meta: p.meta, kind: "后" });
+    }
+  }
+  chartState.points = pts;
+}
+
+function nearestPoint(mx, my) {
+  let best = null;
+  let bestD = 14 * 14;
+  for (const p of chartState.points) {
+    const dx = p.sx - mx;
+    const dy = p.sy - my;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return best;
+}
+
+canvas.addEventListener("mousemove", (ev) => {
+  const rect = canvas.getBoundingClientRect();
+  hover = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+  const near = nearestPoint(hover.x, hover.y);
+  if (near) {
+    tooltipEl.style.display = "block";
+    const tx = Math.min(Math.max(near.sx + 12, 4), chartState.w - 200);
+    const ty = Math.min(Math.max(near.sy - 10, 4), chartState.h - 60);
+    tooltipEl.style.left = tx + "px";
+    tooltipEl.style.top = ty + "px";
+    tooltipEl.innerHTML =
+      `<div class="t-seat" style="color:${near.color}">座位${near.seat} · ${near.kind} · ${near.y.toFixed(1)}%</div>` +
+      `<div class="t-meta">${near.meta || ""}</div>`;
+  } else {
+    tooltipEl.style.display = "none";
+  }
+  drawChart();
+});
+canvas.addEventListener("mouseleave", () => {
+  hover = null;
+  tooltipEl.style.display = "none";
+  drawChart();
+});
+
+function renderChart(model) {
+  const key = model.actions.length
+    ? `${model.actions.length}:${model.actions[model.actions.length - 1].ts}:${model.seatCount}`
+    : "empty";
+  if (key !== chartState.modelKey) {
+    chartState.modelKey = key;
+    const built = buildSeries(model.actions, model.seatCount);
+    chartState.series = built.series;
+    chartState.staleX = built.staleX;
+    chartState.maxIdx = built.maxIdx;
+  }
+  const label = document.getElementById("game-label");
+  label.textContent = model.lastStart ? `第 ${model.lastStart.game} 局 · ${model.seatCount} 席` : "";
+  renderLegend(model);
+  drawChart();
+}
+
+function renderLegend(model) {
+  const parts = [];
+  for (let seat = 1; seat <= model.seatCount; seat++) {
+    const c = seatColor(seat);
+    parts.push(`<span style="color:${c}"><i class="lg-line"></i>座${seat} 前</span>`);
+    parts.push(`<span style="color:${c}"><i class="lg-sq"></i>座${seat} 后</span>`);
+  }
+  legendEl.innerHTML = parts.join("");
+}
+
+/* ── seat gauges + sparklines ───────────────────────────── */
+const gaugesEl = document.getElementById("gauges");
+
+function renderGauges(model) {
+  if (!model.actions.length && !model.lastStart) {
+    gaugesEl.innerHTML = '<div class="table-empty">等待动作事件…</div>';
+    return;
+  }
+  const rows = [];
+  for (let seat = 1; seat <= model.seatCount; seat++) {
+    const color = seatColor(seat);
+    let last = null;
+    let prev = null;
+    const series = [];
+    for (const e of model.actions) {
+      const a = (e.after || [])[seat - 1];
+      if (a != null) { series.push(a * 100); prev = last; last = a * 100; }
+    }
+    const pct = last;
+    let deltaHtml = "";
+    if (pct != null && prev != null) {
+      const d = pct - prev;
+      if (Math.abs(d) >= 0.05) {
+        const cls = d > 0 ? "up" : "down";
+        deltaHtml = `<span class="delta ${cls}">${d > 0 ? "+" : ""}${d.toFixed(1)}</span>`;
+      }
+    }
+    // Put the live readout in the seat line itself (not a sibling column):
+    // a separate grid/flex column has repeatedly clipped on narrow viewports
+    // under headless capture; text in the same flex line always lays out.
+    const pctText = pct != null ? `${pct.toFixed(1)}%` : "—";
+    rows.push(
+      `<div class="gauge" data-seat="${seat}">` +
+      `<div class="seat">` +
+      `<span class="seat-swatch" style="background:${color}"></span>` +
+      `座位${seat}${deltaHtml} ` +
+      `<b class="pct" style="color:${color}">${pctText}</b>` +
+      `</div>` +
+      `<canvas class="spark" data-seat="${seat}" width="8" height="26"></canvas>` +
+      `</div>`,
+    );
+  }
+  gaugesEl.innerHTML = rows.join("");
+  // One frame later the grid columns have their real widths.
+  requestAnimationFrame(() => {
+    for (const el of gaugesEl.querySelectorAll("canvas.spark")) {
+      const seat = Number(el.dataset.seat);
+      const color = seatColor(seat);
+      const series = [];
+      for (const e of model.actions) {
+        const a = (e.after || [])[seat - 1];
+        if (a != null) series.push(a * 100);
+      }
+      drawSpark(el, series, color);
+    }
+  });
+}
+
+function drawSpark(el, series, color) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(el.clientWidth || el.parentElement.clientWidth || 40, 40);
+  const h = 26;
+  el.width = Math.round(w * dpr);
+  el.height = Math.round(h * dpr);
+  const c = el.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  if (series.length < 1) {
+    c.strokeStyle = "#243039";
+    c.setLineDash([3, 3]);
+    c.beginPath();
+    c.moveTo(0, h / 2);
+    c.lineTo(w, h / 2);
+    c.stroke();
+    return;
+  }
+  const padY = 3;
+  // fixed 0-100 for comparability across seats
+  const yOf = (v) => padY + (1 - v / 100) * (h - padY * 2);
+  const xOf = (i) => (series.length === 1 ? w / 2 : (i / (series.length - 1)) * (w - 2) + 1);
+  c.strokeStyle = color + "55";
+  c.lineWidth = 1;
+  c.beginPath();
+  series.forEach((v, i) => {
+    const x = xOf(i);
+    const y = yOf(v);
+    if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+  });
+  c.stroke();
+  // last point
+  const lx = xOf(series.length - 1);
+  const ly = yOf(series[series.length - 1]);
+  c.fillStyle = color;
+  c.fillRect(lx - 2, ly - 2, 4, 4);
+}
+
+/* ── cumulative stats ───────────────────────────────────── */
+const statsBody = document.getElementById("stats-body");
+
+function renderStats(model) {
+  const seats = Object.keys(model.perSeat).sort((a, b) => a - b);
+  if (!seats.length) {
+    statsBody.innerHTML = '<tr><td colspan="4" class="table-empty">暂无完局</td></tr>';
+    return;
+  }
+  const rows = seats.map((seat) => {
+    const s = model.perSeat[seat];
+    const rate = s.games ? (100 * s.win / s.games) : 0;
+    const color = seatColor(Number(seat));
+    const barW = Math.round(rate * 0.48);
+    return (
+      `<tr>` +
+      `<td class="seat-cell"><span class="seat-swatch" style="background:${color}"></span>座${seat}</td>` +
+      `<td class="num">${s.games}</td>` +
+      `<td class="num">${s.win}/${s.draw}/${s.loss}</td>` +
+      `<td class="num" style="color:${color}">${rate.toFixed(0)}%` +
+      `<span class="rate-bar" style="width:${barW}px;color:${color}"></span></td>` +
+      `</tr>`
+    );
+  });
+  statsBody.innerHTML = rows.join("");
+}
+
+/* ── decision panel ─────────────────────────────────────── */
+const pipelineEl = document.getElementById("pipeline");
+const boardChipsEl = document.getElementById("board-chips");
+const chosenLineEl = document.getElementById("chosen-line");
+const rankingTable = document.getElementById("ranking-table");
+const rankingBody = document.getElementById("ranking-body");
+const rankEmpty = document.getElementById("rank-empty");
+
+function renderDecision(model) {
+  const act = model.latestAct;
+  if (!act) {
+    pipelineEl.innerHTML = '<span class="chip">等待 remote_act…</span>';
+    boardChipsEl.innerHTML = "";
+    chosenLineEl.hidden = true;
+    rankingTable.hidden = true;
+    rankEmpty.hidden = false;
+    return;
+  }
+  rankEmpty.hidden = true;
+
+  // pipeline: remote → browser integrity
+  const browser = model.latestBrowser;
+  const match = browser && browser.action === act.action;
+  const execChip = browser
+    ? (match
+        ? `<span class="chip ok">浏览器已执行 #${browser.seq}</span>`
+        : `<span class="chip alarm">执行不一致 #${browser.seq} ≠ ${act.action}</span>`)
+    : `<span class="chip">等待浏览器回执…</span>`;
+  pipelineEl.innerHTML =
+    `<span class="chip gold">远程决策 #${act.seq}</span>` +
+    `<span class="chip">动作 ${act.action}</span>` +
+    execChip;
+
+  // board chips
+  const board = act.board || {};
+  const scores = Object.entries(board.scores || {})
+    .map(([s, v]) => {
+      const color = seatColor(Number(s));
+      return `<span class="board-chip"><span class="seat-swatch" style="background:${color}"></span>座<strong>${s}</strong>&nbsp;${v}</span>`;
+    })
+    .join("");
+  const myGems = board.my_gems || {};
+  const supply = board.supply || {};
+  boardChipsEl.innerHTML =
+    scores +
+    `<span class="board-chip">供给 ${gemPills(supply, 5)}</span>` +
+    `<span class="board-chip">我持 ${gemPills(myGems, 7)}</span>` +
+    `<span class="board-chip">合法 <strong>${act.legal_count ?? "—"}</strong></span>` +
+    (board.status ? `<span class="board-chip">${board.status}</span>` : "");
+
+  chosenLineEl.hidden = false;
+  chosenLineEl.innerHTML = `选用 <span class="act">[${act.action}] ${escapeHtml(act.desc || "")}</span>`;
+
+  // ranking table with Q bars
+  const top = (act.top || []).slice(0, 10);
+  if (!top.length) {
+    rankingTable.hidden = true;
+    rankEmpty.hidden = false;
+    rankEmpty.textContent = "本条 remote_act 无 top-k 排序（服务器未返回 Q 列表）";
+    return;
+  }
+  rankingTable.hidden = false;
+  const qs = top.map((t) => Number(t.q) || 0);
+  const qMin = Math.min(...qs);
+  const qMax = Math.max(...qs);
+  const span = Math.max(qMax - qMin, 1e-6);
+  rankingBody.innerHTML = top.map((item, i) => {
+    const q = Number(item.q) || 0;
+    const barW = Math.max(4, Math.round(((q - qMin) / span) * 100));
+    const chosen = item.idx === act.action;
+    return (
+      `<tr class="${chosen ? "chosen" : ""}">` +
+      `<td class="idx"><span>${i + 1}</span></td>` +
+      `<td class="desc"><span class="bar" style="width:${barW}%"></span><span>${escapeHtml(item.desc || "")}</span></td>` +
+      `<td class="q"><span>${q.toFixed(3)}</span></td>` +
+      `<td class="mark"><span>${chosen ? "✓" : ""}</span></td>` +
+      `</tr>`
+    );
+  }).join("");
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/* ── log (incremental, newest first) ────────────────────── */
+const logEl = document.getElementById("log");
+const logCountEl = document.getElementById("log-count");
+let logSig = "";
+let logLen = 0;
+
+function entryClass(e) {
+  let cls = "entry";
+  if (e.type === "parity" || e.level === "warn") cls += " warn";
+  if (e.type === "parity" && (e.lines || []).some((l) => l.includes("engine-only=") && !l.includes("engine-only=0"))) {
+    cls += " alarm";
+  }
+  if (e.type === "game_start" || e.type === "game_end") cls += " milestone";
+  return cls;
+}
+
+function tagOf(e) {
+  switch (e.type) {
+    case "game_start": return { t: "起", c: "start" };
+    case "game_end": return { t: "终", c: "end" };
+    case "remote_act": return { t: "远程", c: "remote" };
+    case "browser_act": return { t: "执行", c: "browser" };
+    case "discard": return { t: "弃", c: "discard" };
+    case "parity": return { t: "奇偶", c: "parity" };
+    case "action": return { t: "动作", c: "" };
+    default: return { t: "日志", c: "" };
+  }
+}
+
+function bodyOf(e) {
+  switch (e.type) {
+    case "remote_act":
+      return `回传 #${e.seq} → [${e.action}] ${escapeHtml(e.desc || "")}`;
+    case "browser_act":
+      return `${e.executed ? "已执行" : "未执行"} #${e.seq} → [${e.action}] ${escapeHtml(e.desc || "")}`;
+    case "action": {
+      const who = e.actor && e.actor.startsWith("bot")
+        ? `<span class="who" style="color:${seatColor(e.seat || 1)}">${escapeHtml(e.actor)}</span>`
+        : `<span class="who" style="color:${seatColor(e.seat || 1)}">座${e.seat ?? "?"}</span>`;
+      const stale = e.stale ? ' <span style="color:var(--faint)">(stale)</span>' : "";
+      return `${who}${escapeHtml(e.desc || "")}${stale}`;
+    }
+    case "discard":
+      return `座${e.seat} 弃 ${fmtGems(e.gems)}`;
+    case "game_start":
+      return `对局开始 · bot${e.bot} 坐座${e.my_seat} · ${e.seats ?? "?"} 人局`;
+    case "game_end": {
+      const anom = e.anomalies ? ` · 异常 ${e.anomalies}` : "";
+      return `bot${e.bot} ${e.result} · ${fmtScores(e.scores)}${anom}`;
+    }
+    case "parity": {
+      const head = (e.lines || [])[0] || "";
+      const m = head.match(/engine-legal=(\d+).*?dom-affordable=(\d+).*?shared=(\d+).*?engine-only=(\d+)/);
+      if (m) {
+        return `engine-only=<strong style="color:${Number(m[4]) ? "var(--alarm)" : "var(--ok)"}">${m[4]}</strong>` +
+               ` · legal ${m[1]} · dom ${m[2]}`;
+      }
+      return escapeHtml(head);
+    }
+    case "log":
+      return escapeHtml(e.message || "");
+    default:
+      return escapeHtml(e.message || JSON.stringify(e));
+  }
+}
+
+function makeEntry(e) {
+  const div = document.createElement("div");
+  div.className = entryClass(e);
+  const tag = tagOf(e);
+  div.innerHTML =
+    `<span class="time">${timeOf(e)}</span>` +
+    `<span class="tag ${tag.c}">${tag.t}</span>` +
+    `<span class="body">${bodyOf(e)}</span>`;
+  return div;
+}
+
+function renderLog(model) {
+  const win = model.win;
+  const sig = win.length ? `${win.length}:${win[win.length - 1].ts}` : "0";
+  if (sig === logSig) return;
+
+  const isReset = win.length < logLen || !logEl.querySelector(".entry");
+  if (isReset) {
+    logEl.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    const slice = win.slice(-MAX_LOG_ROWS);
+    for (let i = slice.length - 1; i >= 0; i--) frag.appendChild(makeEntry(slice[i]));
+    logEl.appendChild(frag);
+    logLen = win.length;
+  } else {
+    const frag = document.createDocumentFragment();
+    for (let i = win.length - 1; i >= logLen; i--) frag.appendChild(makeEntry(win[i]));
+    logEl.insertBefore(frag, logEl.firstChild);
+    while (logEl.childElementCount > MAX_LOG_ROWS) logEl.removeChild(logEl.lastChild);
+    logLen = win.length;
+  }
+  logSig = sig;
+  const shown = logEl.childElementCount;
+  logCountEl.textContent = shown ? `${shown} 条` : "";
+  if (!shown) logEl.innerHTML = '<div class="empty">暂无事件</div>';
+}
+
+/* ── KPI strip ──────────────────────────────────────────── */
+function renderKpis(model) {
+  const g = document.getElementById("kpi-game");
+  const seq = document.getElementById("kpi-seq");
+  const score = document.getElementById("kpi-score");
+  const disc = document.getElementById("kpi-discard");
+  const par = document.getElementById("kpi-parity");
+  const msg = document.getElementById("kpi-msg");
+
+  g.textContent = model.lastStart ? `#${model.lastStart.game}` : "—";
+  seq.textContent = model.step != null ? String(model.step) : "—";
+
+  // Prefer the finished-game scores once game_end is newer than the last
+  // decision snapshot; otherwise show the live board from remote_act.
+  const actTs = model.latestAct ? model.latestAct.ts || 0 : 0;
+  const endTs = model.lastEnd ? model.lastEnd.ts || 0 : 0;
+  const scores = endTs > actTs
+    ? (model.lastEnd && model.lastEnd.scores)
+    : ((model.latestAct && model.latestAct.board && model.latestAct.board.scores)
+       || (model.lastEnd && model.lastEnd.scores));
+  score.textContent = scores && Object.keys(scores).length
+    ? Object.entries(scores).map(([s, v]) => `${s}:${v}`).join(" · ")
+    : "—";
+
+  disc.textContent = model.discards ? String(model.discards) : "0";
+
+  par.textContent = String(model.parityWarns);
+  par.className = "v " + (model.parityWarns ? "alarm" : "ok");
+
+  if (model.lastWarn) {
+    msg.textContent = model.lastWarn.text;
+    msg.className = "v warn";
+    msg.title = model.lastWarn.text;
+  } else {
+    msg.textContent = "无";
+    msg.className = "v";
+    msg.title = "";
+  }
+}
+
+/* ── header status ──────────────────────────────────────── */
+function renderHeader(state, ok) {
+  const dot = document.getElementById("live-dot");
+  const st = document.getElementById("status-text");
+  const room = document.getElementById("room");
+  if (!ok) {
+    dot.classList.add("bad");
+    st.textContent = "连接失败";
+    return;
+  }
+  dot.classList.remove("bad");
+  st.textContent = `${state.total_events} 事件`;
+  room.innerHTML = state.room_url
+    ? `房间 <a href="${escapeHtml(state.room_url)}" target="_blank" rel="noopener">${escapeHtml(shortUrl(state.room_url))}</a>`
+    : "";
+}
+
+function shortUrl(u) {
+  try {
+    const url = new URL(u);
+    return url.pathname.replace(/\/$/, "") || url.host;
+  } catch {
+    return u;
+  }
+}
+
+function tickClock() {
+  document.getElementById("clock").textContent =
+    new Date().toTimeString().slice(0, 8);
+}
+
+/* ── poll loop ──────────────────────────────────────────── */
+let lastSig = "";
+let lastModel = null;
 
 async function tick() {
   try {
     const res = await fetch("/api/state");
     const state = await res.json();
-    document.getElementById("status").textContent =
-      `${state.total_events} 条事件 · 更新于 ${new Date().toTimeString().slice(0, 8)}`;
-    document.getElementById("room").innerHTML = state.room_url
-      ? `房间: <a href="${state.room_url}" target="_blank">${state.room_url}</a>` : "";
-    renderChart(state.events);
-    renderStats(state.events);
-    renderLog(state.events);
-    renderRanking(state.events);
+    const events = state.events || [];
+    const tail = events.length ? events[events.length - 1] : null;
+    const sig = `${state.total_events}:${tail ? tail.ts + ":" + tail.type + ":" + (tail.bot ?? "") : 0}`;
+    renderHeader(state, true);
+    if (sig === lastSig) return;
+    lastSig = sig;
+    const model = buildModel(events);
+    lastModel = model;
+    renderKpis(model);
+    renderChart(model);
+    renderGauges(model);
+    renderStats(model);
+    renderDecision(model);
+    renderLog(model);
   } catch (err) {
-    document.getElementById("status").textContent = "连接失败：" + err.message;
+    renderHeader(null, false);
+    document.getElementById("status-text").textContent = "连接失败：" + err.message;
   }
 }
+
+const ro = new ResizeObserver(() => resizeChart());
+ro.observe(canvas.parentElement);
+window.addEventListener("resize", () => {
+  resizeChart();
+  if (lastModel) renderGauges(lastModel);
+});
+tickClock();
+setInterval(tickClock, 1000);
 tick();
-setInterval(tick, 1500);
+setInterval(tick, POLL_MS);
+resizeChart();
 </script>
 </body>
 </html>
