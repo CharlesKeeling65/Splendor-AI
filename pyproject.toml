@@ -59,6 +59,7 @@ scripts.play-web = "splendor.play_web:main"
 scripts.play-web-remote = "splendor.play_remote:main"
 scripts.inference-server = "splendor.remote.server:main"
 scripts.play-dashboard = "splendor.remote.dashboard:main"
+scripts.splendor-league = "splendor.league:main"
 gui-scripts.splendor = "splendor.general_game_runner:main"
 
 [tool.setuptools]

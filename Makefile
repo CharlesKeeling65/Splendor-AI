@@ -78,3 +78,9 @@ play-web-remote:
 dashboard:
 	$(PYTHON) -m splendor.remote.dashboard --help && \
 	echo "usage: play-dashboard --events-dir web_events --port 8899"
+
+# Roadmap A1: round-robin league evaluator (see docs/seed_registry.md for segments).
+.PHONY: league
+league:
+	PYTHONHASHSEED=0 $(PYTHON) -m splendor.league --help && \
+	echo "usage: splendor-league -a <mod1,mod2> -n 2 -m 10 --segment validation"
