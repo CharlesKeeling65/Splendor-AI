@@ -55,6 +55,11 @@ INDEPENDENT_TEST = SeedSegment(
 #: Small scratch segment for offline CI smoke tests; never used for results.
 CI_SMOKE = SeedSegment("ci_smoke", 825_000, 826_000, "CI smoke tests", False)
 
+#: Roadmap C2 scale-up segments (amended 2026-09-13, see docs/seed_registry.md).
+C2_TRAINING = SeedSegment("c2_training", 830_000, 854_000, "C2 500-update self-play", False)
+C2_VALIDATION = SeedSegment("c2_validation", 854_000, 854_100, "C2 model selection", False)
+C2_TEST = SeedSegment("c2_test", 855_000, 855_100, "C2 final reported evaluation", True)
+
 ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     STABILIZATION_TRAINING,
     STABILIZATION_VALIDATION,
@@ -63,6 +68,9 @@ ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     VALIDATION,
     INDEPENDENT_TEST,
     CI_SMOKE,
+    C2_TRAINING,
+    C2_VALIDATION,
+    C2_TEST,
 )
 
 SEGMENTS_BY_NAME: dict[str, SeedSegment] = {

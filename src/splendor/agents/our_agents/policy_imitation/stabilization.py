@@ -177,6 +177,8 @@ class StabilizationConfig:
     value_coefficient: float = 0.5
     # Roadmap C3: stylized pool names; defaults keep the frozen pair.
     pool_names: tuple[str, ...] = TRAINING_POOL_NAMES
+    # Roadmap A2: scalable training-seed group (registry-declared segment).
+    training_seed_count: int = TRAINING_SEED_COUNT
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output", Path(self.output))
@@ -316,10 +318,11 @@ def validate_configuration(  # noqa: C901,PLR0912 - independent experiment safet
     baseline_names = [spec.name for spec in config.baselines]
     if len(baseline_names) != len(set(baseline_names)):
         raise ValueError("baseline names must be unique")
-    if config.training_games_total > TRAINING_SEED_COUNT:
+    if config.training_games_total > config.training_seed_count:
         raise ValueError(
-            "training budget exceeds the declared 820000-821999 seed group: "
-            f"{config.training_games_total} games > {TRAINING_SEED_COUNT} seeds"
+            "training budget exceeds the declared seed group "
+            f"[{config.seed_base}, {config.seed_base + config.training_seed_count}): "
+            f"{config.training_games_total} games > {config.training_seed_count} seeds"
         )
     if check_paths:
         if not config.initial_bc.is_file():
@@ -364,28 +367,38 @@ def build_seed_groups(
     seed_base: int = TRAINING_SEED_START,
     validation_deals: int = 10,
     test_deals: int = 25,
+    training_seed_count: int = TRAINING_SEED_COUNT,
 ) -> dict[str, list[int]]:
-    """Construct the declared fresh deal-seed groups."""
+    """Construct the declared fresh deal-seed groups.
+
+    Validation and final-test groups sit *behind* the training group so any
+    scalable (roadmap C2) budget keeps the groups disjoint; the frozen
+    stabilization offsets (2000/3000) are the training_count=2000 special case.
+    """
     if seed_base < 0:
         raise ValueError("seed_base must be non-negative")
     if not 1 <= validation_deals <= MAX_DEALS:
         raise ValueError(f"validation_deals must be between 1 and {MAX_DEALS}")
     if not 1 <= test_deals <= MAX_DEALS:
         raise ValueError(f"test_deals must be between 1 and {MAX_DEALS}")
+    if training_seed_count < 1:
+        raise ValueError("training_seed_count must be positive")
+    validation_offset = training_seed_count
+    final_test_offset = training_seed_count + 1000
     groups = {
         "training": list(
-            range(seed_base, seed_base + TRAINING_SEED_COUNT)
+            range(seed_base, seed_base + training_seed_count)
         ),
         "validation": list(
             range(
-                seed_base + VALIDATION_SEED_OFFSET,
-                seed_base + VALIDATION_SEED_OFFSET + validation_deals,
+                seed_base + validation_offset,
+                seed_base + validation_offset + validation_deals,
             )
         ),
         "final_test": list(
             range(
-                seed_base + FINAL_TEST_SEED_OFFSET,
-                seed_base + FINAL_TEST_SEED_OFFSET + test_deals,
+                seed_base + final_test_offset,
+                seed_base + final_test_offset + test_deals,
             )
         ),
     }
@@ -437,6 +450,7 @@ def make_training_jobs(
         seed_base=config.seed_base,
         validation_deals=config.validation_deals,
         test_deals=config.test_deals,
+        training_seed_count=config.training_seed_count,
     )
     games_per_model = config.training_games_per_model
     output_root = Path(root) if root is not None else config.output
@@ -1549,6 +1563,7 @@ def run_stabilization(config: StabilizationConfig) -> dict[str, Any]:  # noqa: C
         seed_base=config.seed_base,
         validation_deals=config.validation_deals,
         test_deals=config.test_deals,
+        training_seed_count=config.training_seed_count,
     )
     feature_version = _read_bc_feature_version(config.initial_bc)
     hashes = source_hashes(
@@ -1858,7 +1873,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--seed-base",
         type=int,
         default=TRAINING_SEED_START,
-        help="training seed base; validation/test use base+2000/base+3000",
+        help="training seed base; validation/test follow the training group",
+    )
+    parser.add_argument(
+        "--training-seed-count",
+        type=int,
+        default=TRAINING_SEED_COUNT,
+        help=(
+            "size of the declared training seed group; must cover "
+            "updates x games-per-update x len(seeds) (roadmap A2 registry)"
+        ),
     )
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_MODEL_SEEDS))
     parser.add_argument(
@@ -1929,6 +1953,7 @@ def config_from_args(args: argparse.Namespace) -> StabilizationConfig:
         smoke=bool(args.smoke),
         repo=args.repo,
         seed_base=args.seed_base,
+        training_seed_count=args.training_seed_count,
         critic_learning_rate=args.critic_learning_rate,
         critic_hidden_dim=args.critic_hidden_dim,
         critic_warmup_epochs=args.critic_warmup_epochs,
