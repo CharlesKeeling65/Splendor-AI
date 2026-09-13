@@ -53,3 +53,5 @@
 | 2026-09-13 | C2 启动（500 updates × 16 局 × 3 seed） | c2_training / c2_validation / c2_test | 830000–854009 / 855000–855024 | `runs/c2-selfplay-500/` |
 | 2026-09-13 | C4 league 体检（7 agent × 42 对阵 × 75 局，wrap=50） | independent_test | 829000–829049 循环 | `runs/c4-league-20260913/` |
 | 2026-09-13 | E1 多席冒烟（3p/4p 各 1×16 局） | training（训练种子） | 826000 段派生 | `runs/e1-smoke-{3,4}p/` |
+| 2026-09-13 | D1 DQN 200k ×3（训练 RNG 种子）+ 门槛评测 | training | 826000–826002 / 826100–826101 | `runs/d1-200k/` |
+| 2026-09-13 | F1 价值标定（150 局 × 双座次） | c2_validation | 854010–854059 | `runs/f1-calibration/` |
