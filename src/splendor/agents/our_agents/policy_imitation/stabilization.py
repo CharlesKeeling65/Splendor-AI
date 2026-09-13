@@ -175,6 +175,8 @@ class StabilizationConfig:
     critic_hidden_dim: int = 0
     critic_warmup_epochs: int = 2
     value_coefficient: float = 0.5
+    # Roadmap C3: stylized pool names; defaults keep the frozen pair.
+    pool_names: tuple[str, ...] = TRAINING_POOL_NAMES
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output", Path(self.output))
@@ -184,6 +186,7 @@ class StabilizationConfig:
         object.__setattr__(self, "seeds", tuple(int(seed) for seed in self.seeds))
         object.__setattr__(self, "variants", tuple(self.variants))
         object.__setattr__(self, "baselines", tuple(self.baselines))
+        object.__setattr__(self, "pool_names", tuple(self.pool_names))
         validate_configuration(self, check_paths=False)
 
     @property
@@ -222,6 +225,7 @@ class TrainingJob:
     critic_hidden_dim: int = 0
     critic_warmup_epochs: int = 2
     value_coefficient: float = 0.5
+    pool_names: tuple[str, ...] = TRAINING_POOL_NAMES
 
     @property
     def name(self) -> str:
@@ -468,6 +472,7 @@ def make_training_jobs(
                     critic_hidden_dim=config.critic_hidden_dim,
                     critic_warmup_epochs=config.critic_warmup_epochs,
                     value_coefficient=config.value_coefficient,
+                    pool_names=config.pool_names,
                 )
             )
             job_index += 1
@@ -647,15 +652,19 @@ def _build_builtin_fixed(name: str, *, device: str) -> CandidateSpec:
     return _fixed_role(build_builtin_candidate(name, device_name=device))
 
 
-def _build_training_pool(*, device: str) -> tuple[OpponentPoolEntry, ...]:
-    """Build the two fixed pool buckets; current/history are trainer-owned."""
+def _build_training_pool(
+    *,
+    device: str,
+    names: Sequence[str] = TRAINING_POOL_NAMES,
+) -> tuple[OpponentPoolEntry, ...]:
+    """Build the fixed pool buckets; current/history are trainer-owned."""
     return tuple(
         OpponentPoolEntry(
             name,
             _build_builtin_fixed(name, device=device),
             weight=1.0,
         )
-        for name in TRAINING_POOL_NAMES
+        for name in names
     )
 
 
@@ -1070,7 +1079,7 @@ def _run_training_job(job: TrainingJob) -> dict[str, Any]:
             critic_warmup_epochs=job.critic_warmup_epochs,
             value_coefficient=job.value_coefficient,
         )
-        pool = _build_training_pool(device=job.device)
+        pool = _build_training_pool(device=job.device, names=job.pool_names)
         validation_opponents = tuple(
             _build_builtin_fixed(name, device=job.device)
             for name in VALIDATION_OPPONENT_NAMES
@@ -1344,6 +1353,7 @@ def fixed_config_manifest(config: StabilizationConfig, *, feature_version: str) 
         "critic_hidden_dim": config.critic_hidden_dim,
         "critic_warmup_epochs": config.critic_warmup_epochs,
         "value_coefficient": config.value_coefficient,
+        "pool_names": list(config.pool_names),
     }
     return {
         "common": common,
@@ -1889,6 +1899,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Roadmap C1 ablation: value-loss weight in the PPO total loss",
     )
+    parser.add_argument(
+        "--pool-names",
+        type=str,
+        default=",".join(TRAINING_POOL_NAMES),
+        help=(
+            "Roadmap C3: comma list of fixed training-pool opponents "
+            "(ga, heuristic, heuristic-rush, heuristic-hoard, minimax, random)"
+        ),
+    )
     parser.add_argument("--repo", type=Path, default=None)
     return parser
 
@@ -1914,6 +1933,9 @@ def config_from_args(args: argparse.Namespace) -> StabilizationConfig:
         critic_hidden_dim=args.critic_hidden_dim,
         critic_warmup_epochs=args.critic_warmup_epochs,
         value_coefficient=args.value_coefficient,
+        pool_names=tuple(
+            name.strip() for name in args.pool_names.split(",") if name.strip()
+        ),
     )
 
 

@@ -3,8 +3,9 @@
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import Literal, override
 
 import torch
 from torch import nn
@@ -21,6 +22,8 @@ from splendor.agents.our_agents.ppo.ppo_agent import (
     PPOAgent,
 )
 from splendor.agents.our_agents.ppo.utils import load_saved_ppo
+from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
+from splendor.splendor.types import ActionType
 from splendor.template import Agent
 
 from .bc_agent import build_bc_agent_factory
@@ -29,6 +32,84 @@ from .dqn_utils import load_dqn_template
 
 AgentFactory = Callable[[int], Agent]
 CandidateRole = Literal["teacher_candidate", "fixed_baseline"]
+
+
+@dataclass(frozen=True)
+class HeuristicWeights:
+    """Ranking weights for :class:`WeightedHeuristicAgent` style variants.
+
+    Defaults reproduce the frozen ``HeuristicAgent`` scoring exactly; the
+    roadmap C3 style variants push the same ranking towards buying fast
+    (``rush``) or hoarding gems (``hoard``).
+    """
+
+    noble: float = 3.0
+    points: float = 2.0
+    buy: float = 1.0
+    colour_affinity: float = 1.0
+    collect: float = 0.2
+    reserve: float = -0.1
+
+
+RUSH_WEIGHTS = HeuristicWeights(
+    noble=6.0,
+    points=4.0,
+    buy=2.0,
+    colour_affinity=0.5,
+    collect=0.05,
+    reserve=-0.3,
+)
+HOARD_WEIGHTS = HeuristicWeights(
+    noble=1.0,
+    points=1.0,
+    buy=0.5,
+    colour_affinity=1.0,
+    collect=0.8,
+    reserve=0.3,
+)
+
+
+class WeightedHeuristicAgent(HeuristicAgent):
+    """Heuristic ranking with configurable style weights (roadmap C3)."""
+
+    def __init__(self, _id: int, weights: HeuristicWeights | None = None) -> None:
+        super().__init__(_id)
+        self.weights = weights or HeuristicWeights()
+
+    @override
+    def SelectAction(
+        self,
+        actions: list[ActionType],
+        game_state: SplendorState,
+        game_rule: SplendorGameRule,
+    ) -> ActionType:
+        """Rank actions with the configured style weights."""
+        weights = self.weights
+        agent = game_state.agents[self.id]
+
+        def score(action: ActionType) -> float:
+            value = weights.noble if action.get("noble") else 0.0
+            if action["type"] in ("buy_available", "buy_reserve"):
+                card = action["card"]
+                return (
+                    value
+                    + weights.points * card.points
+                    + weights.buy
+                    + weights.colour_affinity
+                    / (1 + len(agent.cards[card.colour]))
+                )
+            if action["type"] in ("collect_diff", "collect_same"):
+                return (
+                    value
+                    + weights.collect
+                    * sum(
+                        count / (1 + agent.gems[c] + len(agent.cards[c]))
+                        for c, count in action["collected_gems"].items()
+                    )
+                )
+            return value + weights.reserve
+
+        return max(actions, key=score)
 
 
 @dataclass(frozen=True)
@@ -97,7 +178,7 @@ def _static_candidate(name: str, factory: AgentFactory) -> CandidateSpec:
     return CandidateSpec(name=name, role="teacher_candidate", factory=factory)
 
 
-def build_builtin_candidate(  # noqa: C901 - candidate declarations are explicit
+def build_builtin_candidate(  # noqa: C901, PLR0911 - candidate declarations are explicit
     name: str,
     *,
     checkpoint: Path | None = None,
@@ -114,6 +195,10 @@ def build_builtin_candidate(  # noqa: C901 - candidate declarations are explicit
         return _static_candidate(name, RandomAgent)
     if name == "heuristic":
         return _static_candidate(name, HeuristicAgent)
+    if name == "heuristic-rush":
+        return _static_candidate(name, partial(WeightedHeuristicAgent, weights=RUSH_WEIGHTS))
+    if name == "heuristic-hoard":
+        return _static_candidate(name, partial(WeightedHeuristicAgent, weights=HOARD_WEIGHTS))
     if name == "minimax":
         return _static_candidate(name, MiniMaxAgent)
     if name == "ga":
@@ -148,7 +233,8 @@ def build_builtin_candidate(  # noqa: C901 - candidate declarations are explicit
             snapshot=str(checkpoint),
         )
     raise ValueError(
-        f"unknown candidate {name!r}; expected random, heuristic, minimax, ga, ppo, or corrected-dqn"
+        f"unknown candidate {name!r}; expected random, heuristic, heuristic-rush, "
+        "heuristic-hoard, minimax, ga, ppo, or corrected-dqn"
     )
 
 
