@@ -25,6 +25,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
+from splendor.agents.our_agents.dqn.features import observation_dim
 from splendor.agents.our_agents.dqn.network import QNetwork
 from splendor.agents.our_agents.dqn.utils import load_saved_dqn
 from splendor.agents.our_agents.policy_imitation.bc_training import (
@@ -106,6 +107,23 @@ class ScoredPolicy:
         self.input_dim = int(model.input_dim)
         self.output_dim = int(model.output_dim)
         self.device = target_device
+        try:
+            expected_input_dim = observation_dim(self.feature_version)
+        except ValueError as error:
+            raise ValueError(
+                f"policy uses unknown feature schema {self.feature_version!r}"
+            ) from error
+        if self.input_dim != expected_input_dim:
+            raise ValueError(
+                f"feature schema {self.feature_version!r} requires "
+                f"{expected_input_dim} inputs, got {self.input_dim}"
+            )
+        if self.output_dim != ACTION_DIM:
+            raise ValueError(
+                f"remote policy action head must have {ACTION_DIM} outputs, "
+                f"got {self.output_dim}"
+            )
+        self.dtype = next(self.model.parameters()).dtype
         for parameter in self.model.parameters():
             parameter.requires_grad_(False)
 
@@ -136,13 +154,13 @@ class ScoredPolicy:
     def scores(self, obs: TensorInput, mask: TensorInput) -> torch.Tensor:
         """Return finite masked action scores for one observation or a batch.
 
-        Inputs are converted to float32 on the model device.  The adapter
+        Inputs are converted to the model's parameter dtype on its device.  The adapter
         rejects malformed/non-finite observations, non-binary masks, and rows
         without a legal action before invoking a model.  These checks keep a
         bad remote frame from silently selecting an illegal action.
         """
-        observations = _as_float_tensor(obs, self.device, "obs")
-        masks = _as_float_tensor(mask, self.device, "mask")
+        observations = _as_float_tensor(obs, self.device, self.dtype, "obs")
+        masks = _as_float_tensor(mask, self.device, self.dtype, "mask")
         single = _validate_inputs(
             observations,
             masks,
@@ -245,11 +263,15 @@ def load_policies(
     policies: dict[str, ScoredPolicy] = {}
     if models_dir is not None:
         for path in sorted(models_dir.glob("*.pth")):
+            if path.stem in policies:
+                raise ValueError(f"duplicate model id {path.stem!r}")
             policies[path.stem] = load_policy(path, device_name=device_name)
     for spec in specs:
         name, separator, path_text = spec.partition("=")
         if not separator or not name or not path_text:
             raise ValueError(f"--model expects name=path, got {spec!r}")
+        if name in policies:
+            raise ValueError(f"duplicate model id {name!r}")
         policies[name] = load_policy(Path(path_text), device_name=device_name)
     if not policies:
         raise ValueError("no models registered (use --model name=path / --models-dir)")
@@ -370,13 +392,14 @@ def _validate_ppo_checkpoint(checkpoint: Mapping[str, Any]) -> None:
 def _as_float_tensor(
     value: TensorInput,
     device: torch.device,
+    dtype: torch.dtype,
     name: str,
 ) -> torch.Tensor:
-    """Convert a numpy/tensor input to float32 on ``device``."""
+    """Convert a numpy/tensor input to the model dtype on ``device``."""
     if isinstance(value, torch.Tensor):
-        return value.to(device=device, dtype=torch.float32)
+        return value.to(device=device, dtype=dtype)
     try:
-        return torch.as_tensor(np.asarray(value), dtype=torch.float32, device=device)
+        return torch.as_tensor(np.asarray(value), dtype=dtype, device=device)
     except (TypeError, ValueError) as error:
         raise ValueError(f"{name} cannot be converted to a float tensor") from error
 

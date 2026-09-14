@@ -182,6 +182,14 @@ def test_load_policies_registers_mixed_checkpoint_types(tmp_path: Path) -> None:
     assert registry["ppo"].kind == IMITATION_PPO_MODEL_TYPE
 
 
+def test_load_policies_rejects_duplicate_model_ids(tmp_path: Path) -> None:
+    """A duplicate name must not silently replace a loaded policy."""
+    dqn = tmp_path / "dqn.pth"
+    _dqn_checkpoint(dqn)
+    with pytest.raises(ValueError, match="duplicate model id 'dqn'"):
+        load_policies([f"dqn={dqn}", f"dqn={dqn}"])
+
+
 @pytest.mark.parametrize(
     "obs,mask,error",
     [

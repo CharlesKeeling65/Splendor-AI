@@ -6,11 +6,17 @@ initial weights - the estimator is deployment plumbing, not a policy test).
 
 from pathlib import Path
 
+import numpy as np
 import pytest
+import torch
 
 from splendor.agents.our_agents.dqn.network import QNetwork
+from splendor.agents.our_agents.policy_imitation.ppo_selfplay import (
+    PolicyValueNetwork,
+)
 from splendor.browser.dom_extractor import Snapshot, extract_snapshot
 from splendor.browser.driver import MockBrowserDriver
+from splendor.remote.policies import ScoredPolicy, TensorInput
 from splendor.remote.rollout import WinRateEstimator
 
 FIXTURES = Path(__file__).parent.parent / "src" / "splendor" / "browser" / "fixtures"
@@ -75,6 +81,40 @@ def test_two_player_smoke(snapshot: Snapshot, estimator: WinRateEstimator) -> No
         (result.rollouts - result.aborted) / result.rollouts
     )
     assert result.elapsed_s > 0.0
+
+
+def test_ppo_rollout_uses_batched_policy_scores(snapshot: Snapshot) -> None:
+    """PPO logits drive every seat and each lockstep tick stays batched."""
+    model = PolicyValueNetwork(265, feature_version="v1", hidden_layers=(8,))
+    policy = ScoredPolicy.from_ppo(model)
+    calls: list[tuple[int, ...]] = []
+    original_scores = policy.scores
+
+    def recording_scores(obs: TensorInput, mask: TensorInput) -> torch.Tensor:
+        calls.append(np.asarray(obs).shape)
+        return original_scores(obs, mask)
+
+    policy.scores = recording_scores  # type: ignore[method-assign]
+    result = WinRateEstimator(policy).estimate(
+        snapshot,
+        actor_seat=1,
+        n_rollouts=2,
+        max_steps=20,
+        seed=23,
+    )
+    assert len(result.win_rates) == 2
+    assert calls
+    assert all(len(shape) == 2 and shape[1] == 265 for shape in calls)
+
+
+def test_ppo_public_v2_keeps_two_seat_limit(snapshot: Snapshot) -> None:
+    """PPO does not bypass the legacy public-v2 seat-schema guard."""
+    model = PolicyValueNetwork(312, feature_version="public-v2", hidden_layers=(8,))
+    estimator = WinRateEstimator(ScoredPolicy.from_ppo(model))
+    with pytest.raises(ValueError, match="exactly 2 seats"):
+        estimator.estimate(
+            _board_with_seats(snapshot, 3), actor_seat=1, n_rollouts=1, max_steps=1
+        )
 
 
 def test_deterministic_under_seed(

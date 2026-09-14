@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import sys
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,10 @@ import numpy as np
 import torch
 
 from splendor.agents.our_agents.dqn.network import QNetwork
-from splendor.agents.our_agents.dqn.utils import load_saved_dqn
-from splendor.browser.dom_extractor import validate_snapshot
-from splendor.splendor.gym.envs.actions import ALL_ACTIONS
+from splendor.agents.our_agents.policy_imitation.bc_training import DeviceName
+from splendor.browser.dom_extractor import Snapshot, validate_snapshot
 
+from .policies import ScoredPolicy, load_policies
 from .protocol import (
     MAX_FRAME_BYTES,
     OP_ACT,
@@ -39,7 +40,7 @@ from .protocol import (
     make_response,
     require,
 )
-from .rollout import DEFAULT_MAX_STEPS, WinRateEstimator
+from .rollout import DEFAULT_MAX_STEPS, RolloutResult, WinRateEstimator
 
 DEFAULT_TOP_K = 5
 
@@ -49,21 +50,25 @@ class InferenceServer:
 
     def __init__(  # noqa: PLR0913 - registry + tunables, one construction site
         self,
-        models: dict[str, QNetwork],
+        models: Mapping[str, ScoredPolicy | QNetwork],
         host: str = "0.0.0.0",
         port: int = 8765,
         default_rollouts: int = 16,
         default_max_steps: int = DEFAULT_MAX_STEPS,
         default_top_k: int = DEFAULT_TOP_K,
     ) -> None:
-        self._models = models
+        self._models = {
+            name: _as_scored_policy(model) for name, model in models.items()
+        }
         self._host = host
         self._port = port
-        self._default_rollouts = default_rollouts
-        self._default_max_steps = default_max_steps
-        self._default_top_k = default_top_k
+        self._default_rollouts = _positive_int(default_rollouts, "default_rollouts")
+        self._default_max_steps = _positive_int(
+            default_max_steps, "default_max_steps"
+        )
+        self._default_top_k = _positive_int(default_top_k, "default_top_k")
         self._estimators = {
-            name: WinRateEstimator(model) for name, model in models.items()
+            name: WinRateEstimator(model) for name, model in self._models.items()
         }
         # The estimator (and engine deal paths) consume the global RNG; the
         # lock serialises estimates across worker threads.
@@ -111,14 +116,12 @@ class InferenceServer:
             return make_response(
                 request_id,
                 models=[
-                    {
-                        "id": name,
-                        "feature_version": model.feature_version,
-                        "input_dim": model.input_dim,
-                    }
+                    model.metadata(name)
                     for name, model in sorted(self._models.items())
                 ],
-                device="cuda" if self._any_cuda() else "cpu",
+                # Keep the historical top-level field for old clients.  The
+                # per-model metadata is authoritative for mixed registries.
+                device=self._device_label(),
             )
         if op == OP_ACT:
             return self._handle_act(request_id, request)
@@ -128,53 +131,86 @@ class InferenceServer:
 
     def _handle_act(self, request_id: int, request: dict[str, Any]) -> dict[str, Any]:
         require(request, "model_id", "obs", "mask", what="act request")
-        model = self._model(request["model_id"])
-        obs = np.asarray(request["obs"], dtype=np.float32)
-        mask = np.asarray(request["mask"], dtype=np.float32)
-        if obs.shape != (model.input_dim,):
+        policy = self._model(request["model_id"])
+        try:
+            obs = np.asarray(request["obs"], dtype=np.float32)
+            mask = np.asarray(request["mask"], dtype=np.float32)
+        except (TypeError, ValueError) as error:
             raise ProtocolError(
-                f"obs shape {obs.shape} != ({model.input_dim},)"
-            )
-        if mask.shape != (len(ALL_ACTIONS),):
+                f"act inputs cannot be converted to arrays: {error}"
+            ) from error
+        if obs.shape != (policy.input_dim,):
             raise ProtocolError(
-                f"mask shape {mask.shape} != ({len(ALL_ACTIONS)},)"
+                f"obs shape {obs.shape} != ({policy.input_dim},)"
             )
-        top_k = int(request.get("top_k", self._default_top_k))
-        if top_k < 1:
-            raise ProtocolError(f"top_k must be >= 1, got {top_k}")
-        with torch.no_grad():
-            q_values = model.forward(
-                torch.from_numpy(obs), torch.from_numpy(mask)
-            ).squeeze(0)
-        action = int(q_values.argmax().item())
-        legal_count = int(np.count_nonzero(mask))
-        k = min(top_k, max(legal_count, 1))
-        values, indices = torch.topk(q_values, k)
-        top = [
-            {"idx": int(idx.item()), "q": float(val.item())}
-            for val, idx in zip(values, indices, strict=True)
-            if mask[int(idx.item())] > 0
+        if mask.shape != (policy.output_dim,):
+            raise ProtocolError(
+                f"mask shape {mask.shape} != ({policy.output_dim},)"
+            )
+        _validate_act_arrays(obs, mask)
+        top_k = _positive_int(request.get("top_k", self._default_top_k), "top_k")
+        if top_k > policy.output_dim:
+            raise ProtocolError(
+                f"top_k must be <= {policy.output_dim}, got {top_k}"
+            )
+
+        scores = policy.scores(obs, mask)
+        if scores.ndim != 1 or scores.shape != (policy.output_dim,):
+            raise ProtocolError(
+                f"policy scores shape {tuple(scores.shape)} != "
+                f"({policy.output_dim},)"
+            )
+        score_array = _scores_to_numpy(scores)
+        legal_indices = np.flatnonzero(mask == 1)
+        if not len(legal_indices):  # defensive; _validate_act_arrays checks this
+            raise ProtocolError("act mask must contain at least one legal action")
+        legal_scores = score_array[legal_indices]
+        action = int(legal_indices[int(np.argmax(legal_scores))])
+        order = np.argsort(-legal_scores, kind="stable")[
+            : min(top_k, len(legal_indices))
         ]
-        return make_response(request_id, action=action, top=top)
+        top = [
+            {
+                "idx": int(legal_indices[position]),
+                "score": float(legal_scores[position]),
+                # ``q`` is a compatibility alias for the pre-PPO client and
+                # dashboard.  score_kind is the semantic source of truth.
+                "q": float(legal_scores[position]),
+            }
+            for position in order
+        ]
+        return make_response(
+            request_id,
+            action=action,
+            top=top,
+            kind=policy.kind,
+            score_kind=policy.score_kind,
+        )
 
     async def _handle_winrate(
         self, request_id: int, request: dict[str, Any]
     ) -> dict[str, Any]:
         require(request, "model_id", "snapshot", "actor_seat", what="winrate request")
-        estimator = self._estimators[request["model_id"]]  # KeyError -> error frame
+        model_id = request["model_id"]
+        self._model(model_id)
+        estimator = self._estimators[model_id]
         snapshot = request["snapshot"]
         validate_snapshot(snapshot)
-        with self._estimate_lock:
-            self._estimate_serial += 1
-            seed = 20260910 + self._estimate_serial
-            result = await asyncio.to_thread(
-                estimator.estimate,
-                snapshot,
-                int(request["actor_seat"]),
-                int(request.get("n_rollouts", self._default_rollouts)),
-                int(request.get("max_steps", self._default_max_steps)),
-                seed,
-            )
+        actor_seat = _positive_int(request["actor_seat"], "actor_seat")
+        n_rollouts = _positive_int(
+            request.get("n_rollouts", self._default_rollouts), "n_rollouts"
+        )
+        max_steps = _positive_int(
+            request.get("max_steps", self._default_max_steps), "max_steps"
+        )
+        result = await asyncio.to_thread(
+            self._estimate_serialized,
+            estimator,
+            snapshot,
+            actor_seat,
+            n_rollouts,
+            max_steps,
+        )
         return make_response(
             request_id,
             win_rates=result.win_rates,
@@ -185,21 +221,38 @@ class InferenceServer:
         )
 
     # ----- helpers -------------------------------------------------------------------
-    def _model(self, model_id: str) -> QNetwork:
+    def _model(self, model_id: str) -> ScoredPolicy:
         if model_id not in self._models:
             raise ProtocolError(
                 f"unknown model_id {model_id!r} (available: {sorted(self._models)})"
             )
         return self._models[model_id]
 
-    def _any_cuda(self) -> bool:
-        return any(
-            next(model.parameters()).is_cuda for model in self._models.values()
-        )
+    def _estimate_serialized(
+        self,
+        estimator: WinRateEstimator,
+        snapshot: Snapshot,
+        actor_seat: int,
+        n_rollouts: int,
+        max_steps: int,
+    ) -> RolloutResult:
+        """Run one RNG-consuming estimate while keeping lock waits off-loop."""
+        with self._estimate_lock:
+            self._estimate_serial += 1
+            seed = 20260910 + self._estimate_serial
+            return estimator.estimate(
+                snapshot, actor_seat, n_rollouts, max_steps, seed
+            )
+
+    def _device_label(self) -> str:
+        devices = {str(policy.device) for policy in self._models.values()}
+        if len(devices) == 1:
+            return next(iter(devices))
+        return "mixed"
 
     async def start(
         self, host: str = "127.0.0.1", port: int = 0
-    ) -> asyncio.AbstractServer:
+    ) -> asyncio.Server:
         """
         Bind and return the raw asyncio server (port 0 = ephemeral). Tests
         use this against loopback; production entry is :meth:`serve`.
@@ -219,23 +272,56 @@ class InferenceServer:
             await server.serve_forever()
 
 
-def load_models(specs: list[str], models_dir: Path | None) -> dict[str, QNetwork]:
+def load_models(
+    specs: list[str],
+    models_dir: Path | None,
+    *,
+    device_name: DeviceName = "cpu",
+) -> dict[str, ScoredPolicy]:
     """
     Model registry from ``name=path`` specs and/or a directory of checkpoints
     (name = file stem, e.g. ``round2.pth`` -> ``round2``).
     """
-    models: dict[str, QNetwork] = {}
-    if models_dir is not None:
-        for path in sorted(models_dir.glob("*.pth")):
-            models[path.stem] = load_saved_dqn(path)
-    for spec in specs or []:
-        name, _, path_text = spec.partition("=")
-        if not name or not path_text:
-            raise ValueError(f"--model expects name=path, got {spec!r}")
-        models[name] = load_saved_dqn(Path(path_text))
-    if not models:
-        raise ValueError("no models registered (use --model name=path / --models-dir)")
-    return models
+    return load_policies(specs or [], models_dir, device_name=device_name)
+
+
+def _as_scored_policy(model: ScoredPolicy | QNetwork) -> ScoredPolicy:
+    """Keep direct-QNetwork construction compatible with phase-6 callers."""
+    if isinstance(model, ScoredPolicy):
+        return model
+    if isinstance(model, QNetwork):
+        return ScoredPolicy.from_dqn(model)
+    raise TypeError(f"unsupported remote policy {type(model).__name__}")
+
+
+def _validate_act_arrays(obs: np.ndarray, mask: np.ndarray) -> None:
+    """Reject malformed protocol arrays before invoking a model."""
+    if not np.isfinite(obs).all():
+        raise ProtocolError("obs contains non-finite values")
+    if not np.isfinite(mask).all():
+        raise ProtocolError("mask contains non-finite values")
+    if not np.isin(mask, (0.0, 1.0)).all():
+        raise ProtocolError("mask must contain only 0/1 values")
+    if not np.any(mask == 1):
+        raise ProtocolError("mask must contain at least one legal action")
+
+
+def _scores_to_numpy(scores: torch.Tensor) -> np.ndarray:
+    """Detach a policy result from any accelerator for protocol ranking."""
+    values = scores.detach().to(device="cpu", dtype=torch.float32)
+    if not torch.isfinite(values).all():
+        raise ProtocolError("policy produced non-finite action scores")
+    return values.numpy()
+
+
+def _positive_int(value: object, name: str) -> int:
+    """Parse a strictly positive integer request option."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProtocolError(f"{name} must be a positive integer")
+    result = value
+    if result <= 0:
+        raise ProtocolError(f"{name} must be a positive integer, got {result}")
+    return result
 
 
 def main() -> None:
@@ -256,9 +342,15 @@ def main() -> None:
     )
     parser.add_argument("--n-rollouts", type=int, default=16)
     parser.add_argument("--max-rollout-steps", type=int, default=DEFAULT_MAX_STEPS)
+    parser.add_argument(
+        "--device", choices=("cpu", "cuda", "mps"), default="cpu",
+        help="Inference device; unavailable accelerators safely fall back to CPU.",
+    )
     options = parser.parse_args()
 
-    models = load_models(options.model, options.models_dir)
+    models = load_models(
+        options.model, options.models_dir, device_name=options.device
+    )
     server = InferenceServer(
         models,
         host=options.host,

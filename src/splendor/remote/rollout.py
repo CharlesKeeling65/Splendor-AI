@@ -61,6 +61,8 @@ from splendor.splendor.splendor_model import (
     SplendorState,
 )
 
+from .policies import ScoredPolicy
+
 # A rollout that has not ended after this many *actions* is aborted (credit
 # 0 for every seat) - only pathological stalls (all-pass loops) hit it.
 DEFAULT_MAX_STEPS = 400
@@ -69,6 +71,7 @@ DEFAULT_MAX_STEPS = 400
 # (MAX_RIVALS rival slots per side of the observer => MAX_RIVALS + 1 seats).
 MIN_SEATS = 2
 MAX_SEATS = MAX_RIVALS + 1
+MATRIX_RANK = 2
 
 
 @dataclass(frozen=True)
@@ -87,17 +90,21 @@ class WinRateEstimator:
 
     def __init__(
         self,
-        model: QNetwork,
+        model: ScoredPolicy | QNetwork,
         rule: SplendorGameRule | None = None,
     ) -> None:
         """
-        :param model: the policy evaluated for every seat (self-play).
+        :param model: the policy evaluated for every seat (self-play).  A
+            direct QNetwork is accepted for compatibility with phase-6 tests;
+            the server always supplies a ScoredPolicy.
         :param rule: engine rule reused for legality/successor calls; a
             scratch instance is built when omitted (never mutated per call -
             states are passed explicitly everywhere).
         """
-        self._model = model
-        self._feature_version = model.feature_version
+        self._policy = (
+            model if isinstance(model, ScoredPolicy) else ScoredPolicy.from_dqn(model)
+        )
+        self._feature_version = self._policy.feature_version
         self._rule = rule if rule is not None else SplendorGameRule(2)
 
     def estimate(
@@ -121,6 +128,10 @@ class WinRateEstimator:
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
+        if n_rollouts <= 0:
+            raise ValueError(f"n_rollouts must be positive, got {n_rollouts}")
+        if max_steps <= 0:
+            raise ValueError(f"max_steps must be positive, got {max_steps}")
         start = time.monotonic()
         n_players = len(snapshot["panels"])
         # v1's metric block reserves MAX_RIVALS score slots on each side of the
@@ -241,10 +252,26 @@ class WinRateEstimator:
             batch_obs.append(extract_observation(state, index, self._feature_version))
             batch_mask.append(mask)
             prepared.append((state, index, legal))
-        obs = torch.from_numpy(np.stack(batch_obs)).float()
-        masks = torch.from_numpy(np.stack(batch_mask)).float()
-        q_values = self._model.forward(obs, masks)
-        action_indices = q_values.argmax(dim=-1).tolist()
+        obs = np.stack(batch_obs).astype(np.float32, copy=False)
+        masks = np.stack(batch_mask).astype(np.float32, copy=False)
+        scores = self._policy.scores(obs, masks)
+        if scores.ndim != MATRIX_RANK or scores.shape != (
+            len(rollouts), self._policy.output_dim
+        ):
+            raise ValueError(
+                f"policy scores shape {tuple(scores.shape)} != "
+                f"({len(rollouts)}, {self._policy.output_dim})"
+            )
+        score_array = scores.detach().to(device="cpu", dtype=torch.float32).numpy()
+        if not np.isfinite(score_array).all():
+            raise ValueError("policy produced non-finite action scores")
+        action_indices: list[int] = []
+        for row, mask in zip(score_array, masks, strict=True):
+            legal_indices = np.flatnonzero(mask == 1)
+            if not len(legal_indices):
+                raise ValueError("rollout mask must contain at least one legal action")
+            legal_scores = row[legal_indices]
+            action_indices.append(int(legal_indices[int(np.argmax(legal_scores))]))
 
         stepped: list[tuple[SplendorState, int]] = []
         for (state, index, legal), action_index in zip(
