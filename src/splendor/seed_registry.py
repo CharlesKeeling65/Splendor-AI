@@ -68,6 +68,12 @@ C2R2_TRAINING = SeedSegment("c2r2_training", 940_000, 1_036_000, "C2-R2 2000-upd
 C2R2_VALIDATION = SeedSegment("c2r2_validation", 1_036_000, 1_036_100, "C2-R2 model selection", False)
 C2R2_TEST = SeedSegment("c2r2_test", 1_037_000, 1_037_100, "C2-R2 final reported evaluation", True)
 
+#: Roadmap Z (AlphaZero search self-play, amended 2026-09-13): per-iteration
+#: self-play deals plus evaluation segments for the AZ training loop.
+Z_TRAINING = SeedSegment("z_training", 1_040_000, 1_140_000, "AZ self-play training deals", False)
+Z_VALIDATION = SeedSegment("z_validation", 1_140_000, 1_140_100, "AZ iteration model selection", False)
+Z_TEST = SeedSegment("z_test", 1_141_000, 1_141_100, "AZ final reported evaluation", True)
+
 ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     STABILIZATION_TRAINING,
     STABILIZATION_VALIDATION,
@@ -82,6 +88,9 @@ ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     C2R2_TRAINING,
     C2R2_VALIDATION,
     C2R2_TEST,
+    Z_TRAINING,
+    Z_VALIDATION,
+    Z_TEST,
 )
 
 SEGMENTS_BY_NAME: dict[str, SeedSegment] = {

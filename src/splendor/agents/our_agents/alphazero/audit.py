@@ -26,9 +26,10 @@ import argparse
 import json
 import os
 import random
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -37,6 +38,9 @@ from splendor.agents.our_agents.alphazero.evaluator import Evaluator, UniformEva
 from splendor.agents.our_agents.alphazero.mcts import az_search
 from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
+
+#: Hard cap on random-play walk length when harvesting audit positions.
+MAX_AUDIT_MOVES = 200
 
 
 def reshuffle_hidden(
@@ -67,10 +71,11 @@ def reshuffle_hidden(
 class DeckPeekingEvaluator:
     """Positive control: leaks the true deck order into the prior.
 
-    Biases prior mass heavily toward reserving board cards of the tier whose
-    *true* next draw (top of the hidden deck) has the lexicographically
-    largest card code - a direct function of the hidden order, so two
-    positions differing only in that order receive different priors.
+    Biases the prior of each reserve action by comparing the reserved
+    (public) card's code against the *true* hidden top of that card's tier -
+    exactly the shape of a real leak (peek at what the deck will deal next
+    relative to visible cards). The comparison flips when the hidden order
+    changes, so the reference and re-hidden runs receive different priors.
     Constructed with the rule it should peek at - the reference run peeks
     the original, the re-hidden run peeks the re-hidden copy, so the two
     disagree exactly when hidden order leaks into outputs.
@@ -85,8 +90,8 @@ class DeckPeekingEvaluator:
         self,
         state: SplendorState,
         seat: int,
-        indices: list[int],
-        actions: list[ActionType],
+        indices: Sequence[int],
+        actions: Sequence[ActionType],
     ) -> tuple[NDArray[np.float64], float]:
         del state, seat
         true_state = self._true_rule.current_game_state
@@ -94,12 +99,12 @@ class DeckPeekingEvaluator:
             tier: (deck[-1].code if deck else "")
             for tier, deck in enumerate(true_state.board.decks)
         }
-        best_tier = max(tops, key=lambda tier: tops[tier])
         prior = np.ones(len(indices), dtype=np.float64)
         for i, action in enumerate(actions):
-            card = action.get("card")
-            if action.get("type") == "reserve" and card is not None:
-                prior[i] += 50.0 * (card.deck_id == best_tier)
+            fields = cast(dict[str, Any], action)
+            card = fields.get("card")
+            if fields.get("type") == "reserve" and card is not None:
+                prior[i] += 50.0 * (card.code > tops.get(card.deck_id, ""))
         prior /= prior.sum()
         return prior, 0.0
 
@@ -189,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     rule = SplendorGameRule(2)
     moves = 0
     positions: list[SplendorGameRule] = []
-    while len(positions) < args.positions and moves < 200:
+    while len(positions) < args.positions and moves < MAX_AUDIT_MOVES:
         if moves >= args.warmup and not rule.gameEnds():
             positions.append(deepcopy(rule))
         if rule.gameEnds():

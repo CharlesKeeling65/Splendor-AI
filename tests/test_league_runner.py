@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from splendor.league import (
@@ -13,6 +15,7 @@ from splendor.league import (
     format_report,
     parse_agent_list,
     play_task_safe,
+    run_league,
     wilson_interval,
 )
 from splendor.seed_registry import (
@@ -153,3 +156,20 @@ def test_aggregate_and_report_smoke() -> None:
     )
     assert "## Win-rate matrix" in report
     assert "| a |" in report
+
+
+def test_run_league_three_agents_names_per_seat(tmp_path: Path) -> None:
+    """Regression: rosters larger than the seat count must not crash.
+
+    The matchup names are per-seat resolved (``record.names`` already is);
+    re-indexing it with seat_assignment (roster indices) double-resolves and
+    raises IndexError as soon as a roster index exceeds the seat range - the
+    failure mode that hit the Z1 run with a 4-agent roster.
+    """
+    specs = parse_agent_list(f"a={RANDOM_AGENT},b={RANDOM_AGENT},c={RANDOM_AGENT}")
+    results = run_league(specs, 2, 1, segment=CI_SMOKE, output_dir=tmp_path / "lg")
+    assert len(results["matchups"]) == 6  # 3 agents x 2 seat orders
+    for matchup in results["matchups"]:
+        assert len(matchup["names"]) == 2
+        for seat, roster_index in enumerate(matchup["seat_assignment"]):
+            assert matchup["names"][seat] == specs[roster_index].name

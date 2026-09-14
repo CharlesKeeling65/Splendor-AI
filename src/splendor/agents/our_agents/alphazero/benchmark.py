@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 from splendor.agents.our_agents.alphazero.evaluator import UniformEvaluator
 from splendor.agents.our_agents.alphazero.mcts import az_search
@@ -38,7 +39,9 @@ from splendor.agents.our_agents.alphazero.state_utils import (
     legal_action_table,
     state_fingerprint,
 )
-from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
+from splendor.agents.our_agents.dqn.features import extract_observation
+from splendor.agents.our_agents.dqn.network import QNetwork
+from splendor.splendor.splendor_model import SplendorGameRule
 from splendor.splendor.utils import LimitRoundsGameRule
 
 
@@ -93,7 +96,7 @@ def bench_apply_undo(
     transactor = Transactor()
     state = work.current_game_state
     seat = work.getCurrentAgentIndex()
-    indices, actions = legal_action_table(work, seat)
+    _indices, actions = legal_action_table(work, seat)
     order = np.random.default_rng(0).permutation(len(actions))[
         : min(actions_per_position, len(actions))
     ]
@@ -140,12 +143,6 @@ def bench_search(
 
 def bench_network(rule: SplendorGameRule, device: str) -> dict[str, Any] | None:
     """Single/batched policy_value forward latency on the AZ operating net."""
-    try:
-        import torch
-
-        from splendor.agents.our_agents.dqn.network import QNetwork
-    except ImportError:  # pragma: no cover - torch is a hard dep in practice
-        return None
     if device == "cuda" and not torch.cuda.is_available():
         return None
     net = QNetwork(
@@ -154,8 +151,6 @@ def bench_network(rule: SplendorGameRule, device: str) -> dict[str, Any] | None:
         auxiliary_heads=True,
         use_input_norm=False,
     ).to(device)
-    from splendor.agents.our_agents.dqn.features import extract_observation
-
     state = rule.current_game_state
     seat = rule.getCurrentAgentIndex()
     start = time.perf_counter()

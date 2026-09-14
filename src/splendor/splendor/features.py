@@ -374,6 +374,14 @@ def get_indices_access_by_color(color_name: str) -> NDArray:
     return indices_access
 
 
+#: Memoized card vectors keyed by card code. The (tier, colour, points, cost)
+#: quadruple is unique across the 90-card library, so the code fully
+#: determines the vector; the encoding itself is a fixed-vocabulary sklearn
+#: transform that costs ~0.7ms per call and dominates feature extraction on
+#: every training/evaluation path.
+_CARD_VECTOR_CACHE: dict[str, NDArray] = {}
+
+
 def vectorize_card(card: Card | None) -> NDArray:
     """
     Return the vector form a given card.
@@ -384,7 +392,9 @@ def vectorize_card(card: Card | None) -> NDArray:
     :param card: a card to be vectorized.
     :return: the vector representation of the given card.
 
-    :note: this function can't be cached since Card isn't hashable...
+    :note: Card isn't hashable, so the cache is keyed by the unique card code
+           instead (the quadruple is unique per code). A copy is returned so
+           callers can never mutate the cached vector.
     """
     encoder: OneHotEncoder = get_color_encoder()
 
@@ -392,6 +402,10 @@ def vectorize_card(card: Card | None) -> NDArray:
         # return a constant vector of zeros (of the correct shape)
         shape = encoder.categories_[0].size + len(NORMAL_COLORS) + 1 + 1
         return np.zeros(shape)
+
+    cached = _CARD_VECTOR_CACHE.get(card.code)
+    if cached is not None:
+        return cached.copy()
 
     cost = np.zeros(shape=(len(NORMAL_COLORS),))
     for color, gems in card.cost.items():
@@ -410,7 +424,9 @@ def vectorize_card(card: Card | None) -> NDArray:
     # the shape of the returned vector would be
     # (len(COLOURS) + number_of_unique_colors + 1 + 1,)
     # which is: (6 + 5 + 1 + 1,) = (13,)
-    return np.hstack((onehot_color, cost, card.deck_id, card.points))
+    vector = np.hstack((onehot_color, cost, card.deck_id, card.points))
+    _CARD_VECTOR_CACHE[card.code] = vector
+    return vector.copy()
 
 
 def extract_reserved_cards(

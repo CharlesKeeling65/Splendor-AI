@@ -636,7 +636,11 @@ def _execute(  # noqa: PLR0913 - mirrors run_league's signature split
             {
                 "matchup_index": task.matchup_index,
                 "seat_assignment": list(task.seat_assignment),
-                "names": [record.names[seat] for seat in task.seat_assignment],
+                # record.names is already resolved per seat (length == seats);
+                # indexing it with seat_assignment (roster indices) would be
+                # a double resolution and crashes on rosters larger than the
+                # seat count.
+                "names": list(record.names),
                 "games": 0,
                 "wins": [0] * seats,
                 "ties": 0,

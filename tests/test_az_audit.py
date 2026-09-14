@@ -50,8 +50,20 @@ def test_reshuffle_hidden_preserves_public_information():
     reshuffle_hidden(copy, 0, np.random.default_rng(5))
     assert [list(row) for row in copy.current_game_state.board.dealt] == before_dealt
     assert [a.score for a in copy.current_game_state.agents] == before_scores
-    # Hidden assignment: same multiset of unseen cards, different order.
+    # The *union* of hidden cards (decks + rival face-down reserves) keeps
+    # its multiset; the split between deck and rival stack may legitimately
+    # change because the split itself is hidden information.
     for tier in range(3):
-        old = sorted(c.code for c in rule.current_game_state.board.decks[tier])
-        new = sorted(c.code for c in copy.current_game_state.board.decks[tier])
-        assert old == new
+        old_deck = sorted(c.code for c in rule.current_game_state.board.decks[tier])
+        new_deck = sorted(c.code for c in copy.current_game_state.board.decks[tier])
+        old_rival = [
+            c.code
+            for c in rule.current_game_state.agents[1].cards["yellow"]
+            if c.deck_id == tier
+        ]
+        new_rival = [
+            c.code
+            for c in copy.current_game_state.agents[1].cards["yellow"]
+            if c.deck_id == tier
+        ]
+        assert sorted(old_deck + old_rival) == sorted(new_deck + new_rival)

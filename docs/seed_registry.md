@@ -21,6 +21,9 @@
 | `c2r2_training` | 940000–1035999 | 96000 | C2-R2 规模化（2000×16×3 seed，2026-09-13 扩容；上方为 900000–939999 历史禁区） | 否 |
 | `c2r2_validation` | 1036000–1036099 | 100 | C2-R2 模型选择 | 否 |
 | `c2r2_test` | 1037000–1037099 | 100 | C2-R2 最终报告评测 | **是** |
+| `z_training` | 1040000–1139999 | 100000 | AZ（AlphaZero 搜索自博弈）训练发牌 | 否 |
+| `z_validation` | 1140000–1140099 | 100 | AZ 迭代内模型选择 / 验证评测 | 否 |
+| `z_test` | 1141000–1141099 | 100 | AZ 最终报告评测 | **是** |
 
 ## 历史禁区（永不复用）
 
@@ -59,3 +62,5 @@
 | 2026-09-13 | D1 DQN 200k ×3（训练 RNG 种子）+ 门槛评测 | training | 826000–826002 / 826100–826101 | `runs/d1-200k/` |
 | 2026-09-13 | F1 价值标定（150 局 × 双座次） | c2_validation | 854010–854059 | `runs/f1-calibration/` |
 | 2026-09-13 | C2-R2 启动（2000×16×3 seed，potential shaping κ=0.05） | c2r2_training / c2r2_validation / c2r2_test | 940000–1036099 / 1037000–1037024 | `runs/c2r2-selfplay-2000/` |
+| 2026-09-13 | Z1 纯搜索基线 league（az-uniform × random/minimax/heuristic，75 局/对阵 wrap=50） | independent_test | 829000–829049 循环 | `runs/z1-uniform-search/` |
+| 2026-09-13 | Z2 AZ-lite 启动（自博弈 + 价值/先验网络训练） | z_training / z_validation | 1040000 起 / 1140000–1140099 | `runs/z2-az-lite/` |

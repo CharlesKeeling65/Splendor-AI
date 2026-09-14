@@ -20,6 +20,7 @@ original, byte for byte.
 """
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 from splendor.splendor.gym.envs.utils import create_action_mapping
 from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
@@ -32,16 +33,19 @@ def _action_repr(action: ActionType | None) -> str:
     """Canonical one-line serialization of an action (cards by code)."""
     if action is None:
         return "-"
-    parts = [str(action["type"])]
-    if action.get("card") is not None:
-        parts.append(str(action["card"].code))
+    # Heterogeneous access across the ActionType TypedDict union.
+    fields = cast(dict[str, Any], action)
+    parts = [str(fields["type"])]
+    card = fields.get("card")
+    if card is not None:
+        parts.append(str(card.code))
     for key in ("collected_gems", "returned_gems"):
-        gems = action.get(key) or {}
+        gems = fields.get(key) or {}
         parts.append(",".join(f"{c}:{gems[c]}" for c in _COLOUR_ORDER if c in gems))
-    position = action.get("card_position")
+    position = fields.get("card_position")
     if position is not None:
         parts.append(f"{position[0]},{position[1]}")
-    noble = action.get("noble")
+    noble = fields.get("noble")
     if noble is not None:
         parts.append(str(noble[0]))
     return "|".join(parts)

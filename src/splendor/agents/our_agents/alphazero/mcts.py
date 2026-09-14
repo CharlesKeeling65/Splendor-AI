@@ -23,26 +23,25 @@ exploration directive, not a per-tree arbitrary one.
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
 from splendor.agents.our_agents.alphazero.evaluator import Evaluator
 from splendor.agents.our_agents.alphazero.state_utils import (
-    TransitionSnapshot,
     Transactor,
+    TransitionSnapshot,
     legal_action_table,
     state_fingerprint,
 )
-from splendor.agents.our_agents.dqn.features import PLAYERS
+from splendor.agents.our_agents.dqn.features import PLAYERS, extract_observation
 from splendor.agents.our_agents.dqn.network import ACTION_DIM
 from splendor.agents.our_agents.dqn.search import (
     allocate_tree_budget,
     outcome,
     sample_hidden,
 )
-from splendor.splendor.splendor_model import SplendorGameRule
+from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
 
 
@@ -57,7 +56,6 @@ class _Node:
     visits: NDArray[np.float64]
     total: NDArray[np.float64]
 
-
 @dataclass
 class AzSearchResult:
     """Root visit distribution plus aggregate search work counters."""
@@ -67,20 +65,16 @@ class AzSearchResult:
     pi: NDArray[np.float32]
     stats: dict[str, float | int] = field(default_factory=dict)
 
-
 def _transposition_key(
-    state: Any, seat: int, indices: list[int], kind: str
+    state: SplendorState, seat: int, indices: list[int], kind: str
 ) -> bytes:
     if kind == "fingerprint":
         body = state_fingerprint(state, include_last_action=False)
     elif kind == "obs":
-        from splendor.agents.our_agents.dqn.features import extract_observation
-
         body = extract_observation(state, seat, "public-v2").tobytes()
     else:  # pragma: no cover - guarded by the evaluator contract
         raise ValueError(f"unknown transposition key kind {kind!r}")
     return bytes([seat]) + body + np.asarray(indices, dtype=np.int64).tobytes()
-
 
 def _select_child(node: _Node, c_puct: float) -> int:
     q = node.total / np.maximum(node.visits, 1.0)
@@ -92,8 +86,7 @@ def _select_child(node: _Node, c_puct: float) -> int:
     )
     return int(np.argmax(q + exploration))
 
-
-def az_search(  # noqa: PLR0913 - one keyword per search knob
+def az_search(  # noqa: C901, PLR0913, PLR0915 - one keyword per search knob
     rule: SplendorGameRule,
     evaluator: Evaluator,
     rng: np.random.Generator,
@@ -238,7 +231,6 @@ def az_search(  # noqa: PLR0913 - one keyword per search knob
     return AzSearchResult(
         indices=root_indices, visits=combined[root_indices], pi=pi, stats=stats
     )
-
 
 def select_action(
     result: AzSearchResult, temperature: float, rng: np.random.Generator

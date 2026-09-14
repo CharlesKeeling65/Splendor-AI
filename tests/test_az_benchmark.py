@@ -1,11 +1,12 @@
 """Z0 smoke: the benchmark CLI runs end to end and writes its report."""
 
 import json
+from pathlib import Path
 
 from splendor.agents.our_agents.alphazero.benchmark import main
 
 
-def test_benchmark_main_smoke(tmp_path):
+def test_benchmark_main_smoke(tmp_path: Path):
     exit_code = main(
         [
             "--output",

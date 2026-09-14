@@ -31,6 +31,7 @@ from splendor.agents.our_agents.alphazero.evaluator import (
     UniformEvaluator,
 )
 from splendor.agents.our_agents.alphazero.mcts import az_search, select_action
+from splendor.agents.our_agents.dqn.utils import load_saved_dqn
 from splendor.splendor.gym.envs.utils import create_action_mapping
 from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
@@ -51,8 +52,6 @@ class AzSearchAgent(Agent):
         self._max_depth = int(os.environ.get("AZ_SEARCH_MAX_DEPTH", "24"))
         checkpoint = os.environ.get("AZ_SEARCH_CHECKPOINT")
         if checkpoint:
-            from splendor.agents.our_agents.dqn.utils import load_saved_dqn
-
             net = load_saved_dqn(Path(checkpoint))
             self._evaluator: Evaluator = NetEvaluator(
                 net, os.environ.get("AZ_SEARCH_DEVICE", "cpu")
