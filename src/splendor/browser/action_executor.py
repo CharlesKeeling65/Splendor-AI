@@ -30,6 +30,7 @@ from splendor.splendor.splendor_model import Card, SplendorGameRule, SplendorSta
 from .dom_extractor import (
     COLOR_NAME_TO_INDEX,
     DISCARD_SELECTION_RE,
+    PHASE_DISCARD_TEXT,
     PHASE_NOBLE_TEXT,
     NobleInfo,
     Snapshot,
@@ -61,6 +62,9 @@ SELECTOR_TABLE_ROW = "div.flex.justify-center.origin-top"
 SELECTOR_MY_RESERVED_BAND = "div.flex.justify-center.origin-top.bg-gray-400"
 
 # Card overlay labels inside .ccbs-card (no classes - text only). [MEASURED]
+# 2026-09-14 redesign: the buy overlay renders as "购买?" (trailing question
+# mark) on affordable cards only; reserve stays "预定". Matching accepts an
+# optional trailing "?" so both the live label and the offline fixtures work.
 LABEL_OVERLAY_BUY = "购买"
 LABEL_OVERLAY_RESERVE = "预定"
 
@@ -220,30 +224,132 @@ class ActionExecutor:
         confirm the page enters a discard step ("请丢弃 N 个宝石，已选 M 个");
         each held gem is an individual textless chip button, toggled by
         clicking, and 确认丢弃 settles the step.
+
+        Live 2026-09-14 (nb85): a single chip click can miss (re-render /
+        ego timing) and the old verify silently skipped when the 已选 pair
+        was briefly absent - then 确认丢弃 no-ops on a disabled button and
+        the seat wedges in the discard phase. Now: poll 已选 up to match,
+        only then confirm, then wait for the phase to clear.
         """
         returned = action.returned_gems or {}
         if not returned:
             return
-        for colour, count in returned.items():
-            selector = _discard_chip_selector(colour)
-            # Each held gem is its own toggle chip: clicking the SAME chip
-            # twice cancels the selection, so the i-th gem of a colour needs
-            # the i-th chip - not index 0 repeatedly.
-            for position in range(count):
-                self._click_confirmed(selector, position)
-        self._verify_discard_selection(sum(returned.values()))
+        expected = sum(returned.values())
+        self._wait_for_discard_ui(expected)
+        self._select_discard_chips(returned, expected)
         self._click_labelled(LABEL_CONFIRM_DISCARD)
+        self._wait_for_discard_done(expected)
+
+    def _select_discard_chips(  # noqa: C901 - poll/retry loop is the point
+        self, returned: dict[str, int], expected: int
+    ) -> None:
+        """Click unit chips until 已选 == expected (or raise with status).
+
+        Always click the required chips once first (the live page starts at
+        已选0); then poll and re-click if the page still under-counts.
+        """
+        # First pass: one click per returned gem, colour by colour.
+        for colour, count in returned.items():
+            for position in range(count):
+                try:
+                    self._click_confirmed(_discard_chip_selector(colour), position)
+                except ActionExecutionError:
+                    # Missing chip on first pass - the poll below retries.
+                    pass
+        deadline = time.monotonic() + max(self._wait_timeout, 5.0)
+        pending = dict(returned)
+        while True:
+            status = extract_snapshot(self._driver)["status"]
+            progress = DISCARD_SELECTION_RE.search(status)
+            if progress is not None:
+                selected, required = int(progress.group(1)), int(progress.group(2))
+                if required != expected:
+                    raise ActionExecutionError(
+                        f"discard asks for {required} but action returns "
+                        f"{expected} (status={status!r})"
+                    )
+                if selected == expected:
+                    return
+            if time.monotonic() >= deadline:
+                raise ActionExecutionError(
+                    f"discard chips did not reach 已选{expected}/{expected} "
+                    f"within timeout (last status={status!r})"
+                )
+            # Re-toggle one chip of a colour that still needs coverage.
+            for colour, count in list(pending.items()):
+                if count <= 0:
+                    continue
+                position = returned[colour] - count
+                try:
+                    self._click_confirmed(_discard_chip_selector(colour), position)
+                except ActionExecutionError:
+                    time.sleep(0.3)
+                    continue
+                pending[colour] = count - 1
+                break
+            else:
+                time.sleep(0.2)
+
+    def _wait_for_discard_ui(self, expected: int) -> None:
+        """Block until the page shows the discard prompt for ``expected`` gems."""
+        deadline = time.monotonic() + max(self._wait_timeout, 5.0)
+        last_status = "?"
+        while True:
+            status = extract_snapshot(self._driver)["status"]
+            last_status = status
+            progress = DISCARD_SELECTION_RE.search(status)
+            if progress is not None:
+                required = int(progress.group(2))
+                if required == expected:
+                    return
+                raise ActionExecutionError(
+                    f"discard sub-flow asks for {required} gem(s) but this "
+                    f"action returns {expected} (status={status!r})"
+                )
+            if PHASE_DISCARD_TEXT in status or "请丢弃" in status:
+                # Prompt is up but 已选 pair not folded yet - one more beat.
+                pass
+            if time.monotonic() >= deadline:
+                raise ActionExecutionError(
+                    f"discard UI did not appear within "
+                    f"{self._wait_timeout}s after the action (status="
+                    f"{last_status!r}); the page may still be settling the "
+                    "take/reserve"
+                )
+            time.sleep(0.2)
+
+    def _wait_for_discard_done(self, expected: int) -> None:
+        """After 确认丢弃, wait until the page leaves the discard phase."""
+        deadline = time.monotonic() + max(self._wait_timeout, 5.0)
+        last_status = "?"
+        while True:
+            status = extract_snapshot(self._driver)["status"]
+            last_status = status
+            # 已选 M/N alone can linger as a status suffix after the UI is
+            # gone; only the discard *phase* (or the 请丢弃 prompt) means
+            # we are still inside the sub-flow.
+            still_discarding = PHASE_DISCARD_TEXT in status or "请丢弃" in status
+            if not still_discarding:
+                return
+            progress = DISCARD_SELECTION_RE.search(status)
+            if progress is not None and int(progress.group(1)) != expected:
+                raise ActionExecutionError(
+                    f"still in discard after 确认丢弃 (status={status!r}); "
+                    "selection may have been reset"
+                )
+            if time.monotonic() >= deadline:
+                raise ActionExecutionError(
+                    f"page still in discard {self._wait_timeout}s after "
+                    f"确认丢弃 (status={last_status!r})"
+                )
+            time.sleep(0.2)
 
     def _verify_discard_selection(self, expected: int) -> None:
         """
         Fail loudly when the unit-chip clicks did not land.
 
-        确认丢弃 is ``disabled`` until 已选 M == 请丢弃 N, and clicking a
-        disabled button is a silent no-op - the pre-fix failure mode looked
-        like "the confirm button cannot be clicked" while the real cause was a
-        chip selector that hit the hidden take-gems chips. The extractor folds
-        the prompt's 已选 M/N pair into ``status`` precisely so this check can
-        exist; a page that renders no such prompt skips it.
+        Kept for callers/tests; the live path now polls inside
+        :meth:`_select_discard_chips` before confirming.
         """
         progress = DISCARD_SELECTION_RE.search(
             extract_snapshot(self._driver)["status"]

@@ -30,10 +30,17 @@ from splendor.splendor.gym.envs.actions import ALL_ACTIONS
 from splendor.splendor.gym.envs.utils import create_legal_actions_mask
 from splendor.splendor.splendor_model import SplendorGameRule
 
-from .action_executor import HUMAN_CLICK_DELAY, ActionExecutor, parse_pill
+from .action_executor import (
+    HUMAN_CLICK_DELAY,
+    ActionExecutionError,
+    ActionExecutor,
+    parse_pill,
+)
 from .dom_extractor import (
     DEFAULT_GAME_OVER_MARKERS,
+    PHASE_DISCARD_TEXT,
     Snapshot,
+    SnapshotSchemaError,
     extract_snapshot,
     is_my_turn,
     looks_like_game_over,
@@ -263,24 +270,39 @@ class BrowserSplendorEnv(gym.Env):
         )
         return self._last_obs
 
+    def _try_extract(self) -> Snapshot | None:
+        """Extract a complete snapshot, or None while the board is half-painted."""
+        try:
+            return extract_snapshot(self._driver)
+        except SnapshotSchemaError:
+            return None
+
     def _wait_for_game_start(self) -> Snapshot:
         # Only my turn counts as "started": the room page (before/after a
         # game) is a waiting state too, not a playable board (measured E3).
         deadline = time.monotonic() + self._step_timeout
+        last_status = "?"
+        incomplete = 0
         while True:
-            snapshot = extract_snapshot(self._driver)
-            if self._snapshot_listener is not None:
-                self._snapshot_listener(snapshot)
-            if is_my_turn(snapshot["status"]) and self._board_present(snapshot):
-                return snapshot
+            snapshot = self._try_extract()
+            if snapshot is not None:
+                last_status = snapshot["status"] or "(empty)"
+                if self._snapshot_listener is not None:
+                    self._snapshot_listener(snapshot)
+                if is_my_turn(snapshot["status"]) and self._board_present(snapshot):
+                    return snapshot
+            else:
+                incomplete += 1
             if time.monotonic() > deadline:
                 raise TimeoutError(
                     f"game did not start within {self._step_timeout}s "
-                    f"(status: {snapshot['status']!r})"
+                    f"(last status={last_status!r}, incomplete extracts={incomplete})"
                 )
             time.sleep(self._poll_interval)
 
-    def _wait_for_my_turn(self) -> Snapshot:
+    def _wait_for_my_turn(  # noqa: PLR0912, C901 - poll loop branches are load-bearing
+        self,
+    ) -> Snapshot:
         """
         Poll the turn status until it is my decision point again.
 
@@ -294,7 +316,16 @@ class BrowserSplendorEnv(gym.Env):
         saw_other_turn = False
         rescued = False
         while True:
-            snapshot = extract_snapshot(self._driver)
+            snapshot = self._try_extract()
+            if snapshot is None:
+                # 开始游戏 / re-render race: rows before panels. Keep polling.
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"page never produced a complete snapshot within "
+                        f"{self._step_timeout}s; run session.recover()"
+                    )
+                time.sleep(self._poll_interval)
+                continue
             if self._snapshot_listener is not None:
                 self._snapshot_listener(snapshot)
             if self._my_index in range(len(snapshot["panels"])):
@@ -315,12 +346,21 @@ class BrowserSplendorEnv(gym.Env):
                 if saw_other_turn:
                     return snapshot
                 if time.monotonic() > deadline:
-                    if not rescued:
+                    if not rescued and PHASE_DISCARD_TEXT not in status:
                         # My own input is stuck (e.g. a half-finished
                         # selection): pass to keep the seat alive.
+                        # Never force-pass out of a discard sub-flow - the
+                        # page has no 确认放弃 there and the click only
+                        # burns the last chance to finish the return
+                        # (live 2026-09-14: stuck 已选0/1 -> 确认放弃 missing).
                         self._executor.force_pass()
                         rescued = True
                         deadline = time.monotonic() + self._step_timeout
+                    elif PHASE_DISCARD_TEXT in status:
+                        raise ActionExecutionError(
+                            f"stuck in discard sub-flow (status={status!r}); "
+                            "not force-passing - recover() the session"
+                        )
                     else:
                         raise TimeoutError(
                             f"turn did not return within {self._step_timeout}s "
