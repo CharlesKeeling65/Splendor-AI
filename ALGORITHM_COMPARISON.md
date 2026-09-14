@@ -64,5 +64,10 @@
   见 `docs/D1_200K_COURSE_REPORT_20260913.md`。
 - **F1 价值标定**：return 模式 critic 的胜率判别 AUC 0.525 < 0.75，
   不可用作搜索先验（否定结果入档）。
-- 排名（2p，对 minimax）：**C2-PPO 57.3% > DQN-corrected 52.7% > 旧 PPO 48.7%**；
-  对 heuristic：GA/minimax 族启发式仍领先（62%），学习型策略最大缺口。
+- **C2-R2（2000 updates + potential shaping，2026-09-14）**：C4-R2 league
+  （每对手 150 局）vs minimax **66.3%** / GA **62.0%** / heuristic **58.0%** /
+  rush 56.0% / hoard 61.3% / random 100%——**ppo-best 首次联赛榜首**（总分率
+  67.2%），G1 的 minimax/GA 门槛首次达成（`docs/C2R2_2000_REPORT_20260914.md`）。
+- 排名（2p，对 minimax）：**C2-R2-PPO 66.3% > C2-PPO 57.3% > DQN-corrected
+  52.7% > 旧 PPO 48.7%**；对 heuristic：C2-R2-PPO 58.0% 已逼近启发式族
+  （heuristic 对其余对手 59–61%），学习型策略仅剩 ~2pt 缺口。

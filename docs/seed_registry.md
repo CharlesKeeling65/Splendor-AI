@@ -62,5 +62,6 @@
 | 2026-09-13 | D1 DQN 200k ×3（训练 RNG 种子）+ 门槛评测 | training | 826000–826002 / 826100–826101 | `runs/d1-200k/` |
 | 2026-09-13 | F1 价值标定（150 局 × 双座次） | c2_validation | 854010–854059 | `runs/f1-calibration/` |
 | 2026-09-13 | C2-R2 启动（2000×16×3 seed，potential shaping κ=0.05） | c2r2_training / c2r2_validation / c2r2_test | 940000–1036099 / 1037000–1037024 | `runs/c2r2-selfplay-2000/` |
+| 2026-09-14 | C4-R2 league 确认（7 agent × 42 对阵 × 75 局，wrap=50） | independent_test | 829000–829049 循环 | `runs/c4r2-league-20260914/` |
 | 2026-09-13 | Z1 纯搜索基线 league（az-uniform × random/minimax/heuristic，75 局/对阵 wrap=50） | independent_test | 829000–829049 循环 | `runs/z1-uniform-search/` |
 | 2026-09-13 | Z2 AZ-lite 启动（自博弈 + 价值/先验网络训练） | z_training / z_validation | 1040000 起 / 1140000–1140099 | `runs/z2-az-lite/` |

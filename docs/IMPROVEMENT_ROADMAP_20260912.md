@@ -321,15 +321,18 @@ C1 + D1 + D3 ──────────────────┘
 
 | 目标 | 量化验收 | 现状 | 判定 |
 |---|---|---|---|
-| G1 | vs minimax ≥60 / heuristic ≥60 / GA ≥55（≥150 局独立段） | 57.3% / 38.7% / 47.3% | **未达成**（minimax 已超 DQN 基线 52.7%；heuristic 族缺口归因入 C4 报告） |
-| G2 | PPO critic EV ≥0.5；DQN TD 稳定 | EV 0.34–0.48（未平台）；DQN 无发散段 | **接近**（seed42 0.483） |
+| G1 | vs minimax ≥60 / heuristic ≥60 / GA ≥55（≥150 局独立段） | C4-R2（2000 updates + shaping）：**66.3% / 58.0% / 62.0%** | **2/3 达成**（minimax、GA ✅；heuristic 58.0% 差 2pt，区间 [50.0, 65.6] 含 60%）；ppo-best 首次联赛榜首 |
+| G2 | PPO critic EV ≥0.5；DQN TD 稳定 | EV@u1000 0.40–0.43 后随自博弈非平稳回落（0.29–0.44），DQN 无发散段 | **修订表述**：自博弈下 EV 非实力单调代理，改用"EV 不发散 + 胜率门槛"（C2R2 报告） |
 | G3 | DQN 200k×3 seed；PPO ≥8,000 局/seed | 双双达成（C2 8,000 局/seed ×3；D1 200k×3） | **达成**（M3 门槛除外，见 G1 行与 D1 报告） |
 | G4 | 3p/4p per-seat 模型与 league 基线 | 冒烟达成（E1）；完整训练未启动 | **部分**（E3 待排期） |
 | G5 | league 评测器 + 行为度量 + 种子段封存 | 全部落地并在 C4 实际使用 | **达成** |
 
 ### 下一轮优先级（按预期收益排序）
 
-1. C2 主线加大规模（EV 未平台，2000 updates 外推 ~14h/seed）+ B2 塑形接入 PPO。
-2. heuristic 族缺口专项：池权重倾斜 / rush-教师蒸馏（待 corrected 教师）。
+1. ~~C2 主线加大规模 + B2 塑形接入 PPO~~ ✅ **已完成（C2-R2，2026-09-14）**：
+   2000 updates × 3 seed + potential shaping，G1 minimax/GA 门槛首次达成，
+   ppo-best 登顶联赛（`docs/C2R2_2000_REPORT_20260914.md`）。
+2. heuristic 族缺口专项（唯一剩余 G1 项，58.0% vs 60%）：池权重向 heuristic
+   族倾斜（heuristic:2,rush:2,ga:1,minimax:1）/ rush-教师蒸馏（待 corrected 教师）。
 3. corrected DQN（auxiliary heads）经 experiment.py 重训 → F1 复标定 → D3 重试。
 4. E3：3p/4p 各 1 seed × 500 updates → league 首表（入口已就绪）。
