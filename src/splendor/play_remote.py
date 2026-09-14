@@ -39,6 +39,7 @@ import multiprocessing
 import random
 import subprocess
 import time
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,9 +47,11 @@ from typing import Any
 
 import numpy as np
 
+from splendor.agents.our_agents.dqn.features import extract_observation
 from splendor.browser.browser_env import BrowserSplendorEnv
 from splendor.browser.dom_extractor import (
     Snapshot,
+    SnapshotSchemaError,
     extract_snapshot,
     is_my_turn,
     waiting_seat,
@@ -57,8 +60,11 @@ from splendor.browser.driver import BrowserDriver
 from splendor.browser.ego_driver import EgoBrowserDriver
 from splendor.browser.monitor import _describe_action, anomaly_count
 from splendor.browser.session import SessionManager
+from splendor.browser.state_builder import build_pseudo_state
 from splendor.remote.client import InferenceClient
-from splendor.splendor.gym.envs.actions import ALL_ACTIONS
+from splendor.splendor.gym.envs.actions import ALL_ACTIONS, ActionEnum
+from splendor.splendor.gym.envs.utils import create_legal_actions_mask
+from splendor.splendor.splendor_model import SplendorGameRule
 
 REST_SECONDS = (5.0, 15.0)
 ROOM_FILE = "room_url.txt"
@@ -75,6 +81,8 @@ SEAT_VERIFY_SECONDS = 8.0
 DEFAULT_LOGS_DIR = "logs"
 MIN_SEATS = 2
 MAX_SEATS = 4
+#: How many ranked alternatives to store for a rival-seat simulation.
+RIVAL_PREDICT_TOP_K = 5
 
 
 # ----- event stream -------------------------------------------------------------
@@ -86,6 +94,10 @@ class EventWriter:
     (``events_dir/bot<i>.jsonl``) plus a per-game backup under
     ``logs_dir/bot<i>/game-NNN.jsonl`` so a finished run can be replayed
     even after the live files keep growing.
+
+    ``record_move`` / ``finish_game`` additionally write a structured archive
+    (``logs_dir/bot<i>/archive-NNN.json``) with every seat's moves and a
+    complete / interrupted flag - the audit trail for one game.
     """
 
     def __init__(
@@ -99,9 +111,21 @@ class EventWriter:
         self._path = events_dir / f"bot{bot_id}.jsonl"
         self._logs_dir = logs_dir
         self._game_path: Path | None = None
+        self._game_index = 0
+        self._moves: list[dict[str, Any]] = []
+        self._archive_meta: dict[str, Any] = {}
 
     def start_game(self, game_index: int) -> None:
         """Open a fresh per-game backup file (0-based index -> 1-based name)."""
+        self._game_index = game_index
+        self._moves = []
+        self._archive_meta = {
+            "my_seat": None,
+            "seats": None,
+            "result": None,
+            "scores": None,
+            "anomalies": 0,
+        }
         if self._logs_dir is None:
             return
         bot_dir = self._logs_dir / f"bot{self._bot_id}"
@@ -117,6 +141,96 @@ class EventWriter:
         if self._game_path is not None:
             with self._game_path.open("a", encoding="utf-8") as handle:
                 handle.write(line)
+
+    def set_archive_meta(self, **fields: Any) -> None:  # noqa: ANN401
+        self._archive_meta.update(fields)
+
+    def record_move(self, move: dict[str, Any]) -> None:
+        """Append one seat move to the structured game archive."""
+        self._moves.append(dict(move))
+
+    def finish_game(
+        self,
+        *,
+        complete: bool,
+        abort_reason: str | None = None,
+    ) -> Path | None:
+        """
+        Write ``archive-NNN.json`` for this game and return its path.
+
+        ``complete=True`` means a normal ``game_end`` was reached; otherwise
+        the game is marked interrupted (executor failure, timeout, crash).
+        """
+        if self._logs_dir is None:
+            return None
+        bot_dir = self._logs_dir / f"bot{self._bot_id}"
+        bot_dir.mkdir(parents=True, exist_ok=True)
+        path = bot_dir / f"archive-{self._game_index + 1:03d}.json"
+        payload = {
+            "bot": self._bot_id,
+            "game": self._game_index + 1,
+            "complete": complete,
+            "interrupted": not complete,
+            "abort_reason": abort_reason,
+            **self._archive_meta,
+            "moves": self._moves,
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return path
+
+
+def _action_kind(action: ActionEnum) -> str:
+    if action in (ActionEnum.COLLECT_SAME, ActionEnum.COLLECT_DIFF):
+        return "collect"
+    if action is ActionEnum.RESERVE:
+        return "reserve"
+    if action in (ActionEnum.BUY_AVAILABLE, ActionEnum.BUY_RESERVE):
+        return "buy"
+    return "pass"
+
+
+def _label_kind(label: str) -> str:
+    """Map a panel-diff Chinese label onto the coarse action kind."""
+    if "取宝石" in label:
+        return "collect"
+    if "购买" in label:
+        return "buy"
+    if "预定" in label:
+        return "reserve"
+    if "弃宝石" in label:
+        return "discard"
+    return "other"
+
+
+def _predict_seat_ranking(  # noqa: PLR0913 - ranking call surface
+    client: InferenceClient,
+    model_id: str,
+    snapshot: Mapping[str, Any],
+    seat_index: int,
+    feature_version: str,
+    top_k: int = RIVAL_PREDICT_TOP_K,
+) -> list[dict[str, Any]]:
+    """
+    Top-k ranking the served model would pick from ``seat_index``'s view.
+
+    Builds a seat-oriented pseudo-state (same engine rules as our own mask)
+    and asks the inference server for greedy + top-k - the "what would the
+    proxy have done here" baseline for comparing a rival's actual move.
+    """
+    panels = snapshot.get("panels") or []
+    if seat_index not in range(len(panels)):
+        return []
+    rule = SplendorGameRule(len(panels))
+    pseudo = build_pseudo_state(snapshot, seat_index, turns=0)
+    mask = create_legal_actions_mask(
+        rule.getLegalActions(pseudo, seat_index), pseudo, seat_index
+    )
+    obs = extract_observation(pseudo, seat_index, feature_version)
+    decision = client.act(model_id, obs, mask, top_k=top_k)
+    return _ranking_payload(decision.top)
 
 
 # ----- snapshot labelling ---------------------------------------------------------
@@ -271,6 +385,9 @@ def run_bot(bot_id: int, options: dict[str, Any]) -> None:
     acting_metadata = models[acting_model_id]
     feature_version = acting_metadata["feature_version"]
     options["score_kind"] = acting_metadata.get("score_kind", "q")
+    rank_meta = models.get(winrate_model_id) or acting_metadata
+    options["rank_feature_version"] = rank_meta.get("feature_version", feature_version)
+    options["feature_version"] = feature_version
     events.emit({"type": "log", "level": "info",
                  "message": f"bot{bot_id} connected; server models={sorted(models)}"})
 
@@ -289,8 +406,16 @@ def run_bot(bot_id: int, options: dict[str, Any]) -> None:
         try:
             _run_game(env, client, events, bot_id, game_index, options)
         except Exception as error:  # one hiccup must not kill the bot
-            events.emit({"type": "log", "level": "warn",
-                         "message": f"game {game_index + 1} failed: {error}"})
+            # Full traceback lands in the JSONL: a bare str(error) hid a
+            # TypeError ("list indices must be integers...") with no frame.
+            events.emit({
+                "type": "log",
+                "level": "warn",
+                "message": f"game {game_index + 1} failed: {error!r}",
+                "error_type": type(error).__name__,
+                "traceback": traceback.format_exc(limit=12),
+            })
+            events.finish_game(complete=False, abort_reason=f"{type(error).__name__}: {error}")
             session.recover()
         if game_index < options["games"] - 1:
             rest = random.uniform(*REST_SECONDS)
@@ -473,26 +598,60 @@ def _game_running(snapshot: Mapping[str, Any]) -> bool:
 def _start_until_running(
     env: BrowserSplendorEnv, events: EventWriter
 ) -> None:
-    """Press 开始游戏 until the table is live, bounded and human-paced."""
+    """
+    Make sure the table is live; only press 开始游戏 when it is not.
+
+    Live redesign 2026-09-14: after both seats sit, the page can already be
+    in-game (status 等待你操作 / 等待玩家N) with no 开始游戏 button at all.
+    Clicking a missing button used to burn the whole 60s budget. Always read
+    the board first; press start only as a fallback.
+    """
     deadline = time.monotonic() + START_WAIT_SECONDS
     attempts = 0
+    last_status = "?"
+    last_extract = "ok"
     while True:
         attempts += 1
         try:
+            snapshot = extract_snapshot(env.driver)
+            last_status = snapshot["status"] or "(empty)"
+            last_extract = "extract ok"
+        except SnapshotSchemaError as error:
+            snapshot = None
+            last_status = "(incomplete board)"
+            last_extract = f"extract: {error}"
+        if snapshot is not None and _game_running(snapshot):
+            if attempts == 1:
+                events.emit({
+                    "type": "log", "level": "info",
+                    "message": f"already in game (status={last_status!r}); skip 开始游戏",
+                })
+            else:
+                events.emit({
+                    "type": "log", "level": "info",
+                    "message": f"table live after {attempts - 1} 开始游戏 click(s)",
+                })
+            return
+        try:
             env.session.start_game()
+            last_extract = "start-click ok"
         except ValueError as error:
-            # Owner-only button, or the room is not full yet: the page
-            # refuses silently, so retrying is the only way to observe it.
+            # Owner-only button, or the game is already running (button gone).
+            last_extract = f"start-click: {error}"
             events.emit({"type": "log", "level": "info",
                          "message": f"开始游戏 not clickable yet: {error}"})
-        if _game_running(extract_snapshot(env.driver)):
-            events.emit({"type": "log", "level": "info",
-                         "message": f"table live after {attempts} 开始游戏 click(s)"})
-            return
         if time.monotonic() > deadline:
+            events.emit({
+                "type": "log", "level": "warn",
+                "message": (
+                    f"start diagnostics after {attempts} tries: "
+                    f"status={last_status!r} last={last_extract!r}"
+                ),
+            })
             raise TimeoutError(
-                f"the room never started after {attempts} 开始游戏 click(s) in "
-                f"{START_WAIT_SECONDS:.0f}s; check that every seat is taken"
+                f"the room never started after {attempts} tries in "
+                f"{START_WAIT_SECONDS:.0f}s; last status={last_status!r} "
+                f"({last_extract})"
             )
         time.sleep(START_RETRY_SECONDS)
 
@@ -590,6 +749,19 @@ def _coordinate_room(
         _wait_for_seats(options, events)
         _start_until_running(env, events)
     else:
+        # Already in-game? Never poke 开始游戏 - the button is gone and a
+        # missed click is not an error worth retrying (live 2026-09-14).
+        try:
+            snapshot = extract_snapshot(env.driver)
+            if _game_running(snapshot):
+                events.emit({
+                    "type": "log", "level": "info",
+                    "message": f"already in game (status={snapshot['status']!r}); "
+                               "skip 开始游戏",
+                })
+                return
+        except SnapshotSchemaError:
+            pass
         try:
             session.start_game()
         except ValueError:
@@ -630,6 +802,10 @@ class _GameContext:
         }
         self.events.emit(payload)
 
+    def record_move(self, move: dict[str, Any]) -> None:
+        """Delegate to the EventWriter game archive (structured move log)."""
+        self.events.record_move(move)
+
     def estimate(
         self, snapshot: Mapping[str, Any], actor_seat: int
     ) -> list[float] | None:
@@ -662,8 +838,21 @@ class _GameContext:
         Label rival seats whose panel changed across the folded opponent
         turns. Their per-action win rate cannot be estimated without blocking
         the turn-poll loop, so they inherit the surrounding estimate
-        (``stale: true``) - honest degradation, not fabricated precision.
+        (``stale: true``). A seat-oriented top-k from the win-rate model is
+        also simulated on the *pre-move* snapshot so the dashboard can ask
+        "would the proxy have played this?" (type-level match only - panel
+        diffs do not expose an action index).
         """
+        rank_model = str(
+            self.options.get("winrate_model_id")
+            or self.options.get("winrate_model")
+            or self.options["model"]
+        )
+        rank_version = str(
+            self.options.get("rank_feature_version")
+            or self.options.get("feature_version")
+            or "v1"
+        )
         for seat, (prev_panel, cur_panel) in enumerate(
             zip(prev_snapshot["panels"], cur_snapshot["panels"], strict=False),
             start=1,
@@ -683,10 +872,52 @@ class _GameContext:
                         if cur_panel["gems"].get(colour, 0) < prev_panel["gems"][colour]
                     },
                 })
+            predicted: list[dict[str, Any]] = []
+            match: bool | None = None
+            top1_kind = None
+            try:
+                predicted = _predict_seat_ranking(
+                    self.client, rank_model, prev_snapshot,
+                    seat - 1, rank_version,
+                )
+                if predicted:
+                    top1_kind = _action_kind(ALL_ACTIONS[predicted[0]["idx"]].type_enum)
+                    match = top1_kind == _label_kind(label)
+            except Exception as error:
+                self.events.emit({
+                    "type": "log", "level": "warn",
+                    "message": f"rival rank predict seat{seat} failed: {error}",
+                })
             self.emit({
                 "type": "action", "seq": seq, "seat": seat,
                 "actor": f"座位{seat}", "desc": label,
                 "before": before, "after": None, "stale": True,
+                "source": "panel_diff",
+            })
+            self.emit({
+                "type": "seat_rank", "seq": seq, "seat": seat,
+                "source": "predicted",
+                "model_id": rank_model,
+                "score_kind": "policy_logit" if "ppo" in rank_model else "q",
+                "observed_desc": label,
+                "observed_kind": _label_kind(label),
+                "top": predicted,
+                "top1_kind": top1_kind,
+                "match": match,
+                "board": _board_summary(prev_snapshot, self.my_seat),
+            })
+            self.record_move({
+                "seq": seq,
+                "seat": seat,
+                "kind": "rival",
+                "source": "panel_diff",
+                "desc": label,
+                "observed_kind": _label_kind(label),
+                "predicted_top": [
+                    {"idx": p["idx"], "desc": p["desc"], "kind": _action_kind(ALL_ACTIONS[p["idx"]].type_enum)}
+                    for p in predicted[:3]
+                ],
+                "match": match,
             })
 
 
@@ -746,7 +977,7 @@ def _ranking_payload(
     return ranked
 
 
-def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
+def _run_game(  # noqa: PLR0913, PLR0914, PLR0915, PLR0917 - harness surface
     env: BrowserSplendorEnv,
     client: InferenceClient,
     events: EventWriter,
@@ -772,6 +1003,7 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
         )
     ctx.emit({"type": "game_start", "my_seat": ctx.my_seat,
               "seats": seat_count})
+    events.set_archive_meta(my_seat=ctx.my_seat, seats=seat_count)
 
     last_scores = {
         seat: float(panel["score"])
@@ -800,19 +1032,65 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
         desc = _describe_action(ALL_ACTIONS[action])
         act_snapshot = extract_snapshot(env.driver)
         board = _board_summary(act_snapshot, ctx.my_seat)
+        top_payload = _ranking_payload(decision.top)
         ctx.emit({
             "type": "remote_act",
             "seq": seq + 1,
             "action": action,
             "desc": desc,
             "score_kind": decision.score_kind,
-            "top": _ranking_payload(decision.top),
+            "top": top_payload,
             "legal_count": int(np.count_nonzero(mask)),
             "board": board,
         })
+        ctx.emit({
+            "type": "seat_rank", "seq": seq + 1, "seat": ctx.my_seat,
+            "source": "server",
+            "model_id": acting_model_id,
+            "score_kind": decision.score_kind,
+            "observed_desc": desc,
+            "observed_kind": _action_kind(ALL_ACTIONS[action].type_enum),
+            "top": top_payload,
+            "top1_kind": (
+                _action_kind(ALL_ACTIONS[top_payload[0]["idx"]].type_enum)
+                if top_payload else None
+            ),
+            "match": True,  # own pick is by construction the server top-1
+            "board": board,
+        })
+        events.record_move({
+            "seq": seq + 1,
+            "seat": ctx.my_seat,
+            "kind": "own",
+            "source": "server",
+            "action": action,
+            "desc": desc,
+            "observed_kind": _action_kind(ALL_ACTIONS[action].type_enum),
+            "score_kind": decision.score_kind,
+            "top": [
+                {"idx": p["idx"], "desc": p["desc"], "score": p["score"]}
+                for p in top_payload[:3]
+            ],
+            "match": True,
+        })
         prev_snapshot = act_snapshot
 
-        obs, _reward, terminated, _trunc, _info = env.step(action)
+        try:
+            obs, _reward, terminated, _trunc, _info = env.step(action)
+        except Exception:
+            # Dashboard integrity: a remote decision with no browser receipt
+            # looks like "执行不一致" forever. Record the failed attempt with
+            # the SAME action index so the pipeline shows "未执行" + the warn,
+            # not a false action mismatch.
+            seq += 1
+            ctx.emit({
+                "type": "browser_act",
+                "seq": seq,
+                "action": action,
+                "desc": desc,
+                "executed": False,
+            })
+            raise
         seq += 1
         # env.step returning without raising means the executor completed the
         # click sequence for this same action index (no silent re-mapping).
@@ -839,6 +1117,7 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
             "type": "action", "seq": seq, "seat": ctx.my_seat,
             "actor": f"bot{bot_id}", "desc": desc,
             "before": before, "after": after, "stale": after is None,
+            "source": "server",
         })
         if after is not None:
             before = after
@@ -847,11 +1126,19 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
         if terminated:
             break
 
+    result = _result_of(last_scores, ctx.my_seat)
     ctx.emit({
         "type": "game_end",
         "scores": {str(seat): score for seat, score in sorted(last_scores.items())},
-        "result": _result_of(last_scores, ctx.my_seat), "anomalies": anomalies,
+        "result": result, "anomalies": anomalies,
+        "complete": True,
     })
+    events.set_archive_meta(
+        result=result,
+        scores={str(seat): score for seat, score in sorted(last_scores.items())},
+        anomalies=anomalies,
+    )
+    events.finish_game(complete=True)
 
 
 def _emit_parity(env: BrowserSplendorEnv, ctx: _GameContext) -> int:
