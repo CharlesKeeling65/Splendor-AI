@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from numpy.typing import NDArray
 
 from splendor.agents.our_agents.alphazero.selfplay import (
     SelfPlayConfig,
@@ -25,6 +26,11 @@ TINY_CONFIG = SelfPlayConfig(
 )
 
 
+def _normalized_target(rng: np.random.Generator) -> NDArray[np.float32]:
+    values = rng.random(20).astype(np.float32)
+    return values / values.sum()
+
+
 def test_pack_unpack_roundtrip():
     rng = np.random.default_rng(0)
     samples = [
@@ -32,7 +38,7 @@ def test_pack_unpack_roundtrip():
             seat=i % 2,
             observation=rng.random(312, dtype=np.float32),
             indices=sorted(rng.choice(3510, size=20, replace=False).tolist()),
-            target=(lambda v: v / v.sum())(rng.random(20).astype(np.float32)),
+            target=_normalized_target(rng),
             z=float(i % 3 - 1),
         )
         for i in range(7)

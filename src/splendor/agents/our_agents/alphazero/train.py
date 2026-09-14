@@ -145,7 +145,7 @@ def _collect(
     return samples
 
 
-def _train_batches(  # noqa: PLR0913, PLR0917 - one argument per concern
+def _train_batches(  # noqa: PLR0913 - one argument per concern
     net: QNetwork,
     buffer: deque[TrainingSample],
     config: AZConfig,
