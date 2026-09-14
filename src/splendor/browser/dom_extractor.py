@@ -251,13 +251,15 @@ EXTRACT_SNAPSHOT_JS: str = (
         cards: cards,
       };
     });
-  // [MEASURED 2026-09-05] one div.flex.flex-wrap.items-center.justify-center.my-2
-  // per seat, in seat order; my own panel is the one whose text carries 我.
+  // [MEASURED 2026-09-05, re-measured 2026-09-14] one seat panel per player.
+  // The 2026-09-14 live redesign dropped the Tailwind ``my-2`` from the panel
+  // container (still ``div.flex.flex-wrap.items-center.justify-center``); the
+  // 我 badge is now an absolutely-positioned orange pill, not plain span text.
   // Defined before the noble query: claimed nobles re-render inside their
-  // owner's panel with the same .ccbs-noble class (2026-09-09 without pips,
-  // later live runs WITH pips) and must never enter the bank-noble list.
+  // owner's panel with the same .ccbs-noble class and must never enter the
+  // bank-noble list.
   const panelEls = Array.from(
-    document.querySelectorAll("div.flex.flex-wrap.items-center.justify-center.my-2")
+    document.querySelectorAll("div.flex.flex-wrap.items-center.justify-center")
   );
   const nobles = Array.from(document.querySelectorAll(".ccbs-noble"))  // [B3.1]
     .filter((noble) => !panelEls.some((panel) => panel.contains(noble)))
@@ -282,7 +284,10 @@ EXTRACT_SNAPSHOT_JS: str = (
   );
   const myPanelIndex = myPanelIdx >= 0 ? myPanelIdx : null;
   const panels = panelEls.map((p) => {
-    const score = p.querySelector(".ccbs-score");  // [B3.1] "N分" element
+    // [2026-09-14] panels no longer carry .ccbs-score; the score lives only
+    // in the panel text as "N分". Python's _parse_score falls back to the
+    // panel text when the element is absent.
+    const score = p.querySelector(".ccbs-score");  // legacy layout
     // Permanent-card pips only: a claimed .ccbs-noble re-rendered inside the
     // panel may itself carry .ccbs-rect requirement pips (seen live after
     // the first noble visit); those must not inflate card_counts.
@@ -487,12 +492,16 @@ def snapshot_from_raw(raw: Mapping[str, Any]) -> Snapshot:
         )
 
     my_panel_index = raw["my_panel_index"]
-    if raw["panels"] and (
-        my_panel_index is None or my_panel_index not in range(len(raw["panels"]))
-    ):
+    # Live race (2026-09-14): on 开始游戏 the table rows can paint one poll
+    # before any seat panel. ``raw["panels"] and (...)`` used to skip the
+    # guard when the panel list was empty, so the next line did
+    # ``panels[None]`` and raised TypeError (list indices must be integers).
+    # Empty panels + non-empty rows is a half-rendered board - fail with the
+    # schema error, never with a bare TypeError.
+    if my_panel_index is None or my_panel_index not in range(len(raw["panels"])):
         raise SnapshotSchemaError(
             "my panel not found: no seat panel text carries the 我 marker "
-            "(extraction bug or page redesign)"
+            "(extraction bug, page redesign, or panels not rendered yet)"
         )
     my_reserved: list[CardInfo] = []
     panel_backs = raw["panels"][my_panel_index]["reserved_backs"]

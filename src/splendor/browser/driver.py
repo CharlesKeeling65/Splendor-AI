@@ -485,10 +485,13 @@ class MockBrowserDriver:
                 f"card index {card_index} outside the {len(cards)} card(s) of "
                 f"{container_selector!r}[{container_index}]"
             )
+        # 2026-09-14 live: buy overlay is "购买?" (trailing ?); fixtures still
+        # use plain "购买". Accept either so offline and live stay aligned.
+        accepted = {label, label + "?"}
         buttons = [
             element
             for element in cards[card_index].iter_tree()
-            if element.tag == "button" and _label_matches(element, label, True)
+            if element.tag == "button" and element.text_content().strip() in accepted
         ]
         if not buttons:
             raise ValueError(
@@ -669,11 +672,12 @@ def _read_panels(root: _Element) -> tuple[list[dict], int | None]:
     """
     Read the per-seat panels; also report the position of my own panel.
 
-    Measured container (T0.4, 2026-09-05): one
-    ``div.flex.flex-wrap.items-center.justify-center.my-2`` per seat, in seat
-    order; my own panel is the one whose text carries the ``我`` marker.
+    Measured container (T0.4, 2026-09-05; redesign 2026-09-14 dropped
+    ``my-2``): one ``div.flex.flex-wrap.items-center.justify-center`` per
+    seat, in seat order; my own panel is the one whose text carries the ``我``
+    marker (now an orange pill badge - innerText still contains it).
     """
-    panel_selector = "div.flex.flex-wrap.items-center.justify-center.my-2"
+    panel_selector = "div.flex.flex-wrap.items-center.justify-center"
     panels: list[dict] = []
     my_panel_index: int | None = None
     for seat_offset, panel in enumerate(query_selector_all(root, panel_selector)):
@@ -688,12 +692,11 @@ def _read_panels(root: _Element) -> tuple[list[dict], int | None]:
             for el in query_selector_all(panel, ".ccbs-rect")
             if not any(_is_descendant(el, noble) for noble in panel_nobles)
         ]
+        # 2026-09-14: panels may have no .ccbs-score element at all; leave
+        # score_text empty and let _parse_score fall back to panel text.
         panels.append(
             {
                 "text": panel.text_content(),
-                # Score read from the dedicated element: parsing the whole
-                # panel text would glue the seat number to the score
-                # ("座位1" + "15分" -> "115分").
                 "score_text": scores[0].text_content().strip() if scores else "",
                 "rects": [
                     {

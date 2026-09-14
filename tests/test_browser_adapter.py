@@ -880,6 +880,30 @@ def test_snapshot_schema_error_when_my_panel_marker_missing() -> None:
         extract_snapshot(driver)
 
 
+def test_empty_panels_with_live_rows_raise_schema_error_not_typeerror() -> None:
+    """
+    Live race 2026-09-14: on 开始游戏 the table rows can paint one poll before
+    any seat panel. The old guard was ``if panels and my_index is None`` so an
+    empty panel list skipped the check and the next line did ``panels[None]``
+    (TypeError: list indices must be integers). Half-rendered board must be a
+    SnapshotSchemaError the wait loops can retry on - never a bare TypeError.
+    """
+    html = (
+        "<html><body>"
+        '<div class="flex justify-center origin-top">'
+        '<div class="ccbs-card ccbs-type-5 ccbs-img-0">'
+        '<div class="ccbs-left-count">16</div></div></div>'
+        '<div class="flex justify-center origin-top"></div>'
+        '<div class="flex justify-center origin-top"></div>'
+        '<div class="text-center"><div class="mt-4">等待你操作</div></div>'
+        "</body></html>"
+    )
+    driver = MockBrowserDriver()
+    driver.set_html(html)
+    with pytest.raises(SnapshotSchemaError, match="my panel"):
+        extract_snapshot(driver)
+
+
 def _raw_from(driver: MockBrowserDriver) -> dict:
     from splendor.browser.dom_extractor import EXTRACT_SNAPSHOT_JS
     from splendor.browser.driver import SNAPSHOT_JS_MARKER
