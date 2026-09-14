@@ -84,6 +84,7 @@ class AZConfig:
     """Full training-run configuration; stored into the manifest."""
 
     iterations: int = 10
+    start_iteration: int = 0
     games_per_iter: int = 1000
     workers: int = 24
     simulations: int = 100
@@ -210,6 +211,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 - CLI driver
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("runs/z2-az-lite"))
     parser.add_argument("--iterations", type=int, default=10)
+    parser.add_argument(
+        "--start-iteration",
+        type=int,
+        default=0,
+        help="absolute iteration number for a checkpoint continuation",
+    )
     parser.add_argument("--games-per-iter", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--simulations", type=int, default=100)
@@ -241,8 +248,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 - CLI driver
 
     if args.output.exists():
         raise SystemExit(f"refusing to overwrite existing output dir: {args.output}")
+    if args.start_iteration < 0:
+        raise SystemExit("--start-iteration must be non-negative")
+    if args.start_iteration and not args.init_from:
+        raise SystemExit("--start-iteration > 0 requires --init-from")
     config = AZConfig(
         iterations=args.iterations,
+        start_iteration=args.start_iteration,
         games_per_iter=args.games_per_iter,
         workers=args.workers,
         simulations=args.simulations,
@@ -299,7 +311,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 - CLI driver
     )
     started = time.perf_counter()
     with ProcessPoolExecutor(max_workers=config.workers, mp_context=spawn) as executor:
-        for iteration in range(config.iterations):
+        for iteration in range(
+            config.start_iteration, config.start_iteration + config.iterations
+        ):
             iter_start = time.perf_counter()
             seeds = [
                 config.seed_base + iteration * config.games_per_iter + offset

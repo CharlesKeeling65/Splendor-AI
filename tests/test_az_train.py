@@ -114,3 +114,4 @@ def test_train_cli_smoke(tmp_path: Path):
     assert record["greedy_vs_random"]["games"] == 2.0
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["config"]["bc_checkpoint"] is None  # --scratch honoured
+    assert manifest["config"]["start_iteration"] == 0
