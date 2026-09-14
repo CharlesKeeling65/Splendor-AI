@@ -53,6 +53,15 @@ from splendor.agents.our_agents.policy_imitation.protocol import (
     validate_paired_training_schedule,
 )
 from splendor.agents.our_agents.policy_imitation.runner import select_action
+from splendor.agents.our_agents.policy_imitation.scenario import (
+    ScenarioV1,
+    generate_scenario,
+)
+from splendor.agents.our_agents.policy_imitation.scenario_bank import (
+    ScenarioBank,
+    load_scenario_bank,
+    write_scenario_bank,
+)
 from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
 from splendor.splendor.utils import LimitRoundsGameRule
@@ -256,18 +265,34 @@ def test_game_coordinate_counterfactuals_have_expected_rng_boundaries() -> None:
     )
 
 
-def _formal_context() -> FormalGameRng:
+def _formal_scenario(offset: int = 0) -> ScenarioV1:
+    return generate_scenario("ci_smoke", 825_100 + offset, selection_kind="ci-fixture")
+
+
+def _formal_context(scenario: ScenarioV1 | None = None) -> FormalGameRng:
+    snapshot = scenario or _formal_scenario()
     return FormalGameRng(
         experiment_id="task1",
         phase="T1.1",
         coupling_group="replicate-0",
         replicate_id=0,
         treatment_id="O",
-        scenario_id="scenario-0",
+        scenario_id=snapshot.scenario_id,
         seat=0,
         update=1,
         game_index=0,
     )
+
+
+def _scenario_bank(tmp_path: Path, count: int = 1) -> ScenarioBank:
+    scenarios = tuple(_formal_scenario(index) for index in range(count))
+    manifest = write_scenario_bank(
+        tmp_path / "scenario-bank",
+        "ci-fixture",
+        scenarios,
+        compression="none",
+    )
+    return load_scenario_bank(Path(str(manifest["artifact_path"])))
 
 
 def test_formal_policy_sampling_ignores_global_torch_rng() -> None:
@@ -405,7 +430,8 @@ def test_formal_game_is_replayed_after_global_rng_perturbation() -> None:
         )
     ]
     config = PPOConfig(hidden_layers=(8,), updates=1, games_per_update=1)
-    context = _formal_context()
+    scenario = _formal_scenario()
+    context = _formal_context(scenario)
 
     torch.manual_seed(1)
     first_record, first_transitions = collect_ppo_game(
@@ -417,6 +443,7 @@ def test_formal_game_is_replayed_after_global_rng_perturbation() -> None:
         update_index=1,
         game_index=0,
         formal_rng=context,
+        scenario=scenario,
     )
     torch.manual_seed(999)
     second_record, second_transitions = collect_ppo_game(
@@ -428,6 +455,7 @@ def test_formal_game_is_replayed_after_global_rng_perturbation() -> None:
         update_index=1,
         game_index=0,
         formal_rng=context,
+        scenario=scenario,
     )
 
     assert first_record["status"] == second_record["status"] == "completed"
@@ -457,7 +485,8 @@ def test_formal_opponent_factory_has_its_own_restored_rng_stream() -> None:
         )
     ]
     config = PPOConfig(hidden_layers=(8,), updates=1, games_per_update=1)
-    context = _formal_context()
+    scenario = _formal_scenario()
+    context = _formal_context(scenario)
 
     random.seed(7)
     np.random.seed(7)
@@ -475,6 +504,7 @@ def test_formal_opponent_factory_has_its_own_restored_rng_stream() -> None:
         update_index=1,
         game_index=0,
         formal_rng=context,
+        scenario=scenario,
     )
     actual_after = (random.random(), float(np.random.random()), float(torch.rand(())))
 
@@ -490,6 +520,7 @@ def test_formal_opponent_factory_has_its_own_restored_rng_stream() -> None:
         update_index=1,
         game_index=0,
         formal_rng=context,
+        scenario=scenario,
     )
 
     assert expected_after == actual_after
@@ -515,7 +546,8 @@ def test_formal_two_scenario_seat_opponent_matrix_has_no_illegal_actions() -> No
         ),
     )
     records: list[dict[str, Any]] = []
-    for scenario_index in range(2):
+    scenarios = tuple(_formal_scenario(index) for index in range(2))
+    for scenario_index, scenario in enumerate(scenarios):
         for seat in (0, 1):
             for opponent in opponents:
                 context = FormalGameRng(
@@ -524,7 +556,7 @@ def test_formal_two_scenario_seat_opponent_matrix_has_no_illegal_actions() -> No
                     coupling_group="replicate-0",
                     replicate_id=0,
                     treatment_id="O",
-                    scenario_id=f"scenario-{scenario_index}",
+                    scenario_id=scenario.scenario_id,
                     seat=seat,
                     update=1,
                     game_index=scenario_index * 2 + seat,
@@ -538,6 +570,7 @@ def test_formal_two_scenario_seat_opponent_matrix_has_no_illegal_actions() -> No
                     update_index=1,
                     game_index=context.game_index,
                     formal_rng=context,
+                    scenario=scenario,
                 )
                 records.append(record)
                 assert transitions
@@ -546,12 +579,11 @@ def test_formal_two_scenario_seat_opponent_matrix_has_no_illegal_actions() -> No
     assert all(record["status"] == "completed" for record in records)
     assert all(record["opponent_illegal_actions"] == 0 for record in records)
     assert {record["scenario_id"] for record in records} == {
-        "scenario-0",
-        "scenario-1",
+        scenario.scenario_id for scenario in scenarios
     }
     assert {record["seat"] for record in records} == {0, 1}
     assert {record["opponent"] for record in records} == {"first", "random"}
-    for scenario_id in ("scenario-0", "scenario-1"):
+    for scenario_id in (scenario.scenario_id for scenario in scenarios):
         assert (
             len(
                 {
@@ -566,7 +598,8 @@ def test_formal_two_scenario_seat_opponent_matrix_has_no_illegal_actions() -> No
 
 def test_failed_formal_opponent_attempt_keeps_event_lineage() -> None:
     model = PolicyValueNetwork(265, feature_version="v1", hidden_layers=(8,))
-    context = replace(_formal_context(), seat=1)
+    scenario = _formal_scenario()
+    context = replace(_formal_context(scenario), seat=1)
     record, transitions = collect_ppo_game(
         model,
         [
@@ -581,11 +614,12 @@ def test_failed_formal_opponent_attempt_keeps_event_lineage() -> None:
         update_index=1,
         game_index=0,
         formal_rng=context,
+        scenario=scenario,
     )
     assert record["status"] == "failed"
     assert transitions == []
     assert len(record["rng_lineage"]["opponent_actions"]) == 1
-    assert record["scenario_id"] == "scenario-0"
+    assert record["scenario_id"] == scenario.scenario_id
     assert record["action_trace_sha256"]
 
 
@@ -603,11 +637,13 @@ def test_formal_trainer_consumes_schedule_and_all_named_streams(
         dataset_metadata={"feature_version": "v1"},
         metrics={},
     )
+    bank = _scenario_bank(tmp_path)
+    scenario = bank.scenarios[0]
     rows = make_paired_training_schedule(
         experiment_id="task1",
         phase="T1.1",
         treatment_ids=("O", "A"),
-        scenarios_by_replicate={0: ("scenario-0",)},
+        scenarios_by_replicate={0: (scenario.scenario_id,)},
         seats_by_replicate={0: (1,)},
         updates=1,
         games_per_update=1,
@@ -619,6 +655,7 @@ def test_formal_trainer_consumes_schedule_and_all_named_streams(
         treatment_id="O",
         expected_treatments=("O", "A"),
         schedule=rows,
+        scenario_bank_sha256=bank.payload_sha256,
     )
     captured: list[FormalGameRng] = []
 
@@ -632,8 +669,10 @@ def test_formal_trainer_consumes_schedule_and_all_named_streams(
         update_index: int,
         game_index: int,
         formal_rng: FormalGameRng,
+        scenario: ScenarioV1,
     ) -> tuple[dict[str, Any], list[PPOTransition]]:
         del opponent_pool, config
+        assert scenario.scenario_id == formal_rng.scenario_id
         captured.append(formal_rng)
         transition = _transitions(model)[-1]
         transition = replace(
@@ -686,10 +725,11 @@ def test_formal_trainer_consumes_schedule_and_all_named_streams(
         config=config,
         source_manifest="authorized-manifest.json",
         formal_spec=spec,
+        formal_scenario_bank=bank,
     )
 
     assert [(context.scenario_id, context.seat) for context in captured] == [
-        ("scenario-0", 1)
+        (scenario.scenario_id, 1)
     ]
     assert result["training_seeds"] is None
     assert result["formal_protocol"]["treatment_id"] == "O"
@@ -857,11 +897,13 @@ def test_one_and_two_spawn_workers_run_the_same_formal_training_semantics(
         dataset_metadata={"feature_version": "v1"},
         metrics={},
     )
+    bank = _scenario_bank(tmp_path)
+    scenario = bank.scenarios[0]
     rows = make_paired_training_schedule(
         experiment_id="task1-spawn",
         phase="T1.1",
         treatment_ids=("A", "O"),
-        scenarios_by_replicate={0: ("scenario-0",)},
+        scenarios_by_replicate={0: (scenario.scenario_id,)},
         seats_by_replicate={0: (0,)},
         updates=1,
         games_per_update=1,
@@ -873,6 +915,7 @@ def test_one_and_two_spawn_workers_run_the_same_formal_training_semantics(
         treatment_id="O",
         expected_treatments=("A", "O"),
         schedule=rows,
+        scenario_bank_sha256=bank.payload_sha256,
     )
     config = PPOConfig(
         hidden_layers=(8,),
@@ -899,6 +942,7 @@ def test_one_and_two_spawn_workers_run_the_same_formal_training_semantics(
             config=config,
             formal_spec=spec,
             opponent_pool=opponent_pool,
+            scenario_bank_path=bank.artifact_path,
         )
         for spec in one_specs
     )
@@ -916,6 +960,7 @@ def test_one_and_two_spawn_workers_run_the_same_formal_training_semantics(
             config=config,
             formal_spec=spec,
             opponent_pool=opponent_pool,
+            scenario_bank_path=bank.artifact_path,
         )
         for spec in two_specs
     )

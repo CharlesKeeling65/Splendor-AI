@@ -39,3 +39,11 @@ and manifest-binding contracts. All new behavior is opt-in through a
 
 This is protocol evidence, not a training result. Scenario snapshots and
 cross-runner deal parity begin in T1.2.
+
+## T1.2 ScenarioV1 and banks
+
+[`T1.2_SCENARIO_BANK.md`](T1.2_SCENARIO_BANK.md) records the immutable opening
+schema, registry hashes, seven disjoint split ranges, opening-only strata,
+content-addressed bank format, sealed consumption gate, and Game/raw/PPO
+parity contract. Only CI fixtures were produced; the formal sealed bank remains
+unmaterialized until the T1.3 power analysis and T1.4 approval gate.

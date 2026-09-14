@@ -15,7 +15,7 @@ from splendor.agents.our_agents.policy_imitation.manifest import (
     require_approved,
     transition_manifest,
 )
-from splendor.seed_registry import registry_sha256
+from splendor.seed_registry import TASK1_SCENARIO_SPLITS, registry_sha256
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -200,5 +200,49 @@ def test_v2_enforces_split_sealing_roles(tmp_path: Path) -> None:
                 "validation": "validation",
                 "final_test": "ci_smoke",
             },
+            **common,
+        )
+
+
+def test_v2_accepts_only_the_complete_authoritative_task1_split_map(
+    tmp_path: Path,
+) -> None:
+    common: dict[str, Any] = {
+        "experiment_id": "task1-splits",
+        "phase": "T1.2",
+        "purpose": "scenario bank protocol",
+        "budget": {"games": 1},
+        "hypotheses": {"H": "split isolation"},
+        "estimands": {"d": "none"},
+        "decision_rule": {"selection": "fixed"},
+        "artifact_contract": {"bank": "scenario_bank/*.jsonl.zst"},
+        "baselines": {"ppo-best": {"sha256": "a" * 64}},
+        "repo": REPO,
+    }
+    segments = {
+        name: segment.name for name, segment in TASK1_SCENARIO_SPLITS.items()
+    }
+    manifest = create_manifest_v2(
+        tmp_path / "task1.json",
+        seed_segments=segments,
+        **common,
+    )
+    assert manifest["declaration"]["seed_plan"]["segments"] == segments  # type: ignore[index]
+
+    missing = dict(segments)
+    missing.pop("validation-B")
+    with pytest.raises(ValueError, match="missing Task-1 scenario splits"):
+        create_manifest_v2(
+            tmp_path / "missing-task1.json",
+            seed_segments=missing,
+            **common,
+        )
+
+    wrong = dict(segments)
+    wrong["validation-A"] = "validation"
+    with pytest.raises(ValueError, match=r"validation-A.*must use"):
+        create_manifest_v2(
+            tmp_path / "wrong-task1.json",
+            seed_segments=wrong,
             **common,
         )

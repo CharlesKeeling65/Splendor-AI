@@ -26,6 +26,7 @@ RNG_PROTOCOL_PREFIX = b"splendor-rng-v1\0"
 _SEED63_MASK = (1 << 63) - 1
 _U53_DENOMINATOR = 1 << 53
 _UINT32_MAX = (1 << 32) - 1
+_SHA256_HEX_LENGTH = 64
 _FORMAL_WORKER_COUNT_ENV = "SPLENDOR_FORMAL_WORKER_COUNT"
 _JobT = TypeVar("_JobT")
 _ResultT = TypeVar("_ResultT")
@@ -514,11 +515,20 @@ class FormalTrainingSpec:
     treatment_id: str
     expected_treatments: tuple[str, ...]
     schedule: tuple[PairedTrainingRow, ...]
+    scenario_bank_sha256: str | None = None
     worker_count: int = 1
 
     def __post_init__(self) -> None:
         if self.worker_count < 1:
             raise ValueError("formal worker_count must be positive")
+        if self.scenario_bank_sha256 is not None and (
+            len(self.scenario_bank_sha256) != _SHA256_HEX_LENGTH
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.scenario_bank_sha256
+            )
+        ):
+            raise ValueError("formal scenario-bank SHA-256 is invalid")
         validate_paired_training_schedule(
             self.schedule,
             expected_treatments=self.expected_treatments,
@@ -535,7 +545,7 @@ class FormalTrainingSpec:
 
     def manifest_binding(self) -> dict[str, object]:
         """Return the treatment-neutral declaration a manifest must freeze."""
-        return {
+        binding: dict[str, object] = {
             "protocol": "paired-training-v1",
             "paired_schedule_sha256": paired_schedule_hash(
                 self.schedule,
@@ -546,6 +556,9 @@ class FormalTrainingSpec:
             "worker_count": self.worker_count,
             "worker_scope": "independent-training-jobs",
         }
+        if self.scenario_bank_sha256 is not None:
+            binding["scenario_bank_sha256"] = self.scenario_bank_sha256
+        return binding
 
     def require_worker_runtime(self) -> None:
         """Reject an N-worker declaration executed directly in the parent.
@@ -679,6 +692,7 @@ class FormalTrainingSpec:
                 self.schedule,
                 treatment_id=self.treatment_id,
             ),
+            "scenario_bank_sha256": self.scenario_bank_sha256,
             "manifest_binding": self.manifest_binding(),
             "model_init_lineage": self.model_init_lineage().as_dict(),
             "worker_lineages": [

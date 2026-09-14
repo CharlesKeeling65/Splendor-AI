@@ -38,6 +38,7 @@ class Game:
         displayer=None,
         agents_namelist=["Alice", "Bob"],
         interactive=False,
+        prepared_game_rule=None,
     ):
         self.seed = seed
         random.seed(self.seed)
@@ -53,7 +54,15 @@ class Game:
             assert plyr.id == i
             i += 1
 
-        self.game_rule = GameRule(num_of_agent)
+        # Scenario-aware callers may inject a fully prepared rule.  The
+        # default path remains byte-for-byte equivalent: legacy Game(seed)
+        # still constructs GameRule only after generating its seed list.
+        if prepared_game_rule is None:
+            self.game_rule = GameRule(num_of_agent)
+        else:
+            if prepared_game_rule.num_of_agent != num_of_agent:
+                raise ValueError("prepared game rule has the wrong seat count")
+            self.game_rule = prepared_game_rule
         self.gamemaster = DummyAgent(
             num_of_agent
         )  # GM/template agent used by some games (e.g. Azul, for signalling rounds).

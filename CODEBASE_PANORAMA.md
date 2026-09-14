@@ -557,3 +557,17 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
 - **质量门**：新增 remote policy/protocol/winrate/options/dashboard 离线测试与 CI mypy 路径；
   loopback/夹具测试不访问真实网页或外网。真实房间、profile、seat guard 和胜率曲线仍是
   单独人工验收，不在 CI 中执行。
+
+### 7.12 Task-1 T1.0–T1.2 科学实验协议（2026-09-15）
+
+- **T1.0 基线冻结**：复核官方 `ppo-best` 及父数据/checkpoint/opponent hash，将 C4-R2
+  的 50 source seeds、150 行伪重复分母与旧 Wilson 解释边界归档；manifest v2 实施
+  `proposed → approved → running → completed/blocked` 且 formal path fail closed。
+- **T1.1 RNG/CRN**：新增 canonical event-keyed SHA-256 派生、actor-local RNG、inverse-CDF policy
+  采样、显式 weighted pool 与 `spawn` worker；O/A/B/C 在 replicate 内共享训练 schedule，
+  replicate 间独立，1/N worker 保持 semantic hash。
+- **T1.2 ScenarioV1/bank**：90 卡+10 贵族与有序 3510 动作 registry 内容绑定，完整
+  开局快照通过 `scenario_id == canonical_state_sha256` 寻址；Game/raw evaluation/formal PPO
+  初态 observation/mask/hash 奇偶一致。七个互斥 seed split、IID/可审计分层压力抽样、
+  canonical JSONL(+zstd) 只读 bank、流式 subset loader 与密封消费 hash-chain ledger 已通过
+  两轮独立对抗测试。本阶段未生成/读取正式 sealed bank，未启动训练。

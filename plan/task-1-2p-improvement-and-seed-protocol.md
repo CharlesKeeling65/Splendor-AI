@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
 > 复核版本：2026-09-15。
-> 状态：实施中；T1.0、T1.1 已完成并通过独立验收，T1.2 待实施。本文中的训练阶段仍须各自通过批准门。
+> 状态：实施中；T1.0–T1.2 已完成并通过独立验收，T1.3 待实施。本文中的训练阶段仍须各自通过批准门。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -240,17 +240,17 @@ nobles_in_order, dealt[tier][slot], decks[tier], deck_top="list_end",
 initial_gems, current_agent_index, canonical_state_sha256, strata_v1
 ```
 
-- [ ] 用唯一 card/noble code 序列化，不保存 Python 对象 repr；明确 deck 顶端方向和 noble/明牌顺序。
-- [ ] canonical state 采用 UTF-8、排序 key、固定数字编码后 SHA-256；装载后重新编码必须得到同一 hash。
-- [ ] 新增可选 scenario factory/injection，不改变 `SplendorGameRule(n)` 默认构造；装载后校验 90 卡守恒、
+- [x] 用唯一 card/noble code 序列化，不保存 Python 对象 repr；明确 deck 顶端方向和 noble/明牌顺序。
+- [x] canonical state 采用 UTF-8、排序 key、固定数字编码后 SHA-256；装载后重新编码必须得到同一 hash。
+- [x] 新增可选 scenario factory/injection，不改变 `SplendorGameRule(n)` 默认构造；装载后校验 90 卡守恒、
   每层张数、12 张明牌、3 名贵族、初始宝石和 agent 空状态。
-- [ ] 同一 snapshot 经 `Game`、`evaluation.py`、`ppo_selfplay.py` 进入时，初始 observation、legal mask、
+- [x] 同一 snapshot 经 `Game`、`evaluation.py`、`ppo_selfplay.py` 进入时，初始 observation、legal mask、
   board hash 必须一致；这比“同一个整数 seed”更强。
-- [ ] 建立逻辑 split：`train-schedule`、`dagger-rollout`、`teacher-validation`、`validation-A`、
+- [x] 建立逻辑 split：`train-schedule`、`dagger-rollout`、`teacher-validation`、`validation-A`、
   `validation-B`、`sealed-test-iid`、`stress`；实际整数范围须在运行前同步登记到 `seed_registry.py` 与
   `docs/seed_registry.md`，并通过不重叠测试。
-- [ ] 除 source seed 外，再按 `scenario_id` 和 state hash 检查跨 split 重复；bank 为内容寻址、只读产物。
-- [ ] sealed 的含义是“冻结且未消费”，不是“seed 对人保密”；建立 append-only consumption ledger，
+- [x] 除 source seed 外，再按 `scenario_id` 和 state hash 检查跨 split 重复；bank 为内容寻址、只读产物。
+- [x] sealed 的含义是“冻结且未消费”，不是“seed 对人保密”；建立 append-only consumption ledger，
   只有 `purpose=final_report` 且候选集合已冻结时才允许读取。
 
 Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零的“开局可买性”（玩家开局无宝石），改为
@@ -258,9 +258,9 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
 明牌与贵族需求对齐度、低成本高分卡数量。任何“rush index”“阻塞难度”“贵族竞速”名称都必须先给出
 精确公式、阈值和单测。
 
-- [ ] `sealed-test-iid` 是自然发牌分布上的主估计集；
-- [ ] 平衡分层与 rush/贵族/阻塞压力集仅作稳健性诊断；
-- [ ] 若从大候选池按 strata 过采样，保存 inclusion probability。不得把压力集不加权平均冒充 IID 胜率；
+- [x] `sealed-test-iid` 是自然发牌分布上的主估计集；
+- [x] 平衡分层与 rush/贵族/阻塞压力集仅作稳健性诊断；
+- [x] 若从大候选池按 strata 过采样，保存 inclusion probability。不得把压力集不加权平均冒充 IID 胜率；
   需要总体估计时使用预注册权重并同时报告未加权分层结果。
 
 建议规模：快速筛选 50 unique scenarios，validation-A 100–200，validation-B 100–200；final IID 为

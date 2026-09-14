@@ -18,6 +18,7 @@ from typing import Any
 from splendor.seed_registry import (
     LEGACY_MANIFEST_FORBIDDEN_RANGES,
     SEED_REGISTRY_SCHEMA_VERSION,
+    TASK1_SCENARIO_SPLITS,
     registry_sha256,
     registry_snapshot,
     resolve_segment,
@@ -159,8 +160,33 @@ def _require_mapping(
     return value
 
 
-def _validate_seed_plan_v2(seed_plan: Mapping[str, Any]) -> None:
+def _validate_seed_plan_v2(  # noqa: C901,PLR0912 - all split roles fail closed
+    seed_plan: Mapping[str, Any],
+) -> None:
     segments = _require_mapping(seed_plan, "segments")
+    task1_names = set(TASK1_SCENARIO_SPLITS)
+    if set(segments) & task1_names:
+        missing_task1 = sorted(task1_names - set(segments))
+        if missing_task1:
+            raise ValueError(
+                "manifest v2 is missing Task-1 scenario splits: "
+                f"{', '.join(missing_task1)}"
+            )
+        unexpected = sorted(set(segments) - task1_names)
+        if unexpected:
+            raise ValueError(
+                "Task-1 scenario seed plan has unexpected splits: "
+                f"{', '.join(unexpected)}"
+            )
+        for logical_name, expected_segment in TASK1_SCENARIO_SPLITS.items():
+            declared = resolve_segment(str(segments[logical_name]))
+            if declared != expected_segment:
+                raise ValueError(
+                    f"Task-1 split {logical_name!r} must use {expected_segment.name!r}"
+                )
+        if seed_plan.get("seats") != [0, 1]:
+            raise ValueError("manifest v2 2p protocol requires seats [0, 1]")
+        return
     missing_splits = sorted(set(REQUIRED_SEED_GROUPS) - set(segments))
     if missing_splits:
         raise ValueError(
@@ -184,7 +210,9 @@ def _validate_seed_plan_v2(seed_plan: Mapping[str, Any]) -> None:
         raise ValueError("manifest v2 2p protocol requires seats [0, 1]")
 
 
-def _validate_declaration_v2(declaration: Mapping[str, Any]) -> None:
+def _validate_declaration_v2(  # noqa: C901,PLR0912 - declaration fields fail closed
+    declaration: Mapping[str, Any],
+) -> None:
     required = (
         "experiment_id",
         "phase",
@@ -203,7 +231,34 @@ def _validate_declaration_v2(declaration: Mapping[str, Any]) -> None:
     protocol_versions = _require_mapping(declaration, "protocol_versions")
     if protocol_versions.get("rng") != RNG_PROTOCOL_V1:
         raise ValueError("manifest v2 must declare splendor-rng-v1")
+    if protocol_versions.get("scenario") not in {
+        "ScenarioV1",  # T1.0 manifest compatibility alias
+        "splendor-scenario/1",
+    }:
+        raise ValueError("manifest v2 must declare ScenarioV1")
     _validate_seed_plan_v2(_require_mapping(declaration, "seed_plan"))
+    artifact_contract = _require_mapping(declaration, "artifact_contract")
+    scenario_banks = artifact_contract.get("scenario_banks")
+    if scenario_banks is not None:
+        if not isinstance(scenario_banks, Mapping) or not scenario_banks:
+            raise ValueError("artifact_contract scenario_banks must be a mapping")
+        payload_hashes: list[str] = []
+        for logical_split, payload_sha256 in scenario_banks.items():
+            if type(logical_split) is not str or not logical_split:
+                raise ValueError("scenario bank split names must be non-empty strings")
+            if (
+                type(payload_sha256) is not str
+                or len(payload_sha256) != SHA256_HEX_LENGTH
+                or any(
+                    character not in "0123456789abcdef" for character in payload_sha256
+                )
+            ):
+                raise ValueError(
+                    f"scenario bank {logical_split!r} payload SHA-256 is invalid"
+                )
+            payload_hashes.append(payload_sha256)
+        if len(payload_hashes) != len(set(payload_hashes)):
+            raise ValueError("scenario bank bindings must have unique payload hashes")
     raw_formal_training = declaration.get("formal_training")
     if raw_formal_training is not None:
         formal_training = _require_mapping(declaration, "formal_training")
@@ -241,6 +296,15 @@ def _validate_declaration_v2(declaration: Mapping[str, Any]) -> None:
             raise ValueError("formal training worker_count must be positive")
         if formal_training.get("worker_scope") != "independent-training-jobs":
             raise ValueError("formal training worker_scope is invalid")
+        scenario_bank_hash = formal_training.get("scenario_bank_sha256")
+        if scenario_bank_hash is not None and (
+            type(scenario_bank_hash) is not str
+            or len(scenario_bank_hash) != SHA256_HEX_LENGTH
+            or any(
+                character not in "0123456789abcdef" for character in scenario_bank_hash
+            )
+        ):
+            raise ValueError("formal training scenario-bank SHA-256 is invalid")
 
 
 def _validate_provenance_v2(provenance: Mapping[str, Any]) -> None:
@@ -415,7 +479,7 @@ def create_manifest_v2(  # noqa: PLR0913 - protocol fields are explicit
         "protocol_versions": {
             "manifest": MANIFEST_V2_PROTOCOL,
             "rng": RNG_PROTOCOL_V1,
-            "scenario": "ScenarioV1",
+            "scenario": "splendor-scenario/1",
         },
         "hypotheses": dict(hypotheses),
         "estimands": dict(estimands),

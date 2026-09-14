@@ -43,7 +43,6 @@ from .protocol import (
     configure_formal_torch_determinism,
     derive_seed,
     inverse_cdf_index,
-    isolated_python_seed,
     isolated_seed,
     require_reproducible_code,
     run_formal_spawn_jobs,
@@ -51,6 +50,13 @@ from .protocol import (
     sha256_canonical_json,
 )
 from .runner import TeacherDecisionError, select_action
+from .scenario import ScenarioV1, rule_from_scenario
+from .scenario_bank import (
+    ScenarioBank,
+    inspect_scenario_bank,
+    load_scenario_bank_subset,
+    scenario_lookup,
+)
 
 ValueMode = Literal["return", "outcome"]
 InitializationMode = Literal["bc", "scratch"]
@@ -464,6 +470,7 @@ class FormalPPOTrainingJob:
     config: PPOConfig
     formal_spec: FormalTrainingSpec
     opponent_pool: tuple[FormalOpponentSpec, ...]
+    scenario_bank_path: Path
 
     def __post_init__(self) -> None:
         if not self.opponent_pool:
@@ -471,6 +478,8 @@ class FormalPPOTrainingJob:
         names = [entry.entry_name for entry in self.opponent_pool]
         if len(names) != len(set(names)):
             raise ValueError("formal PPO opponent entry names must be unique")
+        if not self.scenario_bank_path.name:
+            raise ValueError("formal PPO job needs a scenario bank path")
 
 
 @dataclass(frozen=True)
@@ -730,6 +739,7 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
     update_index: int,
     game_index: int,
     formal_rng: FormalGameRng | None = None,
+    scenario: ScenarioV1 | None = None,
 ) -> tuple[dict[str, Any], list[PPOTransition]]:
     """Collect one on-policy game without teacher labels or policy switching.
 
@@ -745,6 +755,16 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
         or formal_rng.game_index != game_index
     ):
         raise ValueError("formal RNG coordinates do not match the PPO game")
+    if formal_rng is not None and scenario is None:
+        raise ValueError("formal PPO games require an immutable ScenarioV1 snapshot")
+    if scenario is not None and scenario.n_seats != n_seats:
+        raise ValueError("PPO seat count does not match the ScenarioV1 snapshot")
+    if (
+        formal_rng is not None
+        and scenario is not None
+        and formal_rng.scenario_id != scenario.scenario_id
+    ):
+        raise ValueError("formal RNG scenario_id does not match the snapshot")
     device = next(model.parameters()).device
     pool_snapshot: WeightedPoolSnapshot | None = None
     pool_lineage: SeedLineage | None = None
@@ -792,14 +812,12 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
 
     game_scope = isolated_seed(seed) if formal_rng is None else nullcontext()
     with game_scope:
-        if scenario_lineage is None:
+        if scenario is not None:
+            rule = rule_from_scenario(scenario)
+        elif scenario_lineage is None:
             rule = LimitRoundsGameRule(n_seats)
-        else:
-            # Until ScenarioV1 is injected in T1.2, isolate only the engine's
-            # Python-random deal.  Policy/minibatch/opponent streams are not
-            # reset or coupled to this source seed.
-            with isolated_python_seed(scenario_lineage.seed63):
-                rule = LimitRoundsGameRule(n_seats)
+        else:  # pragma: no cover - rejected by the formal snapshot gate above
+            raise AssertionError("formal ScenarioV1 gate was bypassed")
         # Roadmap B2->C: potential shaping is anchored at the first focal
         # decision and credits each transition when the next focal state (or
         # the terminal state) arrives - gamma*phi(s') - phi(s) telescopes.
@@ -893,9 +911,7 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
                         old_value=old_value,
                         reward=base_reward,
                         terminal=rule.gameEnds(),
-                        seed=scenario_lineage.seed63
-                        if scenario_lineage is not None
-                        else seed,
+                        seed=scenario.source_seed if scenario is not None else seed,
                         seat=seat,
                         scenario_id=formal_rng.scenario_id
                         if formal_rng is not None
@@ -1008,6 +1024,16 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
         },
         "action_trace_sha256": sha256_canonical_json(action_trace),
     }
+    if scenario is not None:
+        record.update(
+            {
+                "scenario_id": scenario.scenario_id,
+                "canonical_state_sha256": scenario.canonical_state_sha256,
+                "scenario_source_segment": scenario.source_segment,
+                "scenario_source_seed": scenario.source_seed,
+                "legacy_seed_argument": seed,
+            }
+        )
     if formal_rng is not None:
         assert pool_snapshot is not None
         assert pool_lineage is not None
@@ -1026,7 +1052,8 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
                 "scenario_source_seed63": scenario_lineage.seed63,
             }
         )
-        record["seed"] = scenario_lineage.seed63
+        assert scenario is not None
+        record["seed"] = scenario.source_seed
         record["rng_lineage"] = {
             "scenario_source": scenario_lineage.as_dict(),
             "pool_draw": pool_lineage.as_dict(),
@@ -1740,6 +1767,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     validation_opponents: Sequence[CandidateSpec] = (),
     source_manifest: str | None = None,
     formal_spec: FormalTrainingSpec | None = None,
+    formal_scenario_bank: ScenarioBank | None = None,
 ) -> dict[str, Any]:
     """Train PPO from BC and select only by fixed validation opponents.
 
@@ -1750,9 +1778,14 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     formal_rows = None
     formal_runtime: dict[str, Any] | None = None
     formal_protocol: dict[str, Any] | None = None
+    formal_scenarios: dict[str, ScenarioV1] = {}
     if formal_spec is None:
         if not training_seeds or len(set(training_seeds)) != len(training_seeds):
             raise ValueError("PPO training seeds must be nonempty and unique")
+        if formal_scenario_bank is not None:
+            raise ValueError(
+                "legacy PPO training cannot receive a formal scenario bank"
+            )
     else:
         if training_seeds:
             raise ValueError("formal PPO training forbids legacy training_seeds")
@@ -1767,6 +1800,22 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             games_per_update=config.games_per_update,
         )
         _require_formal_training_manifest(source_manifest, formal_spec)
+        if formal_scenario_bank is None:
+            raise ValueError("formal PPO training requires a ScenarioV1 bank")
+        if formal_scenario_bank.logical_split not in {"train-schedule", "ci-fixture"}:
+            raise ValueError("formal PPO training requires the train-schedule bank")
+        if formal_spec.scenario_bank_sha256 is None:
+            raise ValueError("formal training spec must bind a scenario-bank SHA-256")
+        if formal_scenario_bank.payload_sha256 != formal_spec.scenario_bank_sha256:
+            raise ValueError("formal training scenario-bank SHA-256 mismatch")
+        formal_scenarios = scenario_lookup(formal_scenario_bank.scenarios)
+        scheduled_ids = {row.scenario_id for row in formal_rows}
+        missing_scenarios = sorted(scheduled_ids - set(formal_scenarios))
+        if missing_scenarios:
+            raise ValueError(
+                "formal scenario bank is missing scheduled states: "
+                f"{missing_scenarios[:3]}"
+            )
         formal_spec.require_worker_runtime()
         formal_runtime = configure_formal_torch_determinism(
             config.device_name
@@ -1845,6 +1894,17 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             else None,
             "formal_protocol": formal_protocol,
             "formal_runtime": formal_runtime,
+            "formal_scenario_bank": {
+                "logical_split": formal_scenario_bank.logical_split,
+                "payload_sha256": formal_scenario_bank.payload_sha256,
+                "state_set_sha256": formal_scenario_bank.state_set_sha256,
+                "artifact_sha256": formal_scenario_bank.artifact_sha256,
+                "artifact_path": str(formal_scenario_bank.artifact_path),
+                "scenario_count": formal_scenario_bank.scenario_count,
+                "materialized_scenario_count": len(formal_scenario_bank.scenarios),
+            }
+            if formal_scenario_bank is not None
+            else None,
             "validation_seeds": [int(seed) for seed in validation_seeds]
             if validation_seeds
             else None,
@@ -1960,6 +2020,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         rollout_started = time.perf_counter()
         for game_index in range(config.games_per_update):
             formal_game_rng: FormalGameRng | None = None
+            game_scenario: ScenarioV1 | None = None
             if formal_spec is None:
                 seed = int(
                     training_seeds[
@@ -1970,9 +2031,10 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                 seat = (update + game_index) % 2
             else:
                 schedule_row = formal_row_by_coordinate[(update, game_index)]
-                seed = schedule_row.scenario_source.seed63
                 seat = schedule_row.seat
                 formal_game_rng = schedule_row.game_rng()
+                game_scenario = formal_scenarios[formal_game_rng.scenario_id]
+                seed = game_scenario.source_seed
             try:
                 if formal_game_rng is None:
                     record, game_transitions = collect_ppo_game(
@@ -1985,6 +2047,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                         game_index=game_index,
                     )
                 else:
+                    assert game_scenario is not None
                     record, game_transitions = collect_ppo_game(
                         model,
                         entries,
@@ -1994,6 +2057,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                         update_index=update,
                         game_index=game_index,
                         formal_rng=formal_game_rng,
+                        scenario=game_scenario,
                     )
             except Exception as exc:  # preserve a failed rollout in the log
                 record = {
@@ -2010,6 +2074,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                     "elapsed_seconds": time.perf_counter() - rollout_started,
                 }
                 if formal_game_rng is not None:
+                    assert game_scenario is not None
                     record.update(
                         {
                             "experiment_id": formal_game_rng.experiment_id,
@@ -2017,6 +2082,11 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                             "replicate_id": formal_game_rng.replicate_id,
                             "treatment_id": formal_game_rng.treatment_id,
                             "scenario_id": formal_game_rng.scenario_id,
+                            "canonical_state_sha256": (
+                                game_scenario.canonical_state_sha256
+                            ),
+                            "scenario_source_segment": game_scenario.source_segment,
+                            "scenario_source_seed": game_scenario.source_seed,
                             "coupling_group": formal_game_rng.coupling_group,
                             "rng_lineage": {
                                 "scenario_source": schedule_row.scenario_source.as_dict(),
@@ -2208,6 +2278,14 @@ def _run_formal_ppo_training_job(job: FormalPPOTrainingJob) -> dict[str, Any]:
         opponent.build(device_name=job.config.device_name)
         for opponent in job.opponent_pool
     ]
+    selected_rows = job.formal_spec.selected_rows(
+        updates=job.config.updates,
+        games_per_update=job.config.games_per_update,
+    )
+    scenario_bank = load_scenario_bank_subset(
+        job.scenario_bank_path,
+        {row.scenario_id for row in selected_rows},
+    )
     return train_ppo_selfplay(
         job.initial_bc,
         job.output_dir,
@@ -2216,6 +2294,7 @@ def _run_formal_ppo_training_job(job: FormalPPOTrainingJob) -> dict[str, Any]:
         config=job.config,
         source_manifest=str(job.source_manifest),
         formal_spec=job.formal_spec,
+        formal_scenario_bank=scenario_bank,
     )
 
 
@@ -2235,6 +2314,12 @@ def run_formal_ppo_training_jobs(
         raise ValueError("formal PPO training job matrix must not be empty")
     if any(job.formal_spec.worker_count != worker_count for job in jobs):
         raise ValueError("formal PPO jobs do not match executor worker_count")
+    bank_manifests = [inspect_scenario_bank(job.scenario_bank_path) for job in jobs]
+    if any(
+        bank["payload_sha256"] != job.formal_spec.scenario_bank_sha256
+        for job, bank in zip(jobs, bank_manifests, strict=True)
+    ):
+        raise ValueError("formal PPO job scenario bank does not match its spec")
     bindings = {
         sha256_canonical_json(job.formal_spec.manifest_binding()) for job in jobs
     }

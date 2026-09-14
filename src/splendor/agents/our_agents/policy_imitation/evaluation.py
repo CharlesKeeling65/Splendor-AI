@@ -18,6 +18,7 @@ from splendor.splendor.utils import LimitRoundsGameRule
 from .policies import CandidateSpec
 from .protocol import isolated_seed
 from .runner import TeacherDecisionError, select_action
+from .scenario import ScenarioV1, rule_from_scenario
 from .trajectory import TrajectoryDataset, TrajectoryStep
 
 DecisionProbeSink = Callable[["DecisionProbe"], None]
@@ -64,8 +65,14 @@ def play_game(  # noqa: PLR0913,PLR0915 - one game owns all audit counters
     feature_version: str | None = None,
     collect_trajectory: bool = False,
     probe_sink: DecisionProbeSink | None = None,
+    scenario: ScenarioV1 | None = None,
 ) -> tuple[dict[str, Any], list[TrajectoryStep]]:
-    """Play one raw-engine game and retain failures in its denominator."""
+    """Play one raw-engine game and retain failures in its denominator.
+
+    ``scenario`` is an explicit opt-in.  The historical integer-seed path is
+    unchanged; when a snapshot is supplied the seed can affect legacy agent
+    randomness but can no longer redeal the opening board.
+    """
     if seat not in (0, 1):
         raise ValueError(f"seat must be 0 or 1, got {seat}")
     schema = feature_version or candidate.feature_version
@@ -84,7 +91,9 @@ def play_game(  # noqa: PLR0913,PLR0915 - one game owns all audit counters
     started = time.perf_counter()
 
     with isolated_seed(seed):
-        rule = LimitRoundsGameRule(2)
+        rule = (
+            LimitRoundsGameRule(2) if scenario is None else rule_from_scenario(scenario)
+        )
         while not rule.gameEnds():
             state = rule.current_game_state
             turn = rule.current_agent_index
@@ -98,8 +107,9 @@ def play_game(  # noqa: PLR0913,PLR0915 - one game owns all audit counters
                     else None
                 )
                 legal_mask = (
-                    create_legal_actions_mask(legal_actions, state, seat)
-                    .astype(np.uint8)
+                    create_legal_actions_mask(legal_actions, state, seat).astype(
+                        np.uint8
+                    )
                     if collect_trajectory
                     else None
                 )
@@ -139,7 +149,9 @@ def play_game(  # noqa: PLR0913,PLR0915 - one game owns all audit counters
                             observation=observation,
                             legal_mask=legal_mask,
                             action_index=decision.action_index,
-                            deal_seed=seed,
+                            deal_seed=(
+                                scenario.source_seed if scenario is not None else seed
+                            ),
                             seat=seat,
                             ply=rule.action_counter - 1,
                             step_in_episode=len(trajectory),
@@ -200,6 +212,16 @@ def play_game(  # noqa: PLR0913,PLR0915 - one game owns all audit counters
         },
         "opponent_cost": _cost_summary(rival_latencies),
     }
+    if scenario is not None:
+        record.update(
+            {
+                "scenario_id": scenario.scenario_id,
+                "canonical_state_sha256": scenario.canonical_state_sha256,
+                "scenario_source_segment": scenario.source_segment,
+                "scenario_source_seed": scenario.source_seed,
+                "legacy_seed_argument": seed,
+            }
+        )
     # Keep the probe API useful while avoiding a second source of truth for
     # labels: callers can infer the label from the copied legal actions only
     # when they need to run a dedicated audit.
@@ -233,7 +255,9 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "opponent_illegal_actions": sum(
             int(record["opponent_illegal_actions"]) for record in records
         ),
-        "candidate_queries": sum(int(record["candidate_queries"]) for record in records),
+        "candidate_queries": sum(
+            int(record["candidate_queries"]) for record in records
+        ),
         "candidate_search_nodes": sum(
             int(record["candidate_search_nodes"]) for record in records
         ),
@@ -292,9 +316,7 @@ def evaluate_matrix(
     """Run a declared candidate x fixed-opponent matrix."""
     return {
         candidate.name: {
-            opponent.name: evaluate_candidate(
-                candidate, opponent, seeds, seats=seats
-            )
+            opponent.name: evaluate_candidate(candidate, opponent, seeds, seats=seats)
             for opponent in opponents
         }
         for candidate in candidates

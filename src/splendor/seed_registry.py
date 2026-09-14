@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 SEED_REGISTRY_SCHEMA_VERSION = "splendor-seed-registry/1"
@@ -79,6 +80,60 @@ Z_TRAINING = SeedSegment("z_training", 1_040_000, 1_140_000, "AZ self-play train
 Z_VALIDATION = SeedSegment("z_validation", 1_140_000, 1_140_100, "AZ iteration model selection", False)
 Z_TEST = SeedSegment("z_test", 1_141_000, 1_141_100, "AZ final reported evaluation", True)
 
+#: Task-1 ScenarioV1 source segments (registered 2026-09-15).  The training
+#: capacity covers 5 replicates x 2,000 updates x 16 games with headroom.  The
+#: final IID segment is deliberately capped at the plan's 500-scenario ceiling;
+#: expanding it requires a pre-unsealing registry amendment.
+TASK1_TRAIN_SCHEDULE = SeedSegment(
+    "task1_train_schedule",
+    1_150_000,
+    1_350_000,
+    "Task-1 paired PPO training ScenarioV1 sources",
+    False,
+)
+TASK1_DAGGER_ROLLOUT = SeedSegment(
+    "task1_dagger_rollout",
+    1_350_000,
+    1_370_000,
+    "Task-1 learner-induced DAgger rollout scenarios",
+    False,
+)
+TASK1_TEACHER_VALIDATION = SeedSegment(
+    "task1_teacher_validation",
+    1_370_000,
+    1_372_000,
+    "Task-1 teacher quality and information-set gate",
+    False,
+)
+TASK1_VALIDATION_A = SeedSegment(
+    "task1_validation_a",
+    1_372_000,
+    1_373_000,
+    "Task-1 screening and diagnostic validation-A",
+    False,
+)
+TASK1_VALIDATION_B = SeedSegment(
+    "task1_validation_b",
+    1_373_000,
+    1_374_000,
+    "Task-1 locked shortlist selection validation-B",
+    False,
+)
+TASK1_SEALED_TEST_IID = SeedSegment(
+    "task1_sealed_test_iid",
+    1_374_000,
+    1_374_500,
+    "Task-1 final natural-deal IID report bank",
+    True,
+)
+TASK1_STRESS = SeedSegment(
+    "task1_stress",
+    1_374_500,
+    1_394_500,
+    "Task-1 diagnostic stress candidate pool",
+    False,
+)
+
 ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     STABILIZATION_TRAINING,
     STABILIZATION_VALIDATION,
@@ -96,10 +151,29 @@ ALL_SEGMENTS: tuple[SeedSegment, ...] = (
     Z_TRAINING,
     Z_VALIDATION,
     Z_TEST,
+    TASK1_TRAIN_SCHEDULE,
+    TASK1_DAGGER_ROLLOUT,
+    TASK1_TEACHER_VALIDATION,
+    TASK1_VALIDATION_A,
+    TASK1_VALIDATION_B,
+    TASK1_SEALED_TEST_IID,
+    TASK1_STRESS,
 )
 
 SEGMENTS_BY_NAME: dict[str, SeedSegment] = {
     segment.name: segment for segment in ALL_SEGMENTS
+}
+
+# Logical names are part of the Task-1 protocol; interval bounds remain owned
+# by the SeedSegment declarations above rather than being repeated by runners.
+TASK1_SCENARIO_SPLITS: dict[str, SeedSegment] = {
+    "train-schedule": TASK1_TRAIN_SCHEDULE,
+    "dagger-rollout": TASK1_DAGGER_ROLLOUT,
+    "teacher-validation": TASK1_TEACHER_VALIDATION,
+    "validation-A": TASK1_VALIDATION_A,
+    "validation-B": TASK1_VALIDATION_B,
+    "sealed-test-iid": TASK1_SEALED_TEST_IID,
+    "stress": TASK1_STRESS,
 }
 
 #: Ranges that were burned by pre-registry experiments; no new seed may fall
@@ -124,6 +198,39 @@ class SeedRegistryError(ValueError):
     """Raised when a requested seed range violates the registry."""
 
 
+def validate_registry_disjointness() -> None:
+    """Reject duplicate names or overlapping declared/historically burned ranges."""
+    if len(SEGMENTS_BY_NAME) != len(ALL_SEGMENTS):
+        raise SeedRegistryError("seed registry contains duplicate segment names")
+    ordered = sorted(ALL_SEGMENTS, key=lambda segment: (segment.start, segment.end))
+    for segment in ordered:
+        if segment.start < 0 or segment.start >= segment.end:
+            raise SeedRegistryError(f"seed segment {segment.name!r} is invalid")
+    for left, right in pairwise(ordered):
+        if left.end > right.start:
+            raise SeedRegistryError(
+                f"seed segments {left.name!r} and {right.name!r} overlap"
+            )
+    for segment in ALL_SEGMENTS:
+        for start, end in FORBIDDEN_RANGES:
+            if max(segment.start, start) < min(segment.end, end):
+                raise SeedRegistryError(
+                    f"seed segment {segment.name!r} overlaps burned range "
+                    f"[{start}, {end})"
+                )
+
+
+def resolve_task1_scenario_split(logical_split: str) -> SeedSegment:
+    """Resolve one versioned Task-1 logical split to its registered segment."""
+    segment = TASK1_SCENARIO_SPLITS.get(logical_split)
+    if segment is None:
+        known = ", ".join(TASK1_SCENARIO_SPLITS)
+        raise SeedRegistryError(
+            f"unknown Task-1 scenario split {logical_split!r}; known: {known}"
+        )
+    return segment
+
+
 def registry_snapshot() -> dict[str, Any]:
     """Return the canonical machine-readable seed-registry declaration.
 
@@ -131,6 +238,7 @@ def registry_snapshot() -> dict[str, Any]:
     registry itself remains the only place that declares interval bounds,
     purposes, sealing, and historically burned ranges.
     """
+    validate_registry_disjointness()
     return {
         "schema": SEED_REGISTRY_SCHEMA_VERSION,
         "segments": [
