@@ -112,7 +112,56 @@ def test_act_respects_the_mask(server_port: int) -> None:
         decision = client.act("m1", obs, mask)
     assert decision.action == 1234
     assert decision.top and decision.top[0]["idx"] == 1234
+    assert decision.score_kind == "q"
+    assert decision.top[0]["score"] == decision.top[0]["q"]
     assert isinstance(decision.top[0]["q"], float)
+
+
+def test_client_normalizes_canonical_policy_scores() -> None:
+    """A PPO response keeps its score semantics through the client seam."""
+    client = InferenceClient("unused", 0)
+    client._call = lambda _op, **_payload: {  # type: ignore[method-assign]  # noqa: SLF001
+        "action": 7,
+        "kind": "imitation_ppo_policy_value",
+        "score_kind": "policy_logit",
+        "top": [{"idx": 7, "score": 1.25, "q": 1.25}],
+    }
+    decision = client.act("ppo", np.zeros(265), np.ones(3510))
+    assert decision.score_kind == "policy_logit"
+    assert decision.kind == "imitation_ppo_policy_value"
+    assert decision.top == ({"idx": 7, "score": 1.25, "q": 1.25},)
+
+
+def test_client_normalizes_legacy_q_only_scores() -> None:
+    """Old q-only servers remain readable as canonical action scores."""
+    client = InferenceClient("unused", 0)
+    client._call = lambda _op, **_payload: {  # type: ignore[method-assign]  # noqa: SLF001
+        "action": 3,
+        "top": [{"idx": 3, "q": -0.5}],
+    }
+    decision = client.act("old", np.zeros(265), np.ones(3510))
+    assert decision.score_kind == "q"
+    assert decision.kind is None
+    assert decision.top == ({"idx": 3, "score": -0.5, "q": -0.5},)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"idx": 3, "score": None},
+        {"idx": 3, "score": "not-a-number"},
+        {"idx": 3, "score": float("nan")},
+    ],
+)
+def test_client_rejects_malformed_canonical_scores(item: dict[str, Any]) -> None:
+    """Malformed ranking values fail at the protocol boundary."""
+    client = InferenceClient("unused", 0)
+    client._call = lambda _op, **_payload: {  # type: ignore[method-assign]  # noqa: SLF001
+        "action": 3,
+        "top": [item],
+    }
+    with pytest.raises(InferenceClientError, match="malformed act ranking"):
+        client.act("bad", np.zeros(265), np.ones(3510))
 
 
 def test_act_shape_violation_is_an_error_frame(server_port: int) -> None:

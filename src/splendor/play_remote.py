@@ -39,7 +39,7 @@ import multiprocessing
 import random
 import subprocess
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +48,7 @@ import numpy as np
 
 from splendor.browser.browser_env import BrowserSplendorEnv
 from splendor.browser.dom_extractor import (
+    Snapshot,
     extract_snapshot,
     is_my_turn,
     waiting_seat,
@@ -72,6 +73,8 @@ START_WAIT_SECONDS = 60.0
 # seat (SessionManager.my_seat); the server needs a beat to render the badge.
 SEAT_VERIFY_SECONDS = 8.0
 DEFAULT_LOGS_DIR = "logs"
+MIN_SEATS = 2
+MAX_SEATS = 4
 
 
 # ----- event stream -------------------------------------------------------------
@@ -165,15 +168,87 @@ def _model_for(bot_id: int, options: dict[str, Any]) -> str:
     return ids[0] if len(ids) == 1 else ids[bot_id]
 
 
+def _snapshot_has_board(snapshot: Mapping[str, Any]) -> bool:
+    """Return whether a snapshot contains a live board, not the room page."""
+    deck_counts = snapshot.get("deck_counts") or []
+    dealt = snapshot.get("dealt") or []
+    return any(bool(count) for count in deck_counts) or any(
+        slot is not None for row in dealt for slot in row
+    )
+
+
+def _validate_model_seats(
+    model_id: str, metadata: Mapping[str, Any], seat_count: int
+) -> None:
+    """Validate an actual DOM seat count against one served feature schema."""
+    if not MIN_SEATS <= seat_count <= MAX_SEATS:
+        raise ValueError(
+            f"model {model_id!r} supports {MIN_SEATS}..{MAX_SEATS} seats, "
+            f"got {seat_count} "
+            "from the live board"
+        )
+    feature_version = metadata.get("feature_version", "v1")
+    if feature_version == "public-v2" and seat_count != MIN_SEATS:
+        raise ValueError(
+            f"model {model_id!r} uses public-v2, which supports exactly "
+            f"{MIN_SEATS} seats, got {seat_count} from the live board"
+        )
+    if feature_version not in {"v1", "public-v2", "public-v2-multi"}:
+        raise ValueError(
+            f"model {model_id!r} advertises unsupported feature schema "
+            f"{feature_version!r}"
+        )
+
+
+def _seat_compatibility_listener(
+    models: Mapping[str, Mapping[str, Any]],
+    acting_model_id: str,
+    winrate_model_id: str,
+) -> Callable[[Snapshot], None]:
+    """Build a first-board guard for both action and win-rate models.
+
+    The listener runs inside ``BrowserSplendorEnv``'s polling loop, before the
+    observation extractor can reject a three/four-seat table for a legacy
+    ``public-v2`` model.  Room and terminal snapshots have no board and are
+    intentionally ignored.
+    """
+    checked = False
+
+    def check(snapshot: Snapshot) -> None:
+        nonlocal checked
+        if checked or not _snapshot_has_board(snapshot):
+            return
+        seat_count = len(snapshot.get("panels") or [])
+        _validate_model_seats(
+            acting_model_id, models[acting_model_id], seat_count
+        )
+        if winrate_model_id != acting_model_id:
+            _validate_model_seats(
+                winrate_model_id, models[winrate_model_id], seat_count
+            )
+        checked = True
+
+    return check
+
+
 def run_bot(bot_id: int, options: dict[str, Any]) -> None:
     """
     One seat, one browser task space, one remote connection. Runs in a child
     process (multiprocessing spawn): the ego-browser adapter shells out per
     call and the isolation keeps one bot's crash from the others.
     """
-    # Each worker pins its own model (per-bot ids allow checkpoint matches);
-    # the child's options dict is a private pickle copy, safe to specialize.
-    options = {**options, "model": _model_for(bot_id, options)}
+    # Each worker pins its own acting model (per-bot ids allow checkpoint
+    # matches); the child's options dict is a private pickle copy, safe to
+    # specialize.  Win-rate defaults to that same acting model, but can be a
+    # separately served evaluator through the global --winrate-model option.
+    acting_model_id = _model_for(bot_id, options)
+    winrate_model_id = options.get("winrate_model") or acting_model_id
+    options = {
+        **options,
+        "model": acting_model_id,
+        "acting_model_id": acting_model_id,
+        "winrate_model_id": winrate_model_id,
+    }
     events = EventWriter(
         Path(options["events_dir"]),
         bot_id,
@@ -184,11 +259,18 @@ def run_bot(bot_id: int, options: dict[str, Any]) -> None:
     )
     ping = client.ping()
     models = {model["id"]: model for model in ping["models"]}
-    if options["model"] not in models:
+    if acting_model_id not in models:
         raise SystemExit(
-            f"model {options['model']!r} not served (available: {sorted(models)})"
+            f"model {acting_model_id!r} not served (available: {sorted(models)})"
         )
-    feature_version = models[options["model"]]["feature_version"]
+    if winrate_model_id not in models:
+        raise SystemExit(
+            f"win-rate model {winrate_model_id!r} not served "
+            f"(available: {sorted(models)})"
+        )
+    acting_metadata = models[acting_model_id]
+    feature_version = acting_metadata["feature_version"]
+    options["score_kind"] = acting_metadata.get("score_kind", "q")
     events.emit({"type": "log", "level": "info",
                  "message": f"bot{bot_id} connected; server models={sorted(models)}"})
 
@@ -198,6 +280,9 @@ def run_bot(bot_id: int, options: dict[str, Any]) -> None:
         driver, session,
         poll_interval=options["poll"], step_timeout=options["timeout"],
         feature_version=feature_version,
+        snapshot_listener=_seat_compatibility_listener(
+            models, acting_model_id, winrate_model_id
+        ),
     )
 
     for game_index in range(options["games"]):
@@ -523,7 +608,27 @@ class _GameContext:
     my_seat: int = 0
 
     def emit(self, event: dict[str, Any]) -> None:
-        self.events.emit({"bot": self.bot_id, "game": self.game_index + 1, **event})
+        acting_model_id = str(
+            self.options.get("acting_model_id") or self.options.get("model") or ""
+        )
+        winrate_model_id = str(
+            self.options.get("winrate_model_id")
+            or self.options.get("winrate_model")
+            or acting_model_id
+        )
+        score_kind = str(
+            event.get("score_kind") or self.options.get("score_kind") or "q"
+        )
+        payload = {
+            "bot": self.bot_id,
+            "game": self.game_index + 1,
+            "acting_model_id": acting_model_id,
+            "winrate_model_id": winrate_model_id,
+            "score_kind": score_kind,
+            "winrate_mode": "homogeneous_selfplay_proxy",
+            **event,
+        }
+        self.events.emit(payload)
 
     def estimate(
         self, snapshot: Mapping[str, Any], actor_seat: int
@@ -533,7 +638,11 @@ class _GameContext:
             return None
         try:
             result = self.client.estimate_winrate(
-                self.options["model"], snapshot, actor_seat,
+                self.options.get("winrate_model_id")
+                or self.options.get("winrate_model")
+                or self.options["model"],
+                snapshot,
+                actor_seat,
                 n_rollouts=self.options["n_rollouts"],
             )
             return result["win_rates"]
@@ -616,14 +725,21 @@ def _board_summary(snapshot: Mapping[str, Any], my_seat: int) -> dict[str, Any]:
 def _ranking_payload(
     top: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Server ranking + Chinese descriptions for the dashboard panel."""
+    """Server action-score ranking + Chinese descriptions for the dashboard."""
     ranked: list[dict[str, Any]] = []
     for item in top:
         idx = int(item["idx"])
+        raw_score = item.get("score", item.get("q"))
+        if raw_score is None:
+            raise ValueError(f"ranking item has no score: {item!r}")
+        score = float(raw_score)
         ranked.append(
             {
                 "idx": idx,
-                "q": float(item["q"]),
+                "score": score,
+                # Keep the alias in event logs too: old dashboard clients and
+                # archived q-only streams remain readable after an upgrade.
+                "q": score,
                 "desc": _describe_action(ALL_ACTIONS[idx]),
             }
         )
@@ -648,8 +764,14 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
         bot_id=bot_id, game_index=game_index, options=options,
         client=client, events=events, my_seat=int(info["my_id"]),
     )
+    seat_count = len(start_snapshot["panels"])
+    if not MIN_SEATS <= seat_count <= MAX_SEATS:
+        raise ValueError(
+            f"live board has no playable {MIN_SEATS}..{MAX_SEATS} seat count "
+            f"(got {seat_count})"
+        )
     ctx.emit({"type": "game_start", "my_seat": ctx.my_seat,
-              "seats": len(start_snapshot["panels"]) or 2})
+              "seats": seat_count})
 
     last_scores = {
         seat: float(panel["score"])
@@ -662,7 +784,18 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
     for _step in range(options["max_steps"]):
         anomalies += _emit_parity(env, ctx)
         mask = env.get_legal_actions_mask()
-        decision = client.act(options["model"], obs, mask)
+        acting_model_id = (
+            options.get("acting_model_id") or options.get("model")
+        )
+        if not acting_model_id:
+            raise ValueError("no acting model configured")
+        decision = client.act(acting_model_id, obs, mask)
+        expected_score_kind = options.get("score_kind")
+        if expected_score_kind and decision.score_kind != expected_score_kind:
+            raise ValueError(
+                f"act score_kind {decision.score_kind!r} disagrees with "
+                f"ping metadata {expected_score_kind!r}"
+            )
         action = decision.action
         desc = _describe_action(ALL_ACTIONS[action])
         act_snapshot = extract_snapshot(env.driver)
@@ -672,6 +805,7 @@ def _run_game(  # noqa: PLR0913, PLR0914, PLR0917 - harness surface (repo style)
             "seq": seq + 1,
             "action": action,
             "desc": desc,
+            "score_kind": decision.score_kind,
             "top": _ranking_payload(decision.top),
             "legal_count": int(np.count_nonzero(mask)),
             "board": board,
@@ -802,6 +936,11 @@ def _parse_args() -> dict[str, Any]:
                         help="model_id served remotely; one id for every bot, "
                              "or comma-separated ids mapped to bots in order "
                              "(e.g. --model bot1,bot2).")
+    parser.add_argument(
+        "--winrate-model", default=None,
+        help="optional served model_id for win-rate rollouts (defaults to "
+             "each bot's acting model).",
+    )
     parser.add_argument("--games", type=int, default=10)
     parser.add_argument("--bots", type=int, default=1,
                         help="Number of concurrent bot workers (seats).")
@@ -831,6 +970,10 @@ def _parse_args() -> dict[str, Any]:
             "--model takes one id for all bots, or one comma-separated id per "
             f"bot (got {len(model_ids)} id(s) for {options['bots']} bot(s))"
         )
+    if options["winrate_model"] is not None:
+        options["winrate_model"] = options["winrate_model"].strip()
+        if not options["winrate_model"]:
+            raise SystemExit("--winrate-model must not be empty")
 
     host_text, _, port_text = options["server"].rpartition(":")
     if not host_text or not port_text.isdigit():

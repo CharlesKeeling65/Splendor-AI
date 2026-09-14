@@ -17,10 +17,14 @@ keeping failure attribution one-to-one).
 Operations (request -> response payload):
 
 * ``ping``    -> ``{"models": [...], "device": "cpu"}``
-* ``act``     -> ``{"action": int, "top": [{"idx": int, "q": float}, ...]}``
-                 (obs 265-d + mask 3510-d in; optional ``top_k``, default 5 -
-                 ranking is over *legal* actions only, so displayed Q values
-                 never hit the illegal HUGE_NEG sentinel)
+* ``act``     -> ``{"action": int, "top": [{"idx": int, "score": float,
+                 "q": float}, ...], "score_kind": str}`` (obs 265-d + mask
+                 3510-d in; optional ``top_k``, default 5 - ranking is over
+                 *legal* actions only, so displayed scores never hit the
+                 illegal HUGE_NEG sentinel).  ``score`` is canonical;
+                 ``q`` is retained as a compatibility alias for clients from
+                 before PPO support.  ``score_kind`` is ``"q"`` for DQN and
+                 ``"policy_logit"`` for the masked PPO policy.
 * ``winrate`` -> ``{"win_rates": [float per seat], "draw_rate": float, ...}``
 """
 

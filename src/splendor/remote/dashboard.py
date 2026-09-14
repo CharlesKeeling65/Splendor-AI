@@ -1,6 +1,6 @@
 """
 Local real-time dashboard (phase-6): watches the bots' JSONL event streams
-and serves one HTML page - the per-seat win-rate line chart (before/after
+and serves one HTML page - the per-seat win-rate proxy line chart (before/after
 every action), cumulative stats and the action/discard log feed.
 
 stdlib-only on purpose: the dashboard runs on the deployment machine next
@@ -11,7 +11,7 @@ a Splendor deployment and immune to SSE plumbing.
 Server-side cost control: each ``bot*.jsonl`` is parsed once and reused
 until its ``(mtime_ns, size)`` changes, so a 1.5s poll of a quiet
 directory is a handful of ``stat`` calls, not a full re-read. Only the
-latest ``remote_act`` keeps its Q-ranking payload; older ones are served
+latest ``remote_act`` keeps its action-score ranking payload; older ones are served
 with ``top: []`` (the page never looks past the newest decision, and the
 ranking lists are the fattest field in the stream).
 
@@ -95,7 +95,7 @@ class _EventStore:
 
 def _prune_rankings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Keep the Q-ranking only on the newest ``remote_act``; copy-on-write.
+    Keep the action-score ranking only on the newest ``remote_act``; copy-on-write.
 
     The page's decision panel reads ``top`` from the latest remote decision
     alone. Every older ranking is pure payload weight on a 1.5s poll, so

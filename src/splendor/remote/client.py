@@ -11,6 +11,7 @@ which already has per-game recovery).
 """
 
 import io
+import math
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -38,10 +39,17 @@ class InferenceClientError(RuntimeError):
 
 @dataclass(frozen=True)
 class ActDecision:
-    """Greedy action plus the server's legal-action Q ranking."""
+    """Greedy action plus the server's legal-action score ranking.
+
+    ``score_kind`` and ``kind`` were added after the original Q-only
+    protocol.  Their defaults deliberately preserve the interpretation of
+    responses from an older server, which only returned ``q`` values.
+    """
 
     action: int
-    top: tuple[dict[str, Any], ...]  # [{"idx": int, "q": float}, ...]
+    top: tuple[dict[str, Any], ...]  # [{"idx": int, "score": float, "q": float}, ...]
+    score_kind: str = "q"
+    kind: str | None = None
 
 
 class InferenceClient:
@@ -71,7 +79,9 @@ class InferenceClient:
         Greedy action for one observation under one legal mask.
 
         :returns: :class:`ActDecision` - the chosen ``ALL_ACTIONS`` index plus
-                  the server's top-k legal Q ranking (for logging / dashboard).
+                  the server's top-k legal action-score ranking (for logging /
+                  dashboard).  The canonical per-item field is ``score``;
+                  ``q`` is also present as a compatibility alias.
         """
         response = self._call(
             OP_ACT,
@@ -84,12 +94,43 @@ class InferenceClient:
         if not isinstance(action, int):
             raise InferenceClientError(f"malformed act response: {response!r}")
         raw_top = response.get("top") or []
+        if not isinstance(raw_top, list):
+            raise InferenceClientError(f"malformed act ranking: {raw_top!r}")
         top: list[dict[str, Any]] = []
         for item in raw_top:
-            if not isinstance(item, dict) or "idx" not in item or "q" not in item:
+            if (
+                not isinstance(item, dict)
+                or "idx" not in item
+                or ("score" not in item and "q" not in item)
+            ):
                 raise InferenceClientError(f"malformed act ranking: {item!r}")
-            top.append({"idx": int(item["idx"]), "q": float(item["q"])})
-        return ActDecision(action=action, top=tuple(top))
+            raw_score = item.get("score", item.get("q"))
+            if raw_score is None:
+                raise InferenceClientError(f"malformed act ranking: {item!r}")
+            try:
+                idx = int(item["idx"])
+                score = float(raw_score)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise InferenceClientError(
+                    f"malformed act ranking: {item!r}"
+                ) from error
+            if not math.isfinite(score):
+                raise InferenceClientError(f"malformed act ranking: {item!r}")
+            top.append({"idx": idx, "score": score, "q": score})
+        score_kind = response.get("score_kind", "q")
+        if not isinstance(score_kind, str) or not score_kind:
+            raise InferenceClientError(
+                f"malformed act score_kind: {score_kind!r}"
+            )
+        kind = response.get("kind")
+        if kind is not None and not isinstance(kind, str):
+            raise InferenceClientError(f"malformed act kind: {kind!r}")
+        return ActDecision(
+            action=action,
+            top=tuple(top),
+            score_kind=score_kind,
+            kind=kind,
+        )
 
     def estimate_winrate(
         self,
