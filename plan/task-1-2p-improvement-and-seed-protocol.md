@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
 > 复核版本：2026-09-15。
-> 状态：待实施计划。本文定义任务、顺序、验收和产物，不表示训练或代码改动已经完成。
+> 状态：实施中；T1.0、T1.1 已完成并通过独立验收，T1.2 待实施。本文中的训练阶段仍须各自通过批准门。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -197,33 +197,33 @@ T1.7 退出审查与任务（2）移交
 
 ### T1.0 冻结基线与把已知缺口变成失败测试
 
-- [ ] 现场校验 `ppo-best` SHA-256、checkpoint config、normalizer、父 BC/DAgger-2 数据 hash 和推理模式。
-- [ ] 冻结所有基线 opponent：代码 revision、heuristic 权重、GA 基因、minimax 配置、随机 tie-break 规则；
+- [x] 现场校验 `ppo-best` SHA-256、checkpoint config、normalizer、父 BC/DAgger-2 数据 hash 和推理模式。
+- [x] 冻结所有基线 opponent：代码 revision、heuristic 权重、GA 基因、minimax 配置、随机 tie-break 规则；
   无 checkpoint 的 built-in agent 也必须有 source/config hash。
-- [ ] 记录 C4-R2 的 50 unique seeds、重复 `(seed, seat)` 和 scheduled/unique 分母；旧 Wilson 仅保留为历史描述。
-- [ ] 为以下现状先写回归/预期失败测试：`Game(seed)` 与 raw-rule 初态不同；整局 seed 重置耦合 Torch；
+- [x] 记录 C4-R2 的 50 unique seeds、重复 `(seed, seat)` 和 scheduled/unique 分母；旧 Wilson 仅保留为历史描述。
+- [x] 为以下现状先写回归/预期失败测试：`Game(seed)` 与 raw-rule 初态不同；整局 seed 重置耦合 Torch；
   variant 的 training deals 不同；final test 自动覆盖全部候选；league error game 被排除分母。
-- [ ] 设计 `manifest schema v2`，由 `seed_registry.py` 导出注册/禁区事实；删除 manifest 内平行的默认禁区。
-- [ ] formal run 要求 clean worktree，或保存可重放 patch hash；记录 commit、`uv.lock`/依赖 hash、Python、
+- [x] 设计 `manifest schema v2`，由 `seed_registry.py` 导出注册/禁区事实；删除 manifest 内平行的默认禁区。
+- [x] formal run 要求 clean worktree，或保存可重放 patch hash；记录 commit、`uv.lock`/依赖 hash、Python、
   PyTorch、NumPy、CUDA/driver、CPU/GPU、线程数、TF32/cuDNN/CUBLAS 设置。
-- [ ] manifest 流程固定为 `proposed → approved → running → completed/blocked`；不得再用历史 authority 文案
+- [x] manifest 流程固定为 `proposed → approved → running → completed/blocked`；不得再用历史 authority 文案
   绕过本任务的人工批准门。
 
 **退出门槛**：baseline manifest v2 可验证；上述差异均有测试覆盖；任意历史数字能追溯其真实分母和 runner。
 
 ### T1.1 RNG 分流与训练配对
 
-- [ ] 在 `policy_imitation/protocol.py`（或等价单一模块）实现 `RngKey`、`SeedLineage`、`derive_seed()`
+- [x] 在 `policy_imitation/protocol.py`（或等价单一模块）实现 `RngKey`、`SeedLineage`、`derive_seed()`
   和 actor-local Python/NumPy/Torch generator；禁止 formal path 依赖 Python `hash()`。
-- [ ] `_policy_step()` 按固定 action-index 顺序用事件键 `u53` 对 masked categorical 作 inverse-CDF；
+- [x] `_policy_step()` 按固定 action-index 顺序用事件键 `u53` 对 masked categorical 作 inverse-CDF；
   pool 同样消费事件键 `u53`，minibatch 才使用独立 `torch.Generator`。不再用 deal seed 包住整局 Torch RNG。
-- [ ] 对不接收 RNG 的 legacy opponent 增加只在新 runner 中启用的 per-decision RNG adapter；不修改其默认接口。
-- [ ] 训练 schedule 由 `(replicate_id, update, game_index)` 生成。O/A/B/C treatment 在同一 replicate
+- [x] 对不接收 RNG 的 legacy opponent 增加只在新 runner 中启用的 per-decision RNG adapter；不修改其默认接口。
+- [x] 训练 schedule 由 `(replicate_id, update, game_index)` 生成。O/A/B/C treatment 在同一 replicate
   共享 scenario、seat、随机变元和 minibatch key；不同 replicate 的 lineage 全部独立。
-- [ ] weighted pool 配置改为显式映射并保存归一化后概率、抽样 CDF、实际计数和 snapshot；禁止靠重复名字表达权重。
-- [ ] worker 使用 `spawn`，`PYTHONHASHSEED=0` 在解释器启动前设置；改变 worker 数和 future 完成顺序后，
+- [x] weighted pool 配置改为显式映射并保存归一化后概率、抽样 CDF、实际计数和 snapshot；禁止靠重复名字表达权重。
+- [x] worker 使用 `spawn`，`PYTHONHASHSEED=0` 在解释器启动前设置；改变 worker 数和 future 完成顺序后，
   schedule hash、scenario hash 和抽样 key 不变。
-- [ ] CPU 评测要求逐动作完全一致。GPU formal training 开启 PyTorch 可用的 deterministic 设置；若某算子
+- [x] CPU 评测要求逐动作完全一致。GPU formal training 开启 PyTorch 可用的 deterministic 设置；若某算子
   不支持，manifest 明确记录降级和允许差异，不能承诺 checkpoint hash 一致。
 
 **退出门槛**：四类反事实测试通过——同牌换模型、同模型换牌、同牌换座位、同牌换对手；单独改变任一

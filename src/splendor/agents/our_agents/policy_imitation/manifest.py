@@ -48,6 +48,7 @@ MANIFEST_TRANSITIONS: dict[str, frozenset[str]] = {
 # Compatibility alias only. Bounds are declared in seed_registry.py.
 DEFAULT_FORBIDDEN_SEED_RANGES = LEGACY_MANIFEST_FORBIDDEN_RANGES
 REQUIRED_SEED_GROUPS = ("training", "validation", "final_test")
+SHA256_HEX_LENGTH = 64
 
 
 def _now() -> str:
@@ -203,6 +204,43 @@ def _validate_declaration_v2(declaration: Mapping[str, Any]) -> None:
     if protocol_versions.get("rng") != RNG_PROTOCOL_V1:
         raise ValueError("manifest v2 must declare splendor-rng-v1")
     _validate_seed_plan_v2(_require_mapping(declaration, "seed_plan"))
+    raw_formal_training = declaration.get("formal_training")
+    if raw_formal_training is not None:
+        formal_training = _require_mapping(declaration, "formal_training")
+        if formal_training.get("protocol") != "paired-training-v1":
+            raise ValueError("formal training must declare paired-training-v1")
+        schedule_hash = formal_training.get("paired_schedule_sha256")
+        if (
+            type(schedule_hash) is not str
+            or len(schedule_hash) != SHA256_HEX_LENGTH
+            or any(character not in "0123456789abcdef" for character in schedule_hash)
+        ):
+            raise ValueError("formal training schedule SHA-256 is invalid")
+        treatments = formal_training.get("expected_treatments")
+        if (
+            not isinstance(treatments, list)
+            or not treatments
+            or any(type(value) is not str or not value for value in treatments)
+            or treatments != sorted(set(treatments))
+        ):
+            raise ValueError(
+                "formal training expected_treatments must be a sorted unique list"
+            )
+        replicate_ids = formal_training.get("replicate_ids")
+        if (
+            not isinstance(replicate_ids, list)
+            or not replicate_ids
+            or any(type(value) is not int or value < 0 for value in replicate_ids)
+            or replicate_ids != sorted(set(replicate_ids))
+        ):
+            raise ValueError(
+                "formal training replicate_ids must be a sorted unique list"
+            )
+        worker_count = formal_training.get("worker_count")
+        if type(worker_count) is not int or worker_count < 1:
+            raise ValueError("formal training worker_count must be positive")
+        if formal_training.get("worker_scope") != "independent-training-jobs":
+            raise ValueError("formal training worker_scope is invalid")
 
 
 def _validate_provenance_v2(provenance: Mapping[str, Any]) -> None:
@@ -363,6 +401,7 @@ def create_manifest_v2(  # noqa: PLR0913 - protocol fields are explicit
     decision_rule: Mapping[str, Any],
     artifact_contract: Mapping[str, Any],
     baselines: Mapping[str, Any],
+    formal_training: Mapping[str, Any] | None = None,
     requested_device: str = "cpu",
     repo: Path | None = None,
     notes: Sequence[str] = (),
@@ -389,6 +428,8 @@ def create_manifest_v2(  # noqa: PLR0913 - protocol fields are explicit
         "decision_rule": dict(decision_rule),
         "artifact_contract": dict(artifact_contract),
     }
+    if formal_training is not None:
+        declaration["formal_training"] = dict(formal_training)
     created_at = _now()
     provenance: dict[str, Any] = {
         "created_at": created_at,

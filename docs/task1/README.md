@@ -29,3 +29,13 @@ The C4-R2 report is historical description only. For each `ppo-best`
 opponent matchup it contains 150 scheduled rows from 50 source seeds and 100
 unique `(seed, focal-seat)` cells; 50 cells are repeated once. Its legacy
 Wilson intervals must not be used for task-1 decisions.
+
+## T1.1 RNG and paired training
+
+[`T1.1_RNG_PROTOCOL.md`](T1.1_RNG_PROTOCOL.md) freezes the event-keyed RNG,
+paired schedule, explicit weighted-pool, spawn-worker, deterministic runtime,
+and manifest-binding contracts. All new behavior is opt-in through a
+`FormalTrainingSpec`; legacy PPO and opponent APIs retain their previous path.
+
+This is protocol evidence, not a training result. Scenario snapshots and
+cross-runner deal parity begin in T1.2.

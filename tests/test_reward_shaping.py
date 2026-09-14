@@ -110,6 +110,9 @@ def test_noble_progress_and_potential_hand_computed() -> None:
 
     # Give seat 0 cards towards the first noble; coverage drives the term.
     noble_cost = state.board.nobles[0][1]
+    # Keep the assertion independent of the randomly sampled other nobles;
+    # one of them can otherwise have a larger fraction for the same colour.
+    state.board.nobles = [state.board.nobles[0]]
     colour, need = next(iter(noble_cost.items()))
     agent = state.agents[0]
     card = deepcopy(state.board.dealt[0][0])

@@ -1,21 +1,810 @@
 """Reproducibility and provenance helpers for policy-imitation runs."""
 
+from __future__ import annotations
+
 import base64
 import hashlib
 import json
+import multiprocessing as mp
 import os
 import platform
 import random
 import subprocess
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import torch
+
+RNG_PROTOCOL_VERSION = "splendor-rng-v1"
+RNG_PROTOCOL_PREFIX = b"splendor-rng-v1\0"
+_SEED63_MASK = (1 << 63) - 1
+_U53_DENOMINATOR = 1 << 53
+_UINT32_MAX = (1 << 32) - 1
+_FORMAL_WORKER_COUNT_ENV = "SPLENDOR_FORMAL_WORKER_COUNT"
+_JobT = TypeVar("_JobT")
+_ResultT = TypeVar("_ResultT")
+
+
+@dataclass(frozen=True)
+class RngKey:
+    """Semantic address of one formal random event.
+
+    ``treatment_id`` is lineage metadata rather than seed material.  Whether
+    treatments share a draw is declared by ``coupling_group``: paired
+    treatments use the same group, while independent treatments must use
+    different groups.  This keeps the CRN decision explicit instead of
+    relying on a caller accidentally omitting the treatment name.
+    """
+
+    stream_name: str
+    experiment_id: str | None = None
+    protocol_version: str = RNG_PROTOCOL_VERSION
+    phase: str | None = None
+    coupling_group: str | None = None
+    replicate_id: int | None = None
+    treatment_id: str | None = None
+    scenario_id: str | None = None
+    seat: int | None = None
+    opponent_id: str | None = None
+    update: int | None = None
+    game_index: int | None = None
+    epoch: int | None = None
+    focal_step: int | None = None
+    opponent_step: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.stream_name) is not str or not self.stream_name:
+            raise ValueError("RNG stream_name must not be empty")
+        for field_name in (
+            "experiment_id",
+            "phase",
+            "coupling_group",
+            "treatment_id",
+            "scenario_id",
+            "opponent_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (type(value) is not str or not value):
+                raise ValueError(f"RNG key {field_name} must be a non-empty string")
+        if self.protocol_version != RNG_PROTOCOL_VERSION:
+            raise ValueError(
+                f"unsupported RNG protocol {self.protocol_version!r}; "
+                f"expected {RNG_PROTOCOL_VERSION!r}"
+            )
+        if self.treatment_id is not None and not self.coupling_group:
+            raise ValueError(
+                "RNG keys with treatment lineage require an explicit coupling_group"
+            )
+        for field_name in (
+            "replicate_id",
+            "seat",
+            "update",
+            "game_index",
+            "epoch",
+            "focal_step",
+            "opponent_step",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"RNG key {field_name} must be a non-negative integer")
+
+    def as_dict(self) -> dict[str, str | int]:
+        """Return the complete, sparse lineage representation."""
+        return {
+            name: value for name, value in asdict(self).items() if value is not None
+        }
+
+    def derivation_dict(self) -> dict[str, str | int]:
+        """Return seed material, with CRN sharing controlled by the group."""
+        payload = self.as_dict()
+        payload.pop("treatment_id", None)
+        return payload
+
+
+@dataclass(frozen=True)
+class SeedLineage:
+    """Full audit record for one event-keyed random value."""
+
+    key: RngKey | Mapping[str, object]
+    canonical_key_json: str
+    digest_hex: str
+    seed63: int
+    u53: float
+
+    def as_dict(self) -> dict[str, object]:
+        """Return a JSON-safe record including treatment lineage metadata."""
+        key = self.key.as_dict() if isinstance(self.key, RngKey) else dict(self.key)
+        return {
+            "key": key,
+            "canonical_key_json": self.canonical_key_json,
+            "digest_hex": self.digest_hex,
+            "seed63": self.seed63,
+            "u53": self.u53,
+        }
+
+
+@dataclass
+class RngBundle:
+    """Actor-local RNG implementations initialized from one lineage record."""
+
+    lineage: SeedLineage
+    python: random.Random
+    numpy: np.random.Generator
+    torch_cpu: torch.Generator
+
+    @classmethod
+    def from_lineage(cls, lineage: SeedLineage) -> RngBundle:
+        """Create local generators without reading or mutating global RNG state."""
+        torch_generator = torch.Generator(device="cpu")
+        torch_generator.manual_seed(lineage.seed63)
+        return cls(
+            lineage=lineage,
+            python=random.Random(lineage.seed63),
+            numpy=np.random.default_rng(lineage.seed63),
+            torch_cpu=torch_generator,
+        )
+
+
+def derive_seed(key: RngKey | Mapping[str, object]) -> SeedLineage:
+    """Derive the protocol-v1 digest, 63-bit seed and open-interval ``u53``."""
+    if isinstance(key, RngKey):
+        payload: Mapping[str, object] = key.derivation_dict()
+    else:
+        mapping_key = dict(key)
+        for name, value in mapping_key.items():
+            if type(name) is not str or not name:
+                raise ValueError("RNG mapping keys must be non-empty strings")
+            if value is not None and type(value) not in {str, int}:
+                raise ValueError(
+                    "RNG mapping values must be strings, integers, or null"
+                )
+        protocol_version = mapping_key.get("protocol_version", RNG_PROTOCOL_VERSION)
+        if protocol_version != RNG_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported RNG protocol {protocol_version!r}")
+        treatment_id = mapping_key.get("treatment_id")
+        if treatment_id is not None:
+            if type(treatment_id) is not str or not treatment_id:
+                raise ValueError("RNG mapping treatment_id must be non-empty")
+            coupling_group = mapping_key.get("coupling_group")
+            if type(coupling_group) is not str or not coupling_group:
+                raise ValueError(
+                    "RNG mappings with treatment lineage require an explicit "
+                    "coupling_group"
+                )
+        # Mapping callers receive exactly the same CRN semantics as RngKey:
+        # treatment stays in SeedLineage.key for audit, but only the explicit
+        # coupling group decides whether two branches share a random value.
+        derivation_payload = dict(mapping_key)
+        derivation_payload.pop("treatment_id", None)
+        payload = derivation_payload
+    canonical = canonical_json_bytes(payload)
+    digest = hashlib.sha256(RNG_PROTOCOL_PREFIX + canonical).digest()
+    seed63 = int.from_bytes(digest[:8], "big") & _SEED63_MASK
+    u53 = ((int.from_bytes(digest[8:16], "big") >> 11) + 0.5) / _U53_DENOMINATOR
+    return SeedLineage(
+        key=key,
+        canonical_key_json=canonical.decode("utf-8"),
+        digest_hex=digest.hex(),
+        seed63=seed63,
+        u53=u53,
+    )
+
+
+def inverse_cdf_index(weights: Sequence[float], u53: float) -> int:
+    """Map one stable ``[0, 1)`` variate onto non-negative weights."""
+    values = np.asarray(tuple(weights), dtype=np.float64)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("inverse-CDF sampling needs a non-empty 1-D weight list")
+    if not np.isfinite(values).all() or np.any(values < 0):
+        raise ValueError("inverse-CDF weights must be finite and non-negative")
+    total = float(values.sum())
+    if total <= 0:
+        raise ValueError("inverse-CDF weights must contain positive mass")
+    if not np.isfinite(u53) or not 0.0 <= u53 < 1.0:
+        raise ValueError("inverse-CDF variate must lie in [0, 1)")
+    cdf = np.cumsum(values / total)
+    cdf[-1] = 1.0
+    return min(int(np.searchsorted(cdf, u53, side="right")), len(cdf) - 1)
+
+
+@dataclass(frozen=True)
+class FormalGameRng:
+    """Base namespace used to address every random event in one formal game."""
+
+    experiment_id: str
+    phase: str
+    coupling_group: str
+    replicate_id: int
+    treatment_id: str
+    scenario_id: str
+    seat: int
+    update: int
+    game_index: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "experiment_id",
+            "phase",
+            "coupling_group",
+            "treatment_id",
+            "scenario_id",
+        ):
+            if not getattr(self, field_name):
+                raise ValueError(f"formal RNG {field_name} must not be empty")
+        for field_name in ("replicate_id", "seat", "update", "game_index"):
+            if getattr(self, field_name) < 0:
+                raise ValueError(f"formal RNG {field_name} must be non-negative")
+
+    def key(
+        self,
+        stream_name: str,
+        *,
+        opponent_id: str | None = None,
+        epoch: int | None = None,
+        focal_step: int | None = None,
+        opponent_step: int | None = None,
+    ) -> RngKey:
+        """Build a treatment-labelled key in this game's coupling namespace."""
+        if stream_name == "scenario_source":
+            # A scenario is a seat-independent immutable environment object.
+            # Reusing its identity must never silently redeal because a runner
+            # changed seat, update, game index, worker, or model replicate.
+            return RngKey(
+                experiment_id=self.experiment_id,
+                phase=self.phase,
+                coupling_group=f"scenario:{self.scenario_id}",
+                stream_name=stream_name,
+                treatment_id=self.treatment_id,
+                scenario_id=self.scenario_id,
+            )
+        return RngKey(
+            experiment_id=self.experiment_id,
+            phase=self.phase,
+            coupling_group=self.coupling_group,
+            stream_name=stream_name,
+            replicate_id=self.replicate_id,
+            treatment_id=self.treatment_id,
+            scenario_id=self.scenario_id,
+            seat=self.seat,
+            opponent_id=opponent_id,
+            update=self.update,
+            game_index=self.game_index,
+            epoch=epoch,
+            focal_step=focal_step,
+            opponent_step=opponent_step,
+        )
+
+    def lineage(
+        self,
+        stream_name: str,
+        *,
+        opponent_id: str | None = None,
+        epoch: int | None = None,
+        focal_step: int | None = None,
+        opponent_step: int | None = None,
+    ) -> SeedLineage:
+        """Derive a lineage record for one event within the game."""
+        return derive_seed(
+            self.key(
+                stream_name,
+                opponent_id=opponent_id,
+                epoch=epoch,
+                focal_step=focal_step,
+                opponent_step=opponent_step,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class PairedTrainingRow:
+    """One immutable game row shared across paired treatment branches."""
+
+    experiment_id: str
+    phase: str
+    replicate_id: int
+    treatment_id: str
+    update: int
+    game_index: int
+    scenario_id: str
+    seat: int
+    coupling_group: str
+    scenario_source: SeedLineage
+    pool_draw: SeedLineage
+
+    def game_rng(self) -> FormalGameRng:
+        """Recover the event namespace used for action-time derivations."""
+        return FormalGameRng(
+            experiment_id=self.experiment_id,
+            phase=self.phase,
+            coupling_group=self.coupling_group,
+            replicate_id=self.replicate_id,
+            treatment_id=self.treatment_id,
+            scenario_id=self.scenario_id,
+            seat=self.seat,
+            update=self.update,
+            game_index=self.game_index,
+        )
+
+    def semantic_dict(self) -> dict[str, object]:
+        """Return treatment-neutral CRN semantics for equality checks."""
+        return {
+            "experiment_id": self.experiment_id,
+            "phase": self.phase,
+            "replicate_id": self.replicate_id,
+            "update": self.update,
+            "game_index": self.game_index,
+            "scenario_id": self.scenario_id,
+            "seat": self.seat,
+            "coupling_group": self.coupling_group,
+            "scenario_source_digest": self.scenario_source.digest_hex,
+            "pool_draw_digest": self.pool_draw.digest_hex,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the complete treatment-labelled schedule row."""
+        return {
+            "experiment_id": self.experiment_id,
+            "phase": self.phase,
+            "replicate_id": self.replicate_id,
+            "treatment_id": self.treatment_id,
+            "update": self.update,
+            "game_index": self.game_index,
+            "scenario_id": self.scenario_id,
+            "seat": self.seat,
+            "coupling_group": self.coupling_group,
+            "scenario_source": self.scenario_source.as_dict(),
+            "pool_draw": self.pool_draw.as_dict(),
+        }
+
+
+def make_paired_training_schedule(  # noqa: PLR0913 - protocol axes stay explicit
+    *,
+    experiment_id: str,
+    phase: str,
+    treatment_ids: Sequence[str],
+    scenarios_by_replicate: Mapping[int, Sequence[str]],
+    seats_by_replicate: Mapping[int, Sequence[int]],
+    updates: int,
+    games_per_update: int,
+) -> tuple[PairedTrainingRow, ...]:
+    """Create an order/worker-invariant paired training schedule.
+
+    Scenario and seat arrays are explicit inputs rather than mutable draws.
+    Each replicate gets its own coupling group; all listed treatments in that
+    replicate consequently share the same event random variables.
+    """
+    if updates < 1 or games_per_update < 1:
+        raise ValueError("schedule updates and games_per_update must be positive")
+    treatments = tuple(treatment_ids)
+    if not treatments or len(set(treatments)) != len(treatments):
+        raise ValueError("treatment IDs must be non-empty and unique")
+    if set(scenarios_by_replicate) != set(seats_by_replicate):
+        raise ValueError("scenario and seat schedules must cover the same replicates")
+    games = updates * games_per_update
+    rows: list[PairedTrainingRow] = []
+    for replicate_id in sorted(scenarios_by_replicate):
+        scenarios = tuple(scenarios_by_replicate[replicate_id])
+        seats = tuple(seats_by_replicate[replicate_id])
+        if len(scenarios) != games or len(seats) != games:
+            raise ValueError(
+                f"replicate {replicate_id} needs exactly {games} scenarios and seats"
+            )
+        if len(set(scenarios)) != len(scenarios):
+            raise ValueError(f"replicate {replicate_id} repeats a training scenario")
+        if any(seat not in (0, 1) for seat in seats):
+            raise ValueError("formal 2p training seats must be 0 or 1")
+        coupling_group = f"replicate-{replicate_id}"
+        for treatment_id in treatments:
+            for ordinal, (scenario_id, seat) in enumerate(
+                zip(scenarios, seats, strict=True)
+            ):
+                update = ordinal // games_per_update + 1
+                game_index = ordinal % games_per_update
+                context = FormalGameRng(
+                    experiment_id=experiment_id,
+                    phase=phase,
+                    coupling_group=coupling_group,
+                    replicate_id=replicate_id,
+                    treatment_id=treatment_id,
+                    scenario_id=scenario_id,
+                    seat=seat,
+                    update=update,
+                    game_index=game_index,
+                )
+                rows.append(
+                    PairedTrainingRow(
+                        experiment_id=experiment_id,
+                        phase=phase,
+                        replicate_id=replicate_id,
+                        treatment_id=treatment_id,
+                        update=update,
+                        game_index=game_index,
+                        scenario_id=scenario_id,
+                        seat=seat,
+                        coupling_group=coupling_group,
+                        scenario_source=context.lineage("scenario_source"),
+                        pool_draw=context.lineage("pool_draw"),
+                    )
+                )
+    result = tuple(rows)
+    validate_paired_training_schedule(result, expected_treatments=treatments)
+    return result
+
+
+def validate_paired_training_schedule(  # noqa: C901,PLR0912 - every schedule axis is audited
+    rows: Sequence[PairedTrainingRow],
+    *,
+    expected_treatments: Sequence[str] | None = None,
+) -> None:
+    """Reject incomplete, duplicated, or non-paired formal schedule rows."""
+    if not rows:
+        raise ValueError("paired training schedule must not be empty")
+    identities = [
+        (row.replicate_id, row.treatment_id, row.update, row.game_index) for row in rows
+    ]
+    if len(set(identities)) != len(identities):
+        raise ValueError("paired training schedule contains a duplicate row key")
+    experiment_phases = {(row.experiment_id, row.phase) for row in rows}
+    if len(experiment_phases) != 1:
+        raise ValueError("paired schedule mixes experiment or phase identities")
+    replicate_ids = sorted({row.replicate_id for row in rows})
+    expected = set(expected_treatments) if expected_treatments is not None else None
+    if expected is not None and (
+        not expected or len(expected) != len(tuple(expected_treatments or ()))
+    ):
+        raise ValueError("expected treatment IDs must be non-empty and unique")
+    seen_scenarios: dict[str, int] = {}
+    for replicate_id in replicate_ids:
+        replicate_rows = [row for row in rows if row.replicate_id == replicate_id]
+        coupling_groups = {row.coupling_group for row in replicate_rows}
+        expected_group = f"replicate-{replicate_id}"
+        if coupling_groups != {expected_group}:
+            raise ValueError(
+                f"replicate {replicate_id} must use coupling group {expected_group!r}"
+            )
+        treatments = {row.treatment_id for row in replicate_rows}
+        if expected is not None and treatments != expected:
+            raise ValueError(
+                f"replicate {replicate_id} treatment coverage does not match expected"
+            )
+        coordinate_sets = {
+            treatment: {
+                (row.update, row.game_index): row.semantic_dict()
+                for row in replicate_rows
+                if row.treatment_id == treatment
+            }
+            for treatment in treatments
+        }
+        reference = next(iter(coordinate_sets.values()))
+        if any(coordinates != reference for coordinates in coordinate_sets.values()):
+            raise ValueError(
+                f"replicate {replicate_id} treatments do not share CRN semantics"
+            )
+        scenario_ids = [str(semantic["scenario_id"]) for semantic in reference.values()]
+        if len(set(scenario_ids)) != len(scenario_ids):
+            raise ValueError(f"replicate {replicate_id} repeats a training scenario")
+        for semantic in reference.values():
+            scenario_id = str(semantic["scenario_id"])
+            other_replicate = seen_scenarios.setdefault(scenario_id, replicate_id)
+            if other_replicate != replicate_id:
+                raise ValueError(
+                    f"training scenario {scenario_id!r} crosses replicates"
+                )
+        for row in replicate_rows:
+            context = row.game_rng()
+            if row.scenario_source != context.lineage("scenario_source"):
+                raise ValueError("schedule scenario-source lineage is inconsistent")
+            if row.pool_draw != context.lineage("pool_draw"):
+                raise ValueError("schedule pool-draw lineage is inconsistent")
+
+
+@dataclass(frozen=True)
+class FormalTrainingSpec:
+    """Explicit opt-in contract binding one trainer to its paired schedule."""
+
+    experiment_id: str
+    phase: str
+    replicate_id: int
+    treatment_id: str
+    expected_treatments: tuple[str, ...]
+    schedule: tuple[PairedTrainingRow, ...]
+    worker_count: int = 1
+
+    def __post_init__(self) -> None:
+        if self.worker_count < 1:
+            raise ValueError("formal worker_count must be positive")
+        validate_paired_training_schedule(
+            self.schedule,
+            expected_treatments=self.expected_treatments,
+        )
+        identities = {(row.experiment_id, row.phase) for row in self.schedule}
+        if identities != {(self.experiment_id, self.phase)}:
+            raise ValueError(
+                "formal training spec does not match its schedule identity"
+            )
+        if self.treatment_id not in self.expected_treatments:
+            raise ValueError("formal treatment is absent from expected_treatments")
+        if self.replicate_id not in {row.replicate_id for row in self.schedule}:
+            raise ValueError("formal replicate is absent from schedule")
+
+    def manifest_binding(self) -> dict[str, object]:
+        """Return the treatment-neutral declaration a manifest must freeze."""
+        return {
+            "protocol": "paired-training-v1",
+            "paired_schedule_sha256": paired_schedule_hash(
+                self.schedule,
+                treatment_id=self.treatment_id,
+            ),
+            "expected_treatments": sorted(self.expected_treatments),
+            "replicate_ids": sorted({row.replicate_id for row in self.schedule}),
+            "worker_count": self.worker_count,
+            "worker_scope": "independent-training-jobs",
+        }
+
+    def require_worker_runtime(self) -> None:
+        """Reject an N-worker declaration executed directly in the parent.
+
+        ``worker_count`` controls independent treatment/replicate jobs, not
+        rollouts inside one optimizer.  A multi-worker formal spec therefore
+        has to enter :func:`run_formal_spawn_jobs`; this avoids silently
+        recording parallel execution while running the trainer in-process.
+        """
+        require_formal_spawn_context()
+        if self.worker_count == 1:
+            return
+        if mp.current_process().name == "MainProcess":
+            raise RuntimeError(
+                "multi-worker formal training must run inside a spawned worker"
+            )
+        if mp.get_start_method(allow_none=True) != "spawn":
+            raise RuntimeError("formal training worker was not started with spawn")
+        declared_count = os.environ.get(_FORMAL_WORKER_COUNT_ENV)
+        if declared_count != str(self.worker_count):
+            raise RuntimeError(
+                "formal training worker_count does not match its spawn executor"
+            )
+
+    def selected_rows(
+        self,
+        *,
+        updates: int,
+        games_per_update: int,
+    ) -> tuple[PairedTrainingRow, ...]:
+        """Return this run's rows and verify an exact rectangular budget."""
+        selected = tuple(
+            sorted(
+                (
+                    row
+                    for row in self.schedule
+                    if row.replicate_id == self.replicate_id
+                    and row.treatment_id == self.treatment_id
+                ),
+                key=lambda row: (row.update, row.game_index),
+            )
+        )
+        expected_coordinates = {
+            (update, game_index)
+            for update in range(1, updates + 1)
+            for game_index in range(games_per_update)
+        }
+        coordinates = {(row.update, row.game_index) for row in selected}
+        if coordinates != expected_coordinates or len(selected) != len(
+            expected_coordinates
+        ):
+            raise ValueError("formal schedule does not match the PPO update budget")
+        return selected
+
+    def model_init_lineage(self) -> SeedLineage:
+        """Derive paired model initialization for a replicate block."""
+        return derive_seed(
+            RngKey(
+                experiment_id=self.experiment_id,
+                phase=self.phase,
+                coupling_group=f"replicate-{self.replicate_id}",
+                stream_name="model_init",
+                replicate_id=self.replicate_id,
+                treatment_id=self.treatment_id,
+            )
+        )
+
+    def minibatch_key(self, update: int) -> RngKey:
+        """Return an update-level key; PPO derives one child per epoch."""
+        return RngKey(
+            experiment_id=self.experiment_id,
+            phase=self.phase,
+            coupling_group=f"replicate-{self.replicate_id}",
+            stream_name="minibatch",
+            replicate_id=self.replicate_id,
+            treatment_id=self.treatment_id,
+            update=update,
+        )
+
+    def worker_lineage(self, worker_index: int) -> SeedLineage:
+        """Derive a non-semantic process-start stream for one spawn worker."""
+        if worker_index not in range(self.worker_count):
+            raise ValueError("worker index lies outside formal worker_count")
+        return derive_seed(
+            RngKey(
+                experiment_id=self.experiment_id,
+                phase=self.phase,
+                coupling_group=f"replicate-{self.replicate_id}",
+                stream_name="worker",
+                replicate_id=self.replicate_id,
+                treatment_id=self.treatment_id,
+                focal_step=worker_index,
+            )
+        )
+
+    def worker_partitions(
+        self,
+        *,
+        updates: int,
+        games_per_update: int,
+    ) -> tuple[tuple[PairedTrainingRow, ...], ...]:
+        """Partition rows only to audit worker-count semantic invariance.
+
+        Optimizer rollouts remain sequential within one training job.  The
+        actual worker pool runs independent treatment/replicate jobs via
+        :func:`run_formal_spawn_jobs`.
+        """
+        selected = self.selected_rows(
+            updates=updates,
+            games_per_update=games_per_update,
+        )
+        return tuple(
+            tuple(
+                row
+                for index, row in enumerate(selected)
+                if index % self.worker_count == worker
+            )
+            for worker in range(self.worker_count)
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the run binding without duplicating the full schedule."""
+        return {
+            "experiment_id": self.experiment_id,
+            "phase": self.phase,
+            "replicate_id": self.replicate_id,
+            "treatment_id": self.treatment_id,
+            "expected_treatments": list(self.expected_treatments),
+            "worker_count": self.worker_count,
+            "paired_schedule_sha256": paired_schedule_hash(
+                self.schedule,
+                treatment_id=self.treatment_id,
+            ),
+            "manifest_binding": self.manifest_binding(),
+            "model_init_lineage": self.model_init_lineage().as_dict(),
+            "worker_lineages": [
+                self.worker_lineage(index).as_dict()
+                for index in range(self.worker_count)
+            ],
+        }
+
+
+def paired_schedule_hash(
+    rows: Sequence[PairedTrainingRow], *, treatment_id: str
+) -> str:
+    """Hash one treatment's treatment-neutral schedule in canonical order."""
+    validate_paired_training_schedule(rows)
+    selected = [row for row in rows if row.treatment_id == treatment_id]
+    if not selected:
+        raise ValueError(f"schedule contains no treatment {treatment_id!r}")
+    payload = [
+        row.semantic_dict()
+        for row in sorted(
+            selected,
+            key=lambda row: (row.replicate_id, row.update, row.game_index),
+        )
+    ]
+    return sha256_canonical_json(payload)
+
+
+def _started_with_zero_hash_seed() -> bool:
+    """Return whether hash randomization was disabled at interpreter startup."""
+    return os.environ.get("PYTHONHASHSEED") == "0" and sys.flags.hash_randomization == 0
+
+
+def require_formal_spawn_context() -> mp.context.BaseContext:
+    """Require interpreter-level hash determinism and return spawn context."""
+    if not _started_with_zero_hash_seed():
+        raise RuntimeError(
+            "formal workers require PYTHONHASHSEED=0 before Python starts"
+        )
+    context = mp.get_context("spawn")
+    if context.get_start_method() != "spawn":  # pragma: no cover - stdlib guard
+        raise RuntimeError("formal workers require multiprocessing spawn")
+    return context
+
+
+def run_formal_spawn_jobs(
+    jobs: Sequence[_JobT],
+    *,
+    worker: Callable[[_JobT], _ResultT],
+    worker_count: int,
+) -> tuple[_ResultT, ...]:
+    """Execute independent formal jobs with spawn and stable input ordering.
+
+    Results are returned in input order, irrespective of future completion
+    order.  Semantic schedule rows are carried by each job and are never
+    derived from worker index or completion order.
+    """
+    if worker_count < 1:
+        raise ValueError("formal worker_count must be positive")
+    if not jobs:
+        return ()
+    context = require_formal_spawn_context()
+    missing = object()
+    results: list[object] = [missing] * len(jobs)
+    previous_count = os.environ.get(_FORMAL_WORKER_COUNT_ENV)
+    os.environ[_FORMAL_WORKER_COUNT_ENV] = str(worker_count)
+    try:
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=context,
+        ) as pool:
+            future_indexes: dict[Future[_ResultT], int] = {
+                pool.submit(worker, job): index for index, job in enumerate(jobs)
+            }
+            for future in as_completed(future_indexes):
+                results[future_indexes[future]] = future.result()
+    finally:
+        if previous_count is None:
+            os.environ.pop(_FORMAL_WORKER_COUNT_ENV, None)
+        else:
+            os.environ[_FORMAL_WORKER_COUNT_ENV] = previous_count
+    if any(
+        result is missing for result in results
+    ):  # pragma: no cover - executor guard
+        raise RuntimeError("formal spawn executor returned an incomplete result set")
+    return tuple(cast(_ResultT, result) for result in results)
+
+
+def configure_formal_torch_determinism(
+    requested_device: str,
+    *,
+    warn_only: bool = False,
+) -> RuntimeSnapshot:
+    """Enable and capture the deterministic settings for a formal process.
+
+    Unlike the legacy device resolver, this function never falls back from a
+    requested accelerator.  ``PYTHONHASHSEED`` must already have affected the
+    running interpreter; CUDA's cuBLAS workspace setting must be installed
+    before CUDA initialization.
+    """
+    require_formal_spawn_context()
+    if requested_device not in {"cpu", "cuda"}:
+        raise ValueError("formal Task-1 execution supports only cpu or cuda")
+    if requested_device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "formal CUDA execution requested but CUDA is unavailable"
+            )
+        workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+        if workspace not in {":4096:8", ":16:8"}:
+            if torch.cuda.is_initialized():
+                raise RuntimeError(
+                    "CUBLAS_WORKSPACE_CONFIG must be set before CUDA initialization"
+                )
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.use_deterministic_algorithms(True, warn_only=warn_only)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    snapshot = RuntimeSnapshot.collect(requested_device)
+    if snapshot.resolved_device != requested_device:
+        raise RuntimeError(
+            f"formal device resolution changed {requested_device!r} to "
+            f"{snapshot.resolved_device!r}"
+        )
+    return snapshot
 
 
 def seed_everything(seed: int) -> None:
@@ -23,10 +812,34 @@ def seed_everything(seed: int) -> None:
     if seed < 0:
         raise ValueError(f"seed must be non-negative, got {seed}")
     random.seed(seed)
-    np.random.seed(seed)
+    # Preserve every legacy uint32 sequence exactly.  Event-derived 63-bit
+    # seeds use both words to initialize MT19937 instead of discarding the
+    # upper 31 bits.
+    if seed <= _UINT32_MAX:
+        np.random.seed(seed)
+    else:
+        np.random.seed(
+            np.asarray(
+                [seed & _UINT32_MAX, (seed >> 32) & _UINT32_MAX],
+                dtype=np.uint32,
+            )
+        )
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+@contextmanager
+def isolated_python_seed(seed: int) -> Iterator[None]:
+    """Temporarily seed only Python's RNG, used by legacy engine dealing."""
+    if seed < 0:
+        raise ValueError(f"seed must be non-negative, got {seed}")
+    python_state = random.getstate()
+    try:
+        random.seed(seed)
+        yield
+    finally:
+        random.setstate(python_state)
 
 
 @contextmanager
@@ -75,10 +888,11 @@ class RuntimeSnapshot:
     matmul_allow_tf32: bool
     cublas_workspace_config: str | None
     python_hash_seed: str | None
+    python_hash_randomization: int
     cuda_driver_version: str | None
 
     @classmethod
-    def collect(cls, requested_device: str = "cpu") -> "RuntimeSnapshot":
+    def collect(cls, requested_device: str = "cpu") -> RuntimeSnapshot:
         """Collect a serializable snapshot and resolve unavailable accelerators."""
         if requested_device not in {"cpu", "cuda", "mps"}:
             raise ValueError(f"unsupported device {requested_device!r}")
@@ -121,6 +935,7 @@ class RuntimeSnapshot:
             matmul_allow_tf32=bool(torch.backends.cuda.matmul.allow_tf32),
             cublas_workspace_config=os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
             python_hash_seed=os.environ.get("PYTHONHASHSEED"),
+            python_hash_randomization=int(sys.flags.hash_randomization),
             cuda_driver_version=_cuda_driver_version(),
         )
 

@@ -1,6 +1,8 @@
 """Safe, instrumented calls into the repository's legacy Agent interface."""
 
+import threading
 import time
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +11,10 @@ from splendor.splendor.gym.envs.utils import create_action_mapping
 from splendor.splendor.splendor_model import SplendorGameRule, SplendorState
 from splendor.splendor.types import ActionType
 from splendor.template import Agent
+
+from .protocol import SeedLineage, isolated_seed
+
+_LEGACY_RNG_ADAPTER_LOCK = threading.RLock()
 
 
 class TeacherDecisionError(RuntimeError):
@@ -76,6 +82,8 @@ def select_action(
     actions: list[ActionType],
     game_state: SplendorState,
     game_rule: SplendorGameRule,
+    *,
+    rng_lineage: SeedLineage | None = None,
 ) -> DecisionResult:
     """Call an agent on defensive copies, then validate its action by the mask.
 
@@ -102,11 +110,31 @@ def select_action(
     copied_rule.current_game_state = copied_state
     proxy = CountingRuleProxy(copied_rule)
     try:
-        selected = agent.SelectAction(
-            copied_actions,
-            copied_state,
-            proxy,  # type: ignore[arg-type]
+        # Legacy agents do not accept an RNG object.  The formal runner gives
+        # each decision its own derived seed and restores every global stream
+        # immediately afterwards; legacy callers retain the original path.
+        rng_scope = (
+            isolated_seed(rng_lineage.seed63)
+            if rng_lineage is not None
+            else nullcontext()
         )
+        if rng_lineage is None:
+            with rng_scope:
+                selected = agent.SelectAction(
+                    copied_actions,
+                    copied_state,
+                    proxy,  # type: ignore[arg-type]
+                )
+        else:
+            # Global RNG compatibility is necessarily process-wide.  Formal
+            # workers use spawn, and this lock prevents accidental threads in
+            # one worker from interleaving the save/seed/restore transaction.
+            with _LEGACY_RNG_ADAPTER_LOCK, rng_scope:
+                selected = agent.SelectAction(
+                    copied_actions,
+                    copied_state,
+                    proxy,  # type: ignore[arg-type]
+                )
     except Exception as exc:
         raise TeacherDecisionError(
             f"teacher {agent.__class__.__name__} raised {type(exc).__name__}: {exc}",
