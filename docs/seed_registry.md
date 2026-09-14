@@ -49,6 +49,10 @@
    `torch.manual_seed`；league 引擎侧只消耗全局 `random`（由 `Game(seed)` 重播）。
 6. **PYTHONHASHSEED=0**：所有 runner 启动前固定（风险登记册第 1 条）；
    `splendor-league` 在未设置时打印警告并写入 manifest。
+7. **manifest schema v2**：新协议只保存本文件所述 segment 的名字及
+   `seed_registry.py::registry_snapshot()` 的内容哈希，不允许在 manifest 中另传一套
+   forbidden ranges。历史 schema v1 的窄禁区常量仅为读取旧产物而保留，也由
+   `seed_registry.py` 统一导出。
 
 ## 已消费记录（append-only）
 

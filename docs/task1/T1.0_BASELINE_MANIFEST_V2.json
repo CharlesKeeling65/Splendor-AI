@@ -1,0 +1,540 @@
+{
+  "declaration": {
+    "artifact_contract": {
+      "baseline_audit": "docs/task1/T1.0_BASELINE_AUDIT.json",
+      "episodes": "episodes.jsonl.zst",
+      "scenario_bank": "scenario_bank/*.jsonl.zst",
+      "sealed_ledger": "sealed_test_consumption.jsonl",
+      "statistics": "statistics.json",
+      "training_schedule": "training_schedule.jsonl.zst"
+    },
+    "budget": {
+      "final_test_games": 0,
+      "note": "T1.0 evidence-only manifest; T1.4 must declare and approve formal budgets",
+      "training_games": 0,
+      "validation_games": 0
+    },
+    "decision_rule": {
+      "selection": "to be frozen after T1.3 power analysis and T1.4 crossed pilot",
+      "status": "not approved for formal experiments",
+      "test_policy": "one atomic sealed batch after candidate-set freeze"
+    },
+    "estimands": {
+      "deployment": "paired d_deploy(official - frozen ppo-best)",
+      "method": "paired d_method(T_r - O_r), blocked until paired replicates exist"
+    },
+    "experiment_id": "task1-2p-improvement-20260915",
+    "hypotheses": {
+      "H-budget": "the covered behavior may need additional fixed-budget updates",
+      "H-label": "qualified target-state labels may improve the student",
+      "H-objective": "terminal potential semantics may bias the objective",
+      "H-pool": "target-opponent coverage may be insufficient"
+    },
+    "phase": "T1.0",
+    "protocol_versions": {
+      "manifest": "splendor-experiment-manifest/2",
+      "rng": "splendor-rng-v1",
+      "scenario": "ScenarioV1"
+    },
+    "purpose": "freeze and audit the pre-task-1 baseline; no training or sealed-test consumption",
+    "seed_plan": {
+      "scenario_identity": "canonical ScenarioV1 SHA-256",
+      "seats": [
+        0,
+        1
+      ],
+      "segments": {
+        "final_test": "independent_test",
+        "training": "training",
+        "validation": "validation"
+      }
+    }
+  },
+  "declaration_sha256": "9b97ae727def666f0291b075fd84495fce5abc4a685472b76608c5c42f80ea02",
+  "lifecycle": [
+    {
+      "actor": "manifest-author",
+      "at": "2026-09-14T18:21:26+00:00",
+      "declaration_sha256": "9b97ae727def666f0291b075fd84495fce5abc4a685472b76608c5c42f80ea02",
+      "event_sha256": "f2e33792583da44b091bf9ade7ac20a9c4ee375ac79accfd4d71d48c4ba35357",
+      "from": null,
+      "note": "immutable declaration created",
+      "previous_event_sha256": null,
+      "provenance_sha256": "3826a3568bbe3286990370f6d02f486f8da02a89c6fad34215c9f86356fddbd0",
+      "to": "proposed"
+    }
+  ],
+  "protocol": "splendor-experiment-manifest/2",
+  "provenance": {
+    "baselines": {
+      "historical_c4r2": {
+        "declared_seed_count": 3150,
+        "error_rows_total": 0,
+        "focal": "ppo-best",
+        "legacy_wilson_use": "descriptive-only; not valid for task-1 decisions",
+        "matchups": {
+          "ga": {
+            "completed_rows": 150,
+            "duplicate_excess_rows": 50,
+            "duplicated_cell_count": 50,
+            "error_rows": 0,
+            "inference_note": "historical description only; rows are wrapped and clustered by seed",
+            "rows_in_duplicated_cells": 100,
+            "scheduled_rows": 150,
+            "score_rate_scheduled": 0.62,
+            "unique_seed_seat_cells": 100,
+            "unique_source_seeds": 50,
+            "wdl": {
+              "draws": 0,
+              "losses": 57,
+              "wins": 93
+            }
+          },
+          "heuristic": {
+            "completed_rows": 150,
+            "duplicate_excess_rows": 50,
+            "duplicated_cell_count": 50,
+            "error_rows": 0,
+            "inference_note": "historical description only; rows are wrapped and clustered by seed",
+            "rows_in_duplicated_cells": 100,
+            "scheduled_rows": 150,
+            "score_rate_scheduled": 0.58,
+            "unique_seed_seat_cells": 100,
+            "unique_source_seeds": 50,
+            "wdl": {
+              "draws": 0,
+              "losses": 63,
+              "wins": 87
+            }
+          },
+          "heuristic-hoard": {
+            "completed_rows": 150,
+            "duplicate_excess_rows": 50,
+            "duplicated_cell_count": 50,
+            "error_rows": 0,
+            "inference_note": "historical description only; rows are wrapped and clustered by seed",
+            "rows_in_duplicated_cells": 100,
+            "scheduled_rows": 150,
+            "score_rate_scheduled": 0.6133333333333333,
+            "unique_seed_seat_cells": 100,
+            "unique_source_seeds": 50,
+            "wdl": {
+              "draws": 0,
+              "losses": 58,
+              "wins": 92
+            }
+          },
+          "heuristic-rush": {
+            "completed_rows": 150,
+            "duplicate_excess_rows": 50,
+            "duplicated_cell_count": 50,
+            "error_rows": 0,
+            "inference_note": "historical description only; rows are wrapped and clustered by seed",
+            "rows_in_duplicated_cells": 100,
+            "scheduled_rows": 150,
+            "score_rate_scheduled": 0.56,
+            "unique_seed_seat_cells": 100,
+            "unique_source_seeds": 50,
+            "wdl": {
+              "draws": 0,
+              "losses": 66,
+              "wins": 84
+            }
+          },
+          "minimax": {
+            "completed_rows": 150,
+            "duplicate_excess_rows": 50,
+            "duplicated_cell_count": 50,
+            "error_rows": 0,
+            "inference_note": "historical description only; rows are wrapped and clustered by seed",
+            "rows_in_duplicated_cells": 100,
+            "scheduled_rows": 150,
+            "score_rate_scheduled": 0.6633333333333333,
+            "unique_seed_seat_cells": 100,
+            "unique_source_seeds": 50,
+            "wdl": {
+              "draws": 1,
+              "losses": 50,
+              "wins": 99
+            }
+          },
+          "random": {
+            "completed_rows": 150,
+            "duplicate_excess_rows": 50,
+            "duplicated_cell_count": 50,
+            "error_rows": 0,
+            "inference_note": "historical description only; rows are wrapped and clustered by seed",
+            "rows_in_duplicated_cells": 100,
+            "scheduled_rows": 150,
+            "score_rate_scheduled": 1.0,
+            "unique_seed_seat_cells": 100,
+            "unique_source_seeds": 50,
+            "wdl": {
+              "draws": 0,
+              "losses": 0,
+              "wins": 150
+            }
+          }
+        },
+        "scheduled_rows_total": 3150,
+        "source": "runs/c4r2-league-20260914/league_results.json",
+        "source_sha256": "bd25871412563f3f86443c124d21d5ca2fb2069fd9fd2dc556edec1c6eb40b0d",
+        "unique_source_seeds_total": 50
+      },
+      "official": {
+        "checkpoint": "runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth",
+        "checkpoint_sha256": "e225464c17a783bd91b51251336f917e9f867af4f475d8414372885fbb758102",
+        "checkpoint_update": 1700,
+        "config": {
+          "clip_epsilon": 0.2,
+          "critic_hidden_dim": 0,
+          "critic_learning_rate": 0.0005,
+          "critic_warmup_epochs": 2,
+          "current_weight": 1.0,
+          "device_name": "cuda",
+          "discount_factor": 0.99,
+          "entropy_coefficient": 0.005,
+          "eval_every": 50,
+          "feature_version": "public-v2",
+          "gae_lambda": 0.95,
+          "games_per_update": 16,
+          "hidden_layers": [
+            128,
+            128,
+            128,
+            128
+          ],
+          "history_limit": 4,
+          "history_weight": 1.0,
+          "initialization": "bc",
+          "input_dim": 312,
+          "learning_rate": 0.0001,
+          "max_grad_norm": 1.0,
+          "minibatch_size": 256,
+          "n_seats": 2,
+          "normalizer_fitted": true,
+          "output_dim": 3510,
+          "reference_kl_coefficient": 0.0,
+          "seed": 1234,
+          "shaping_kappa": 0.05,
+          "shaping_kind": "potential",
+          "target_kl": 0.02,
+          "terminal_value": 10.0,
+          "update_epochs": 4,
+          "updates": 2000,
+          "value_coefficient": 1.0,
+          "value_mode": "return"
+        },
+        "config_sha256": "7051533eeba54065e31a17a22ea63486c8e552601b9034fbc7a2cf95525add88",
+        "contract": {
+          "action_dim": 3510,
+          "feature_version": "public-v2",
+          "hidden_layers": [
+            128,
+            128,
+            128,
+            128
+          ],
+          "inference": "eval + masked greedy argmax",
+          "input_dim": 312,
+          "reward": "terminal +/-10/0 + nonzero-terminal potential kappa=0.05",
+          "training_action": "masked categorical (legacy global torch RNG)"
+        },
+        "id": "ppo-best",
+        "normalizer": {
+          "fitted": true,
+          "source": "runs/policy-imitation/formal-3.3-20260907/bc-dagger-2/best.pth",
+          "state_fields": [
+            "normalizer.mean",
+            "normalizer.variance"
+          ]
+        },
+        "parent_bc": {
+          "path": "runs/policy-imitation/formal-3.3-20260907/bc-dagger-2/best.pth",
+          "sha256": "e64b722f34a8eed390ae03bdd5adf2f03be9ec6238db556b86180adff1e6f867"
+        },
+        "parent_dataset": {
+          "content_sha256": "31bd073b25d84c8d95e3d6d459244e32be4fb449ae72467c07526677e696c3d4",
+          "file_sha256": "f50b1aaa2a4b0071c174c01f856e396a57762c937b8ef36cfa62f7bd811bec35",
+          "path": "runs/policy-imitation/formal-3.3-20260907/aggregate-round-2.npz",
+          "samples": 7987
+        },
+        "parent_manifest": {
+          "path": "runs/policy-imitation/formal-3.3-20260907/manifest.json",
+          "sha256": "69e96bfb9f25c540e79a956cf47eeea28be09376bbe5a3b4989fa1f0150f8fae"
+        },
+        "role": "frozen-deployment-baseline"
+      },
+      "opponents": {
+        "ga": {
+          "config": {
+            "genes": "four checked-in NumPy arrays"
+          },
+          "config_sha256": "409e8600ef573b6534f354b61101bd02ebe0c2daf94f08d892f3165d8a385d29",
+          "kind": "builtin",
+          "source_files": {
+            "src/splendor/agents/our_agents/genetic_algorithm/genes.py": "cd5e453900435c696d04ab4e52300ac4f6fc007afd0491e783bf931d880be9fc",
+            "src/splendor/agents/our_agents/genetic_algorithm/genetic_algorithm_agent.py": "3c7d88e776a6c3b71a29756828586e6a7920a1a12a44333d02e8929f9d5b0dc6",
+            "src/splendor/agents/our_agents/genetic_algorithm/manager.npy": "9b9d35fffe653ea6018930a9d1231ec773166b6c673c6295523bbca1262737a9",
+            "src/splendor/agents/our_agents/genetic_algorithm/strategy1.npy": "413fc191d3bcaa21a55a06877f08d4bceb353956d83ead5d50037f09a64ce8ef",
+            "src/splendor/agents/our_agents/genetic_algorithm/strategy2.npy": "17c6f01493aa5fe45f5e44ddb7cf69cbb0ee64e9a04f19e2a46f288b42cf9470",
+            "src/splendor/agents/our_agents/genetic_algorithm/strategy3.npy": "1943f4c3754d672929c67630824c4b1166e50b82b966e92f5cf4431290a8b3c9"
+          },
+          "source_sha256": "ed8879f3c5aab7d400f4f0423dcad81bbee6588e175c183f75fdf8968af6fb62"
+        },
+        "heuristic": {
+          "config": {
+            "class": "dqn.population.HeuristicAgent"
+          },
+          "config_sha256": "5d1b960164edb6c42db11f5901c944ca6cf8ec6ec38aad6e74997d7cade70003",
+          "kind": "builtin",
+          "source_files": {
+            "src/splendor/agents/our_agents/dqn/population.py": "7e1aa25524ab1cc8c1697776f77e4b011d2bc6fc8cf33dddb08c2439942b379f"
+          },
+          "source_sha256": "27ef1788ce342d7c82cd0be49c72cf8583111a03cd54590ce3246c2cd2157193"
+        },
+        "heuristic-rush": {
+          "config": {
+            "buy": 2.0,
+            "collect": 0.05,
+            "colour_affinity": 0.5,
+            "noble": 6.0,
+            "points": 4.0,
+            "reserve": -0.3
+          },
+          "config_sha256": "04d3b7b6aea84ad30d74788f8c06b7e85cea881037ac154e2f801fda95eec6e9",
+          "kind": "builtin",
+          "source_files": {
+            "src/splendor/agents/our_agents/dqn/population.py": "7e1aa25524ab1cc8c1697776f77e4b011d2bc6fc8cf33dddb08c2439942b379f",
+            "src/splendor/agents/our_agents/policy_imitation/policies.py": "77c60c75173c28decda922209d74d97944dfb2f9e057373ea2c9a3cb342bf372"
+          },
+          "source_sha256": "16b2986e34e02534e92e1590d19342b0ef265f9d360f237efb7c50ad9890bfca"
+        },
+        "minimax": {
+          "config": {
+            "depth": 2,
+            "tie_break": "global random.shuffle then stable sort by action type"
+          },
+          "config_sha256": "5b35d042c1b8ca2e67906c35bf410623516ba50251e7158715eacfb7335b9b68",
+          "kind": "builtin",
+          "source_files": {
+            "src/splendor/agents/our_agents/minmax.py": "7200853e3562c0f06a906fa4324588eb571395b6c4319d2adf46af6c73b150f6"
+          },
+          "source_sha256": "4def909daadf1667c699046ae0b9f87ea7e478a1aa07b754a1b0bda70b904c46"
+        },
+        "random": {
+          "config": {
+            "rng": "legacy global Python random",
+            "selection": "random.choice over runner-provided legal actions"
+          },
+          "config_sha256": "669d7685879deef54ac69f0c66b80fac161c24dd945fb7cc4e7e8584b9119460",
+          "kind": "builtin",
+          "source_files": {
+            "src/splendor/agents/generic/random.py": "c7fc3e08359145c336b82c5d5e917e0bf4a01d43ef3865ce574a3ba3307fb50c"
+          },
+          "source_sha256": "2910cc4cf51617e40951cde0860e887cc6fa6dd4b0a3d2439a9c0090a9637178"
+        }
+      },
+      "schema": "splendor-task1-baseline-audit/1"
+    },
+    "code": {
+      "commit": "c87ce254f8e510a20a4f0baf2c39b85efda5c714",
+      "dirty": false,
+      "dirty_files": [],
+      "patch_format": "tracked git diff plus base64 untracked files",
+      "patch_sha256": "8fa0cca92333d8d35eb884675390ef811e7e537d589c77ad15f5f2e09ba18393",
+      "repository": "/home/wangyb/Git_project/Splendor-AI"
+    },
+    "created_at": "2026-09-14T18:21:26+00:00",
+    "dependencies": {
+      "aggregate_sha256": "bebb05c85aa17725753b94ffc653882dd2ee9a2a05ca84739f56bacbc8548938",
+      "files": {
+        "pyproject.toml": "f6b7095d7b2ea7486e0a119018b2d9743d008938d4f3df3638c297873c23de99",
+        "requirements.txt": "e866ff738d3f30c626ba9fbee9977a7ef707c96bdb52034e3f2e04b0aa40db6c",
+        "requirements/development.txt": "73b1d698a770b1cadab4f98b7a486be1c66c9e8a8a5e3f90a0c9ae0114194584",
+        "requirements/docs.txt": "5dd58852992f82d6885c4213c33ff90a56d9f59fba09ee6f911067bbdfc09248",
+        "requirements/extra.txt": "815c32ef215b4ec0f6d5e349b3adede3261a62a0fa8741a7b596d458d422a869",
+        "requirements/runtime.txt": "300f94a9dc47cbe70f0a74bdeb992758b611247c090ad046b6e8b213c9856d57",
+        "uv.lock": "ba76a3d992da8a57d77ddf790e7c59b65460396574badeaeccf8ee17d208a229"
+      }
+    },
+    "notes": [
+      "GPU training must use .venv-p5000; this manifest was created by that interpreter.",
+      "CUDA was unavailable at T1.0 audit time, so no training was started.",
+      "Historical C4-R2 Wilson intervals are descriptive only."
+    ],
+    "runtime": {
+      "cpu_count": 80,
+      "cublas_workspace_config": null,
+      "cuda_available": false,
+      "cuda_device_count": 0,
+      "cuda_devices": [],
+      "cuda_driver_version": null,
+      "cudnn_allow_tf32": true,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": false,
+      "deterministic_algorithms": false,
+      "deterministic_warn_only": false,
+      "matmul_allow_tf32": false,
+      "numpy_version": "1.26.4",
+      "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+      "python_executable": "/home/wangyb/Git_project/Splendor-AI/.venv-p5000/bin/python",
+      "python_hash_seed": null,
+      "python_version": "3.13.2",
+      "requested_device": "cuda",
+      "resolved_device": "cpu",
+      "torch_cuda_version": "12.6",
+      "torch_num_interop_threads": 40,
+      "torch_num_threads": 40,
+      "torch_version": "2.11.0+cu126"
+    },
+    "seed_registry": {
+      "schema": "splendor-seed-registry/1",
+      "sha256": "614e21b90cc1ddfb44276678b4c998db7dd9f9390105c6072d7d4f39fa07ef46",
+      "snapshot": {
+        "forbidden_ranges": [
+          [
+            800000,
+            820000
+          ],
+          [
+            900000,
+            940000
+          ]
+        ],
+        "legacy_manifest_forbidden_ranges": [
+          [
+            910000,
+            910010
+          ],
+          [
+            920000,
+            920050
+          ],
+          [
+            930000,
+            930025
+          ]
+        ],
+        "schema": "splendor-seed-registry/1",
+        "segments": [
+          {
+            "end": 822000,
+            "name": "stabilization_training",
+            "purpose": "PPO stabilization training",
+            "sealed": false,
+            "start": 820000
+          },
+          {
+            "end": 823000,
+            "name": "stabilization_validation",
+            "purpose": "PPO stabilization validation",
+            "sealed": false,
+            "start": 822000
+          },
+          {
+            "end": 824000,
+            "name": "stabilization_test",
+            "purpose": "PPO stabilization test",
+            "sealed": true,
+            "start": 823000
+          },
+          {
+            "end": 828000,
+            "name": "training",
+            "purpose": "training runs",
+            "sealed": false,
+            "start": 826000
+          },
+          {
+            "end": 829000,
+            "name": "validation",
+            "purpose": "model selection",
+            "sealed": false,
+            "start": 828000
+          },
+          {
+            "end": 829050,
+            "name": "independent_test",
+            "purpose": "final reported evaluation",
+            "sealed": true,
+            "start": 829000
+          },
+          {
+            "end": 826000,
+            "name": "ci_smoke",
+            "purpose": "CI smoke tests",
+            "sealed": false,
+            "start": 825000
+          },
+          {
+            "end": 854000,
+            "name": "c2_training",
+            "purpose": "C2 500-update self-play",
+            "sealed": false,
+            "start": 830000
+          },
+          {
+            "end": 854100,
+            "name": "c2_validation",
+            "purpose": "C2 model selection",
+            "sealed": false,
+            "start": 854000
+          },
+          {
+            "end": 855100,
+            "name": "c2_test",
+            "purpose": "C2 final reported evaluation",
+            "sealed": true,
+            "start": 855000
+          },
+          {
+            "end": 1036000,
+            "name": "c2r2_training",
+            "purpose": "C2-R2 2000-update self-play",
+            "sealed": false,
+            "start": 940000
+          },
+          {
+            "end": 1036100,
+            "name": "c2r2_validation",
+            "purpose": "C2-R2 model selection",
+            "sealed": false,
+            "start": 1036000
+          },
+          {
+            "end": 1037100,
+            "name": "c2r2_test",
+            "purpose": "C2-R2 final reported evaluation",
+            "sealed": true,
+            "start": 1037000
+          },
+          {
+            "end": 1140000,
+            "name": "z_training",
+            "purpose": "AZ self-play training deals",
+            "sealed": false,
+            "start": 1040000
+          },
+          {
+            "end": 1140100,
+            "name": "z_validation",
+            "purpose": "AZ iteration model selection",
+            "sealed": false,
+            "start": 1140000
+          },
+          {
+            "end": 1141100,
+            "name": "z_test",
+            "purpose": "AZ final reported evaluation",
+            "sealed": true,
+            "start": 1141000
+          }
+        ]
+      }
+    }
+  },
+  "provenance_sha256": "3826a3568bbe3286990370f6d02f486f8da02a89c6fad34215c9f86356fddbd0",
+  "schema_version": 2,
+  "status": "proposed"
+}
