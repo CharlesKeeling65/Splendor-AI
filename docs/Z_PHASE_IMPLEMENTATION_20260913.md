@@ -150,6 +150,21 @@ gate（≥ 57.3% = C2-PPO 纪录）。gate 通过后以该 checkpoint 跑 G1 全
 - 已知瞬态：run-2 开局 optimizer/buffer 重置，value MSE 回弹（0.192→0.289），
   预期随 buffer 回填恢复——此瞬态不计入判据。
 
+### run-2 中途检查（iter_008，2026-09-14）
+
+原 run-2 命令仍在后台运行，当前已落盘 `iter_000`–`iter_008`；对
+`runs/z2-az-lite-run2/iter_008.pth` 做了预声明的同口径贪心检查（`sims=1`、
+`trees=1`、`independent_test`、75 局 × 双座次，共 150 局）：
+
+| checkpoint | vs minimax | Wilson 95% | 判读 |
+|---|---:|---|---|
+| run-2 `iter_008` | **52.7%** | [44.7%, 60.5%] | 高于饱和失败线 50%，但尚未达到有效进展线 55% |
+
+因此当前证据既不能宣布 Z3 gate 成功，也不足以按失败停训；原命令继续向
+`iter_009` 及后续检查点推进，监视器在 `iter_009` 落盘后再执行 150 局检查。
+若训练在迭代间中断，可用 `train.py --start-iteration N --init-from <checkpoint>`
+以保持 checkpoint 文件的绝对迭代编号，避免覆盖既有产物。
+
 ## Z3 — 待 Z2 gate 排期
 
 判据：Z2 最优迭代 checkpoint 经 `splendor-league -a ...az_search,...`（AZ_SEARCH_CHECKPOINT
