@@ -32,9 +32,10 @@
 - 路径：`src/splendor/agents/our_agents/dqn/`
 - 架构：Dueling Double DQN（InputNormalization + 4×[Linear128+LayerNorm+ReLU] + V/A 头）+ n-step(3) replay + 终局 ±10 奖励包装（calScore 口径）
 - 相对 PPO 的独有能力：off-policy 经验回流——网页对局数据可直接混入本地 replay（`collect_from_browser`）
-- **当前状态：代码与单元测试就绪（83 tests 全绿），尚未训练**——本机约束暂不做训练（见 `docs/p4_decision.md` 附录），M1→M3 课程门槛（vs random >90% / vs minimax ≥55%，plan/phase-1 §2）达成后本表将同口径补录 DQN 结果与 3-seed 方差
+- **当前状态：代码、单元测试与多轮训练资产已就绪**；DQN round1/round2、D1 课程和
+  浏览器部署 harness 均已按各自协议归档，结果与 3-seed 方差见对应报告。
 
-## 提升路径增量（2026-09-13，按 docs/IMPROVEMENT_ROADMAP_20260912.md 实施中）
+## 提升路径增量（2026-09-14，按 docs/IMPROVEMENT_ROADMAP_20260912.md 回填）
 
 > 本节随阶段推进回填同口径数字；训练完成的最终数字回填到 §结论上方的新小节。
 
@@ -67,7 +68,14 @@
 - **C2-R2（2000 updates + potential shaping，2026-09-14）**：C4-R2 league
   （每对手 150 局）vs minimax **66.3%** / GA **62.0%** / heuristic **58.0%** /
   rush 56.0% / hoard 61.3% / random 100%——**ppo-best 首次联赛榜首**（总分率
-  67.2%），G1 的 minimax/GA 门槛首次达成（`docs/C2R2_2000_REPORT_20260914.md`）。
+  67.2%），G1 的 minimax/GA 门槛首次达成；heuristic 点估计差 2pt、Wilson 区间覆盖
+  60%（`docs/C2R2_2000_REPORT_20260914.md`）。选择权重为
+  `runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth`，SHA-256
+  `e225464c17a783bd91b51251336f917e9f867af4f475d8414372885fbb758102`。
 - 排名（2p，对 minimax）：**C2-R2-PPO 66.3% > C2-PPO 57.3% > DQN-corrected
   52.7% > 旧 PPO 48.7%**；对 heuristic：C2-R2-PPO 58.0% 已逼近启发式族
   （heuristic 对其余对手 59–61%），学习型策略仅剩 ~2pt 缺口。
+
+> 注：上述“最佳”限定在 C4-R2 的 2 人独立测试 league 协议内。`ppo-best` 是
+> `public-v2` PPO checkpoint；当前 `play-web` 入口仍是 DQN-only，不能直接把该 `.pth`
+> 传给浏览器部署命令。

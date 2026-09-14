@@ -501,13 +501,26 @@ evolve:main → parse_args → evolve
 
 C2 规模化自博弈（500×16×3 seed，c2_training 种子段）已完成：EV(last3) 0.34–0.48
 （试点期 0.12–0.23），独立测试均值 vs random 100% / heuristic 37% / minimax 52%
-/ GA 45%（`docs/C2_SELFPLAY_C4_LEAGUE_REPORT_20260913.md`）。C4 league 体检
-（每对手 150 局，封存段）：vs minimax **57.3%**（仓库最佳，超 DQN 52.7%）、
+/ GA 45%（`docs/C2_SELFPLAY_C4_LEAGUE_REPORT_20260913.md`）。C4-R1 league 体检
+（每对手 150 局，封存段）：vs minimax **57.3%**（当时仓库最佳，超 DQN 52.7%）、
 vs heuristic 38.7%、vs GA 47.3% —— G1 门槛未达，heuristic 族缺口归因与下一步
 入报告。F1 标定：return 模式价值头 AUC 0.525 < 0.75，**记录为不可用作搜索
 先验**（`runs/f1-calibration/`）。E1 席位参数化 + 3p/4p 冒烟零非法
 （`docs/E_PHASE_IMPLEMENTATION_20260913.md`）。D1（DQN 200k×3，pool
-random:0.5,minimax:0.5）当晚训练完成后按 M2/M3 门槛出报告。
+random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
+
+### 7.9.1 C4-R2 league 与 PPO 选模回填（2026-09-14）
+
+- C2-R2（2000 updates × 3 seed，DAgger-2 初始化 + potential shaping）在
+  `independent_test` 段完成 7-agent、2p round-robin：每对手 150 局、无错误局。
+- `ppo-best` 以总分率 **67.3%**、胜率 **67.2%** 首次登顶联赛榜首；对 minimax
+  **66.3%**、GA **62.0%**、heuristic **58.0%**、random **100%**。因此 G1
+  三项强对手门槛中 minimax 与 GA 两项达成；heuristic 点估计仍差 2pt，但
+  Wilson 95% 区间 **[50.0%, 65.6%]** 覆盖 60%。
+- 联赛选用验证段整数胜局 **48/60** 的 seed1234 权重：
+  `runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth`；完整矩阵、
+  原始计数与兼容性边界见 [`docs/C2R2_2000_REPORT_20260914.md`](docs/C2R2_2000_REPORT_20260914.md)
+  和 [`runs/c4r2-league-20260914/league_report.md`](runs/c4r2-league-20260914/league_report.md)。
 
 ### 7.10 浏览器对局辅助面板 P7 v0/v1（2026-09-14，按 plan/phase-7-browser-advisor.md 实施）
 

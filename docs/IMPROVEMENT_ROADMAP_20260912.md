@@ -292,7 +292,7 @@ C1 + D1 + D3 ──────────────────┘
 
 ---
 
-## 11. 进度审计（2026-09-13，第一轮实施完成）
+## 11. 进度审计（2026-09-14，C4-R2 结果回填）
 
 ### 阶段任务清单
 
@@ -306,7 +306,7 @@ C1 + D1 + D3 ──────────────────┘
 | C1 | critic 消融 | ✅ 完成 | `docs/PPO_CRITIC_ABLATION_20260913.md`（value1+critic-lr5 胜出） |
 | C2 | 规模化自博弈 | ✅ 完成 | 500×16×3；EV 0.34–0.48；`docs/C2_SELFPLAY_C4_LEAGUE_REPORT_20260913.md` |
 | C3 | 池风格化 | ✅ 落地 | rush/hoard 变体 + `--pool-names` |
-| C4 | 独立测试体检 | ✅ 完成 | league 矩阵（每对手 150 局）；**G1 未达（如实记录）** |
+| C4 | 独立测试体检 | ✅ 完成 | C4-R2 league 矩阵（每对手 150 局）；G1 强对手门槛 **2/3 达成**，heuristic 点估计差 2pt |
 | D1 | 200k 课程 | ✅ 完成 | M2 2/3 seed；**M3 被否定（如实记录）**；`docs/D1_200K_COURSE_REPORT_20260913.md` |
 | D2 | 回流混采 | ✅ 落地 | 白名单语义修正后全测试绿；真实回流按计划留待 G1 后部署 |
 | D3 | 价值蒸馏 | ⚠️ 机制落地，验收未达 | 2/60 vs 22/60（教师弱）；`docs/D3_DISTILLATION_RESULT_20260913.md` |
@@ -321,7 +321,7 @@ C1 + D1 + D3 ──────────────────┘
 
 | 目标 | 量化验收 | 现状 | 判定 |
 |---|---|---|---|
-| G1 | vs minimax ≥60 / heuristic ≥60 / GA ≥55（≥150 局独立段） | C4-R2（2000 updates + shaping）：**66.3% / 58.0% / 62.0%** | **2/3 达成**（minimax、GA ✅；heuristic 58.0% 差 2pt，区间 [50.0, 65.6] 含 60%）；ppo-best 首次联赛榜首 |
+| G1 | vs minimax ≥60 / heuristic ≥60 / GA ≥55（≥150 局独立段） | C4-R2（2000 updates + shaping）：**66.3% / 58.0% / 62.0%** | **2/3 达成**（minimax、GA ✅；heuristic 58.0% 差 2pt，Wilson 区间 [50.0, 65.6] 覆盖 60%）；ppo-best 首次联赛榜首，选择权重为 `runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth` |
 | G2 | PPO critic EV ≥0.5；DQN TD 稳定 | EV@u1000 0.40–0.43 后随自博弈非平稳回落（0.29–0.44），DQN 无发散段 | **修订表述**：自博弈下 EV 非实力单调代理，改用"EV 不发散 + 胜率门槛"（C2R2 报告） |
 | G3 | DQN 200k×3 seed；PPO ≥8,000 局/seed | 双双达成（C2 8,000 局/seed ×3；D1 200k×3） | **达成**（M3 门槛除外，见 G1 行与 D1 报告） |
 | G4 | 3p/4p per-seat 模型与 league 基线 | 冒烟达成（E1）；完整训练未启动 | **部分**（E3 待排期） |

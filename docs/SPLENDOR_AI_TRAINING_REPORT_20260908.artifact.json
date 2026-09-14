@@ -3,9 +3,9 @@
   "manifest": {
     "version": 1,
     "surface": "report",
-    "title": "Splendor-AI 全仓库训练模型与权重归档报告（2026-09-08）",
-    "description": "Splendor-AI 全部本地训练模型、训练参数、训练过程指标、评测结果和权重路径的可视化归档。",
-    "generatedAt": "2026-09-08T00:00:00+08:00",
+    "title": "Splendor-AI 全仓库训练模型与权重归档报告（含 C4-R2 league 增量，2026-09-14）",
+    "description": "Splendor-AI 全部本地训练模型、训练参数、训练过程指标、权重路径，以及 C4-R2 league 最新验证结果的可视化归档。模型目录计数保留 2026-09-08 历史快照，C4-R2 作为 2026-09-14 增量单独标注。",
+    "generatedAt": "2026-09-14T08:27:22+08:00",
     "sources": [
       {
         "id": "ppo_report",
@@ -259,6 +259,24 @@
           "metric_definitions": [
             "win_rate = wins / games；draws 单独记录，不计入 wins。",
             "训练曲线为各运行日志的明确聚合视图。"
+          ]
+        }
+      },
+      {
+        "id": "c4r2_league",
+        "label": "C4-R2 league 原始结果与选模权重",
+        "path": "runs/c4r2-league-20260914/league_report.md",
+        "query": {
+          "language": "sql",
+          "sql": "SELECT * FROM splendor_ai_artifact_snapshot",
+          "description": "C4-R2 使用封存 independent_test 种子段；对阵结果来自 league_report.md，选模权重由 C2-R2 result.json 与 checkpoint 哈希复核。",
+          "tables_used": [
+            "splendor_ai_artifact_snapshot"
+          ],
+          "metric_definitions": [
+            "win_rate = credited_wins / games；平局按双方各 0.5 胜折算。",
+            "Wilson 95% 为每对手 150 局 tie-split 结果的 Wilson 区间。",
+            "league 总榜 win rate 以 900 局 roster 对阵汇总，score rate 单独记录。"
           ]
         }
       }
@@ -547,6 +565,51 @@
         },
         "xAxisTitle": "epoch",
         "yAxisTitle": "validation masked loss",
+        "layout": "wide"
+      },
+      {
+        "id": "c4r2_league_chart",
+        "title": "C4-R2 ppo-best 对手胜率",
+        "subtitle": "2p independent_test；每个对手 150 局，平局折半；线段为 Wilson 95% 区间。",
+        "type": "bar",
+        "dataset": "c4r2_league",
+        "sourceId": "c4r2_league",
+        "encodings": {
+          "x": {
+            "field": "opponent_label",
+            "type": "nominal"
+          },
+          "y": {
+            "field": "win_rate",
+            "type": "quantitative",
+            "format": "percent"
+          },
+          "tooltip": [
+            {
+              "field": "opponent",
+              "type": "nominal",
+              "label": "opponent"
+            },
+            {
+              "field": "credited_wins",
+              "type": "quantitative",
+              "label": "credited wins"
+            },
+            {
+              "field": "games",
+              "type": "quantitative",
+              "label": "games"
+            },
+            {
+              "field": "wilson_95",
+              "type": "nominal",
+              "label": "Wilson 95%"
+            }
+          ]
+        },
+        "xAxisTitle": "对手",
+        "yAxisTitle": "胜率",
+        "valueFormat": "percent",
         "layout": "wide"
       }
     ],
@@ -1178,13 +1241,170 @@
             "label": "角色"
           }
         ]
+      },
+      {
+        "id": "c4r2_league_table",
+        "title": "C4-R2 league 对阵明细",
+        "subtitle": "原始胜局、平局折半胜局、150 局分母及 Wilson 95% 区间；G1 只看 minimax/GA/heuristic 三项。",
+        "dataset": "c4r2_league",
+        "sourceId": "c4r2_league",
+        "density": "compact",
+        "defaultSort": {
+          "field": "win_rate",
+          "direction": "desc"
+        },
+        "columns": [
+          {
+            "field": "opponent",
+            "label": "对手"
+          },
+          {
+            "field": "raw_wins",
+            "label": "原始胜局",
+            "type": "number"
+          },
+          {
+            "field": "ties",
+            "label": "平局",
+            "type": "number"
+          },
+          {
+            "field": "credited_wins",
+            "label": "折半胜局",
+            "type": "number"
+          },
+          {
+            "field": "games",
+            "label": "games",
+            "type": "number"
+          },
+          {
+            "field": "win_rate",
+            "label": "胜率",
+            "type": "percent",
+            "format": "percent"
+          },
+          {
+            "field": "wilson_95",
+            "label": "Wilson 95%"
+          },
+          {
+            "field": "gate",
+            "label": "G1 判定"
+          }
+        ]
+      },
+      {
+        "id": "c4r2_standings_table",
+        "title": "C4-R2 league 总榜摘要",
+        "subtitle": "7-agent roster、900 局/agent；ppo-best 首次排名第一。",
+        "dataset": "c4r2_standings",
+        "sourceId": "c4r2_league",
+        "density": "compact",
+        "columns": [
+          {
+            "field": "rank",
+            "label": "名次",
+            "type": "number"
+          },
+          {
+            "field": "agent",
+            "label": "agent"
+          },
+          {
+            "field": "games",
+            "label": "games",
+            "type": "number"
+          },
+          {
+            "field": "win_rate",
+            "label": "胜率",
+            "type": "percent",
+            "format": "percent"
+          },
+          {
+            "field": "score_rate",
+            "label": "总分率",
+            "type": "percent",
+            "format": "percent"
+          },
+          {
+            "field": "wilson_95",
+            "label": "Wilson 95%"
+          },
+          {
+            "field": "avg_rank",
+            "label": "平均名次",
+            "type": "number"
+          },
+          {
+            "field": "avg_score",
+            "label": "平均分",
+            "type": "number"
+          }
+        ]
+      },
+      {
+        "id": "c4r2_selection_table",
+        "title": "ppo-best 选择权重与可加载性",
+        "subtitle": "验证选模、checkpoint 哈希与浏览器入口兼容性；该权重是 PPO，不是当前 play-web 的 DQN 输入。",
+        "dataset": "c4r2_selection",
+        "sourceId": "c4r2_league",
+        "density": "compact",
+        "columns": [
+          {
+            "field": "model",
+            "label": "模型"
+          },
+          {
+            "field": "algorithm",
+            "label": "算法"
+          },
+          {
+            "field": "training_method",
+            "label": "训练方式"
+          },
+          {
+            "field": "selection_criterion",
+            "label": "选模依据"
+          },
+          {
+            "field": "checkpoint_absolute",
+            "label": "权重绝对路径"
+          },
+          {
+            "field": "checkpoint_relative",
+            "label": "仓库相对路径"
+          },
+          {
+            "field": "sha256",
+            "label": "SHA-256"
+          },
+          {
+            "field": "feature_version",
+            "label": "特征版本"
+          },
+          {
+            "field": "input_dim",
+            "label": "输入维度",
+            "type": "number"
+          },
+          {
+            "field": "hidden_layers",
+            "label": "隐层"
+          },
+          {
+            "field": "play_web_compatibility",
+            "label": "play-web"
+          }
+        ]
       }
     ],
     "blocks": [
       {
         "id": "title",
         "type": "markdown",
-        "body": "# Splendor-AI 全仓库训练模型与权重归档报告（2026-09-08）"
+        "body": "# Splendor-AI 全仓库训练模型与权重归档报告（含 C4-R2 league 增量，2026-09-14）"
       },
       {
         "id": "metric_strip",
@@ -1201,12 +1421,37 @@
       {
         "id": "technical_summary",
         "type": "markdown",
-        "body": "## 技术摘要\n\n本报告按当前 `dev` 分支工作区中的训练结果、训练日志、manifest、审计文件和源码内置权重进行归档；**模型运行记录**包含正式运行、诊断运行和 smoke 运行，**checkpoint 文件数**则统计 `runs/` 下全部 `.pth`。\n\n- 共归档 58 条模型运行记录：DQN 33 条，BC/DAgger/PPO 25 条；另列出源码内置 PyTorch/NumPy 权重。\n- `runs/` 下有 468 个 `.pth` 检查点，其中 54 个 `best.pth`、51 个 `final.pth`。这些数字不等于去重后的模型数，因为每个运行还保留 step/epoch/update 快照。\n- 正式 PPO 稳定化 v2 完整通过：9 个训练候选、2700 局验证、3000 局独立终测、0 失败、0 非法动作。\n- 在统一的 formal v2 终测中，fixed PPO 与校正 DQN 对 GA 的聚合胜率均为 54.0%；fixed PPO 对 heuristic 为 32.0%，低于校正 DQN 的 39.3%。scratch PPO 在非随机对手上为 0%，不应作为部署候选。\n- 源码内置的 4 个 PPO 架构权重可读取，但当前仓库缺少与它们一一对应的训练 step/config/曲线，因此单独标为“已打包、训练溯源不完整”。"
+        "body": "## 技术摘要\n\n本报告按当前 `dev` 分支工作区中的训练结果、训练日志、manifest、审计文件和源码内置权重进行归档；**模型运行记录**包含正式运行、诊断运行和 smoke 运行，**checkpoint 文件数**则统计 `runs/` 下全部 `.pth`。\n\n- 共归档 58 条模型运行记录：DQN 33 条，BC/DAgger/PPO 25 条；另列出源码内置 PyTorch/NumPy 权重。\n- `runs/` 下有 468 个 `.pth` 检查点，其中 54 个 `best.pth`、51 个 `final.pth`。这些数字不等于去重后的模型数，因为每个运行还保留 step/epoch/update 快照。\n- 正式 PPO 稳定化 v2 完整通过：9 个训练候选、2700 局验证、3000 局独立终测、0 失败、0 非法动作。\n- 在统一的 formal v2 终测中，fixed PPO 与校正 DQN 对 GA 的聚合胜率均为 54.0%；fixed PPO 对 heuristic 为 32.0%，低于校正 DQN 的 39.3%。scratch PPO 在非随机对手上为 0%，不应作为部署候选。\n- 源码内置的 4 个 PPO 架构权重可读取，但当前仓库缺少与它们一一对应的训练 step/config/曲线，因此单独标为“已打包、训练溯源不完整”。\n- C4-R2 增量：`ppo-best` 在 2p independent_test league 以 67.2% 总分率首次登顶；vs minimax 66.3%、GA 62.0%、heuristic 58.0%。\n- 模型目录计数与历史训练曲线仍是 2026-09-08 资产快照；C4-R2 的 league 明细、选择权重与 hash 在本报告新增独立区块中维护。"
       },
       {
         "id": "final_findings",
         "type": "markdown",
-        "body": "## 关键发现与视觉证据\n\n正式 v2 的主结论是：fixed 初始化的 PPO 稳定化是当前最有价值的 PPO 研究快照，但尚未在 heuristic 上超过校正 DQN；anchor 的验证分数更高，却在独立终测中落后 fixed；scratch 训练 8 个 update 后仍未取得非随机对手胜局。图中胜率均为 wins/games，draw 不计入 wins。\n\nDQN 第二轮的 public-sync 变体明显退化（heuristic 8.0%、minimax 18.7%），public-ema 和 public-demo 没有稳定超过 corrected；因此指导/同步机制目前只能作为实验记录，不能作为默认方案。\n\nBC/DAgger 的训练损失随数据扩展显著下降：正式 DAgger-2 的最佳验证 masked loss 为 1.4874，但行为克隆损失下降并不等价于对强对手胜率提升，必须以独立对局评测作为选择依据。"
+        "body": "## 关键发现与视觉证据\n\n正式 v2 的主结论是：fixed 初始化的 PPO 稳定化是当前最有价值的 PPO 研究快照，但尚未在 heuristic 上超过校正 DQN；anchor 的验证分数更高，却在独立终测中落后 fixed；scratch 训练 8 个 update 后仍未取得非随机对手胜局。图中胜率均为 wins/games，draw 不计入 wins。\n\nDQN 第二轮的 public-sync 变体明显退化（heuristic 8.0%、minimax 18.7%），public-ema 和 public-demo 没有稳定超过 corrected；因此指导/同步机制目前只能作为实验记录，不能作为默认方案。\n\nBC/DAgger 的训练损失随数据扩展显著下降：正式 DAgger-2 的最佳验证 masked loss 为 1.4874，但行为克隆损失下降并不等价于对强对手胜率提升，必须以独立对局评测作为选择依据。\n\n在后续 C4-R2 independent_test league 中，C2-R2 的 `ppo-best` 首次取得总榜第一（67.2% 总分率），并通过 minimax/GA 两项 G1 门槛；heuristic 的点估计仍为 58.0%，不可写成三项门槛全部通过。"
+      },
+      {
+        "id": "c4r2_league_section",
+        "type": "markdown",
+        "body": "## C4-R2 league 增量（2026-09-14）\n\n`ppo-best` 在 2 人 `independent_test` league 中以 67.2% 总分率首次登顶。对 minimax 66.3%、GA 62.0% 两项 G1 门槛达成；heuristic 点估计 58.0%，Wilson 95% 区间 [50.0%, 65.6%] 覆盖 60%，但点估计仍差 2pt。\n\n选择权重为 `runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth`，SHA-256 为 `e225464c17a783bd91b51251336f917e9f867af4f475d8414372885fbb758102`。该结论限定在本次 2p、7-agent、每对手 150 局的 league 协议内；当前 `play-web` 入口只加载 DQN checkpoint，不能直接加载此 PPO `public-v2` 权重。"
+      },
+      {
+        "id": "c4r2_league_chart_block",
+        "type": "chart",
+        "chartId": "c4r2_league_chart"
+      },
+      {
+        "id": "c4r2_league_table_block",
+        "type": "table",
+        "tableId": "c4r2_league_table"
+      },
+      {
+        "id": "c4r2_standings_table_block",
+        "type": "table",
+        "tableId": "c4r2_standings_table"
+      },
+      {
+        "id": "c4r2_selection_table_block",
+        "type": "table",
+        "tableId": "c4r2_selection_table"
       },
       {
         "id": "scope_metrics",
@@ -1221,7 +1466,7 @@
       {
         "id": "data_quality",
         "type": "markdown",
-        "body": "## 数据质量、限制与可追溯性\n\n审计优先级按“正式终测 > 训练结果 JSON/CSV > 结果文档 > 源码默认配置”排序。formal v2 的独立审计、训练屏障、哈希不变性和非法动作计数均通过；但仍有三类限制：样本量是有限的 paired/shared-deal 对局，旧实验协议不一致，源码内置 PPO/GA 资产缺少完整训练 provenance。旧的未固定 hash seed 的 PPO 稳定化尝试被排除，避免与 v2 结果混淆。"
+        "body": "## 数据质量、限制与可追溯性\n\n审计优先级按“正式终测 > 训练结果 JSON/CSV > 结果文档 > 源码默认配置”排序。formal v2 的独立审计、训练屏障、哈希不变性和非法动作计数均通过；但仍有三类限制：样本量是有限的 paired/shared-deal 对局，旧实验协议不一致，源码内置 PPO/GA 资产缺少完整训练 provenance。旧的未固定 hash seed 的 PPO 稳定化尝试被排除，避免与 v2 结果混淆。\n\nC4-R2 是 2026-09-14 的独立增量：league 原始结果、封存种子段、选模规则和 checkpoint SHA-256 均单独保留；历史模型目录计数没有因新增训练快照而伪装成一次全量重盘点。"
       },
       {
         "id": "recommendations",
@@ -1333,7 +1578,7 @@
   "snapshot": {
     "version": 1,
     "status": "ready",
-    "generatedAt": "2026-09-08T00:00:00+08:00",
+    "generatedAt": "2026-09-14T08:27:22+08:00",
     "datasets": {
       "headline_metrics": [
         {
@@ -9570,6 +9815,186 @@
           "mean_epsilon": 0.05000000000000001,
           "mean_buffer": 19998
         }
+      ],
+      "c4r2_league": [
+        {
+          "model": "ppo-best",
+          "opponent": "minimax",
+          "opponent_label": "minimax",
+          "raw_wins": 99,
+          "ties": 1,
+          "losses": 50,
+          "credited_wins": 99.5,
+          "games": 150,
+          "win_rate": 0.6633333333333333,
+          "wilson_low": 0.584467,
+          "wilson_high": 0.734043,
+          "wilson_95": "[58.4%, 73.4%]",
+          "gate": "✅ G1 ≥60%"
+        },
+        {
+          "model": "ppo-best",
+          "opponent": "ga",
+          "opponent_label": "GA",
+          "raw_wins": 93,
+          "ties": 0,
+          "losses": 57,
+          "credited_wins": 93,
+          "games": 150,
+          "win_rate": 0.62,
+          "wilson_low": 0.540243,
+          "wilson_high": 0.693764,
+          "wilson_95": "[54.0%, 69.4%]",
+          "gate": "✅ G1 ≥55%"
+        },
+        {
+          "model": "ppo-best",
+          "opponent": "heuristic",
+          "opponent_label": "heuristic",
+          "raw_wins": 87,
+          "ties": 0,
+          "losses": 63,
+          "credited_wins": 87,
+          "games": 150,
+          "win_rate": 0.58,
+          "wilson_low": 0.499983,
+          "wilson_high": 0.656021,
+          "wilson_95": "[50.0%, 65.6%]",
+          "gate": "⚠️ 点估计差 2pt；区间覆盖 60%"
+        },
+        {
+          "model": "ppo-best",
+          "opponent": "heuristic-rush",
+          "opponent_label": "rush",
+          "raw_wins": 84,
+          "ties": 0,
+          "losses": 66,
+          "credited_wins": 84,
+          "games": 150,
+          "win_rate": 0.56,
+          "wilson_low": 0.480047,
+          "wilson_high": 0.636956,
+          "wilson_95": "[48.0%, 63.7%]",
+          "gate": "—"
+        },
+        {
+          "model": "ppo-best",
+          "opponent": "heuristic-hoard",
+          "opponent_label": "hoard",
+          "raw_wins": 92,
+          "ties": 0,
+          "losses": 58,
+          "credited_wins": 92,
+          "games": 150,
+          "win_rate": 0.6133333333333333,
+          "wilson_low": 0.533496,
+          "wilson_high": 0.68751,
+          "wilson_95": "[53.3%, 68.8%]",
+          "gate": "—"
+        },
+        {
+          "model": "ppo-best",
+          "opponent": "random",
+          "opponent_label": "random",
+          "raw_wins": 150,
+          "ties": 0,
+          "losses": 0,
+          "credited_wins": 150,
+          "games": 150,
+          "win_rate": 1,
+          "wilson_low": 0.975029,
+          "wilson_high": 1,
+          "wilson_95": "[97.5%, 100.0%]",
+          "gate": "control 100%"
+        }
+      ],
+      "c4r2_standings": [
+        {
+          "agent": "ppo-best",
+          "games": 900,
+          "win_rate": 0.6722222222222223,
+          "score_rate": 0.6727777777777778,
+          "wilson_95": "[64.1%, 70.3%]",
+          "avg_rank": 1.3277777777777777,
+          "avg_score": 14.346666666666666,
+          "rank": 1
+        },
+        {
+          "agent": "heuristic-rush",
+          "games": 900,
+          "win_rate": 0.5977777777777777,
+          "score_rate": 0.6,
+          "wilson_95": "[56.8%, 63.2%]",
+          "avg_rank": 1.4,
+          "avg_score": 13.492222222222223,
+          "rank": 2
+        },
+        {
+          "agent": "heuristic",
+          "games": 900,
+          "win_rate": 0.5922222222222222,
+          "score_rate": 0.5944444444444444,
+          "wilson_95": "[56.2%, 62.6%]",
+          "avg_rank": 1.4055555555555554,
+          "avg_score": 13.43111111111111,
+          "rank": 3
+        },
+        {
+          "agent": "ga",
+          "games": 900,
+          "win_rate": 0.5666666666666667,
+          "score_rate": 0.5666666666666667,
+          "wilson_95": "[53.4%, 59.9%]",
+          "avg_rank": 1.4333333333333333,
+          "avg_score": 14.344444444444445,
+          "rank": 4
+        },
+        {
+          "agent": "heuristic-hoard",
+          "games": 900,
+          "win_rate": 0.5633333333333334,
+          "score_rate": 0.5633333333333334,
+          "wilson_95": "[53.1%, 59.5%]",
+          "avg_rank": 1.4366666666666668,
+          "avg_score": 13.422777777777778,
+          "rank": 5
+        },
+        {
+          "agent": "minimax",
+          "games": 900,
+          "win_rate": 0.5022222222222222,
+          "score_rate": 0.5027777777777778,
+          "wilson_95": "[47.0%, 53.5%]",
+          "avg_rank": 1.4966666666666666,
+          "avg_score": 12.391111111111112,
+          "rank": 6
+        },
+        {
+          "agent": "random",
+          "games": 900,
+          "win_rate": 0,
+          "score_rate": 0,
+          "wilson_95": "[0.0%, 0.4%]",
+          "avg_rank": 2,
+          "avg_score": 0.6111111111111112,
+          "rank": 7
+        }
+      ],
+      "c4r2_selection": [
+        {
+          "model": "ppo-best",
+          "algorithm": "PPO",
+          "training_method": "DAgger-2 初始化 + 2000 updates 自博弈 + potential shaping (κ=0.05)",
+          "selection_criterion": "验证段整数胜局 48/60；只用 validation 选模",
+          "checkpoint_relative": "runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth",
+          "checkpoint_absolute": "/home/wangyb/Git_project/Splendor-AI/runs/c2r2-selfplay-2000/training/fixed-seed1234/best.pth",
+          "sha256": "e225464c17a783bd91b51251336f917e9f867af4f475d8414372885fbb758102",
+          "feature_version": "public-v2",
+          "input_dim": 312,
+          "hidden_layers": "[128, 128, 128, 128]",
+          "league_scope": "C4-R2 2p independent_test；每对手 150 局",
+          "play_web_compatibility": "否；当前 play-web loader 为 DQN-only"
+        }
       ]
     }
   },
@@ -9828,7 +10253,24 @@
           "训练曲线为各运行日志的明确聚合视图。"
         ]
       }
+    },
+    {
+      "id": "c4r2_league",
+      "label": "C4-R2 league 原始结果与选模权重",
+      "path": "runs/c4r2-league-20260914/league_report.md",
+      "query": {
+        "language": "sql",
+        "sql": "SELECT * FROM splendor_ai_artifact_snapshot",
+        "description": "C4-R2 使用封存 independent_test 种子段；对阵结果来自 league_report.md，选模权重由 C2-R2 result.json 与 checkpoint 哈希复核。",
+        "tables_used": [
+          "splendor_ai_artifact_snapshot"
+        ],
+        "metric_definitions": [
+          "win_rate = credited_wins / games；平局按双方各 0.5 胜折算。",
+          "Wilson 95% 为每对手 150 局 tie-split 结果的 Wilson 区间。",
+          "league 总榜 win rate 以 900 局 roster 对阵汇总，score rate 单独记录。"
+        ]
+      }
     }
   ]
 }
-
