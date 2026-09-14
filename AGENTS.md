@@ -2,9 +2,10 @@
 
 > 本文件面向在本仓库工作的 AI 编码 agent。内容基于 2026-09-03 的全量源码调研，所有事实均已逐一验证。
 > 项目升级计划见 [plan/](./plan/README.md)——**动代码前先读对应阶段文档**。
-> 升级进度（dev 分支，2026-09-05）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
+> 升级进度（dev 分支，2026-09-14）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
 > 浏览器层七件套含真实 DOM 实测回填 + play-web 部署 harness），**P4 经 ADR 裁决暂缓**，
-> **P5 已完成**（CI/Makefile/文档）。训练课程（T1.6）与 50 局网页部署待训练条件解除后执行。
+> **P5 已完成**（CI/Makefile/文档），**P6 已完成**（TCP JSONL 远程推理、DQN/前馈
+> imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
 ## 项目概述
@@ -15,10 +16,10 @@
 |---|---|---|
 | 游戏引擎 | `src/splendor/splendor/` | `splendor_model.py` 规则核心；完全信息博弈（`private_information = None`） |
 | Gym 环境 | `src/splendor/splendor/gym/` | 把多智能体回合制折叠为单智能体 MDP；对手回合在 `step()`/`reset()` 内自动模拟；统一协议 `gym/base.py::SplendorEnvBase`（P0） |
-| Agent 层 | `src/splendor/agents/` | `generic/`（random 等基线）、`our_agents/`（PPO 家族 / minimax / 遗传算法 / **DQN**） |
+| Agent 层 | `src/splendor/agents/` | `generic/`（random 等基线）、`our_agents/`（PPO 家族 / minimax / 遗传算法 / **DQN**）；P6 远程 registry 适配 DQN 与前馈 imitation-PPO |
 | 浏览器层 | `src/splendor/browser/` | 网页版（game.hullqin.cn/ccbs）适配：driver 协议 + ego-browser 适配器、DOM 抽取（真实页面实测校准）、伪状态、执行器、会话、奇偶监控、夹具 |
 
-当前主线：按 `plan/` 实施「本地 DQN 训练 → 浏览器层部署网页版（game.hullqin.cn/ccbs）」的 sim-to-real 管线。
+当前主线：按 `plan/` 实施「本地 DQN 训练 → 浏览器层部署网页版（game.hullqin.cn/ccbs）」的 sim-to-real 管线；P6 提供本地浏览器控制 + 远程 DQN/前馈 imitation-PPO 推理。
 
 ## 常用命令
 
@@ -31,8 +32,11 @@ ppo          # PPO 训练（console script）
 dqn          # DQN 训练（Dueling + Double DQN + n-step replay）
 evolve       # 遗传算法训练
 play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI）
+inference-server # 远程加载 DQN/前馈 imitation-PPO checkpoint（TCP JSONL）
+play-web-remote # 本地浏览器控制，远程动作/胜率推理
+play-dashboard # 读取远程对局 JSONL 事件流的胜率仪表盘
 play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进程输出走法建议+牌堆直方图（P7）
-# 快捷入口：make test / make parity / make train-dqn / make play-web
+# 快捷入口：make test / make test-remote / make parity / make train-dqn / make play-web
 ```
 
 环境：**Python 3.12+**（引擎用 `typing.override`，3.11 会 ImportError，尽管 pyproject 声明 >=3.11）；uv 管理（见 README_UV_SETUP.md）。
@@ -75,7 +79,7 @@ play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进�
 
 `tests/` 已随阶段同步建立，全量离线（CI 不碰网络）：`.venv/bin/python -m pytest tests/`（或 `make test`）。
 
-测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）。
+测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）。
 CI（GitHub Actions）：ruff + mypy（新代码路径）+ pytest，Python 3.12/3.13 矩阵。
 lint 工具链只从 `.[dev]`（= `requirements/development.txt`）来，CI **不得**再 `uv pip install ruff` 覆盖 pin
 （无 pin 的 ruff 曾在无代码变更时因新增默认规则把整个仓库的 lint 门刷红）。
@@ -99,6 +103,7 @@ CJK 全角标点（`，（）；`）是本仓库的**内容而非笔误**（状�
 | `docs/TRAINING_GUIDE.md` | **DQN 训练实操手册**（课程/参数/监控/验收，操作者视角） |
 | `docs/WEB_DEPLOYMENT_GUIDE.md` | **浏览器部署与可视化手册**（人机对战/挂机/双开/旁观/回流） |
 | `docs/REMOTE_DEPLOYMENT_GUIDE.md` | **本地控制 + 远程推理部署手册**（phase-6：inference-server / play-web-remote / play-dashboard，Z8 部署与隧道） |
+| `plan/phase-6-remote-inference.md` | **P6 远程推理设计裁决**（DQN/前馈 imitation-PPO、协议、schema/seat guard、胜率代理与离线验收） |
 | `plan/phase-7-browser-advisor.md` | **浏览器对局辅助面板设计裁决与任务清单**（P7：只读 advisor，零点击） |
 | `docs/web_experiments.md` | **E1-E6 网页规则实测记录 + M0.2 吞吐留档 + 规则差异 ADR** |
 | `docs/p4_decision.md` | P4 go/no-go 决策（全部暂缓，复审条件） |

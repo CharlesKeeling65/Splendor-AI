@@ -538,3 +538,22 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   全量 pytest 377 passed + parity 通过；advisor 文件 ruff/mypy 全绿。
 - **待办**：E7 实验（对手预留瞬间 DOM 证据，tracker 证据钩子已留位）→ 油猴叠加（可选）→
   真实房间人工验收（§5.2 清单）。commit 序列 11b949f→8731e90→43ff2db→171ed86→ac3f7f0。
+
+### 7.11 Phase-6 远程推理与胜率仪表盘（2026-09-14）
+
+- **交付**：`src/splendor/remote/` 的 TCP JSONL server/client/protocol/policies/rollout/
+  dashboard，以及 `src/splendor/play_remote.py` 的本地浏览器控制 harness。checkpoint
+  留在推理机；本地只发送观测、掩码和快照。
+- **模型边界**：远程 registry 支持 `dqn`（含历史未标记 DQN）和前馈
+  `imitation_ppo_policy_value`；旧课程 PPO、GRU/LSTM、self-attention 和 BC-only
+  checkpoint fail-closed 拒绝。DQN `act` 分数是 Q，imitation-PPO 分数是
+  `policy_logit`，协议保留 `q` 兼容别名但不混淆语义。
+- **座位/schema guard**：`v1=265` 与 `public-v2-multi=337` 支持 2–4 席；legacy
+  `public-v2=312` 仅支持 2 席。首次出现真实棋盘时按 DOM panel count 校验 acting/win-rate
+  两个模型；`--bots` 只控制 worker 数，不是实际座位事实源。
+- **事件与胜率**：事件携带 `acting_model_id`、`winrate_model_id`、`score_kind` 和
+  `winrate_mode=homogeneous_selfplay_proxy`；胜率是同一评估策略自对弈的代理值，不是
+  校准概率或 PPO value head 直出。仪表盘按 metadata 区分 Q/policy-logit 并兼容旧 `q` 字段。
+- **质量门**：新增 remote policy/protocol/winrate/options/dashboard 离线测试与 CI mypy 路径；
+  loopback/夹具测试不访问真实网页或外网。真实房间、profile、seat guard 和胜率曲线仍是
+  单独人工验收，不在 CI 中执行。

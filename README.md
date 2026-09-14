@@ -24,19 +24,22 @@ Some of the features here will require python `3.11` or higher.
 ---
 **升级计划（UPGRADE PLAN）**
 
-本仓库正按 [`plan/`](./plan/README.md) 实施六阶段升级，**P0-P3 与 P5 已完成**（P4 经 ADR 裁决暂缓，见 [docs/p4_decision.md](./docs/p4_decision.md)）：
-**P0 地基与对齐 → P1 本地 DQN 训练 ∥ P2 浏览器适配层 → P3 网页部署（sim-to-real）→ P4 高保真增强（可选）→ P5 工程化固化**。
-目标：本地引擎高速训练 DQN，经统一环境协议（`SplendorEnvBase`）部署到网页版（game.hullqin.cn/ccbs）对局。开发在 `dev` 分支进行，逐阶段规范提交；各阶段对代码库的增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
+本仓库正按 [`plan/`](./plan/README.md) 实施升级，**P0-P3、P5 与 P6 已完成**（P4 经 ADR 裁决暂缓，见 [docs/p4_decision.md](./docs/p4_decision.md)）：
+**P0 地基与对齐 → P1 本地 DQN 训练 ∥ P2 浏览器适配层 → P3 网页部署（sim-to-real）→ P4 高保真增强（可选）→ P5 工程化固化 → P6 远程推理与胜率仪表盘**。
+目标：本地引擎高速训练 DQN，并可通过统一环境协议（`SplendorEnvBase`）部署到网页版（game.hullqin.cn/ccbs）；P6 另支持远程加载 DQN 或前馈 imitation-PPO checkpoint。开发在 `dev` 分支进行，逐阶段规范提交；各阶段对代码库的增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
-**命令闭环**（训练 → 本地评测 → 网页部署）：
+**命令闭环**（训练 → 本地评测 → 网页部署/远程推理）：
 
 ```
 dqn          # DQN 训练（Dueling + Double DQN + n-step replay）
 dqn-evaluate # 固定 seed 的 100 局 checkpoint 验证
 splendor     # 本地对局评测（也可用于加载 checkpoint 观战）
-play-web     # DQN checkpoint 部署到网页版对局（依赖 ego-browser CLI）
+play-web     # 本地直接部署 DQN checkpoint 到网页版（依赖 ego-browser CLI；仍为 DQN-only）
+inference-server # 远程加载 DQN/前馈 imitation-PPO checkpoint，提供 TCP JSONL 推理
+play-web-remote # 本地浏览器控制 + 远程动作/胜率推理
+play-dashboard # 读取 JSONL 事件流的实时胜率仪表盘
 evolve       # 遗传算法对照
-make test    # 全量离线测试（86 例，CUDA 专项无 GPU 时跳过）
+make test    # 全量离线测试（CUDA 专项无 GPU 时跳过）
 make parity  # 特征/掩码奇偶质量门（改引擎掩码/features/浏览器抽取层后必跑）
 ```
 
@@ -45,9 +48,10 @@ make parity  # 特征/掩码奇偶质量门（改引擎掩码/features/浏览器
 - **DQN 五阶段实验**：[实施与复现](./docs/DQN_SEARCH_EXPERIMENTS.md) · [2026-09-07 训练结果](./docs/DQN_EXPERIMENT_RESULTS_20260907.md)（含未获提升的消融，不自动替换部署模型）。
 - **DQN 第二轮**：[EMA 与退火引导结果](./docs/DQN_ROUND2_RESULTS_20260907.md)（12 次训练、多对手评测及同分选模纠错）。
 - **浏览器部署与可视化手册**：[docs/WEB_DEPLOYMENT_GUIDE.md](./docs/WEB_DEPLOYMENT_GUIDE.md)（人机对战/挂机/双开自博弈/旁观/回流）。
+- **远程推理部署手册**：[docs/REMOTE_DEPLOYMENT_GUIDE.md](./docs/REMOTE_DEPLOYMENT_GUIDE.md)（inference-server / play-web-remote / play-dashboard；DQN、前馈 imitation-PPO、座位 guard 与胜率代理）。
 - 网页规则实测记录（E1-E6 + 规则差异 ADR）：[docs/web_experiments.md](./docs/web_experiments.md)。
 - sim-to-real 对照报告模板：[docs/s2r_report.md](./docs/s2r_report.md)。
-- 待办（需训练条件）：DQN 训练课程（M1→M3，plan/phase-1 §2）与 50 局网页部署（plan/phase-3）。
+- 待办（需训练条件）：DQN 训练课程（M1→M3，plan/phase-1 §2）与 50 局真实网页部署（plan/phase-3）；P6 的远程服务与离线质量门已实现。
 
 ---
 

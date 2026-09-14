@@ -37,8 +37,12 @@ jobs:
         run: |
           .venv/bin/python -m mypy src/splendor/browser \
             src/splendor/agents/our_agents/dqn \
+            src/splendor/agents/our_agents/policy_imitation/ppo_selfplay.py \
+            src/splendor/agents/our_agents/policy_imitation/bc_training.py \
             src/splendor/splendor/gym/base.py \
-            src/splendor/play_web.py
+            src/splendor/play_web.py \
+            src/splendor/remote \
+            src/splendor/play_remote.py
 
       - name: Test (pytest, offline only)
         run: .venv/bin/python -m pytest tests/ -v

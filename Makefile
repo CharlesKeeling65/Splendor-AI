@@ -67,12 +67,16 @@ play-web:
 .PHONY: serve-inference
 serve-inference:
 	$(PYTHON) -m splendor.remote.server --help && \
-	echo "usage: inference-server --model <name>=<path.pth> [--model ...] [--port 8765]"
+	echo "usage: inference-server --model <name>=<path.pth> [--model ...] [--device cpu|cuda|mps] [--port 8765]"
 
 .PHONY: play-web-remote
 play-web-remote:
 	$(PYTHON) -m splendor.play_remote --help && \
-	echo "usage: play-web-remote --server <host>:<port> --model <name> --bots 1 [see docs/REMOTE_DEPLOYMENT_GUIDE.md]"
+	echo "usage: play-web-remote --server <host>:<port> --model <name>[,<name>...] [--winrate-model <name>] --bots 1 [see docs/REMOTE_DEPLOYMENT_GUIDE.md]"
+
+.PHONY: test-remote
+test-remote:
+	$(PYTHON) -m pytest tests/test_remote_policies.py tests/test_remote_protocol.py tests/test_play_remote_options.py tests/test_remote_dashboard.py tests/test_winrate_estimator.py -q
 
 .PHONY: dashboard
 dashboard:
