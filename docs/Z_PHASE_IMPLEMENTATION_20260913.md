@@ -165,6 +165,21 @@ gate（≥ 57.3% = C2-PPO 纪录）。gate 通过后以该 checkpoint 跑 G1 全
 若训练在迭代间中断，可用 `train.py --start-iteration N --init-from <checkpoint>`
 以保持 checkpoint 文件的绝对迭代编号，避免覆盖既有产物。
 
+### run-2 第一检查点（iter_009，2026-09-14）
+
+run-2 原进程最终落盘 `iter_009` 后停止，未发现错误日志；训练曲线为 value MSE
+0.1836、policy CE 1.639，20 局循环内贪心读数为 55%。随后按同一
+`independent_test`、75 局 × 双座次协议，对 `iter_009.pth` 做 150 局纯贪心评测：
+
+| checkpoint | vs minimax | Wilson 95% | error games | 判读 |
+|---|---:|---|---:|---|
+| run-2 `iter_009` | **50.0%** | [42.1%, 57.9%] | 0 | 未达到 Z3 gate 57.3%，也未越过有效进展线 55% |
+
+该结果不能宣布成功；同时不满足“相邻 10 迭代降幅 <0.01 且贪心 <50%”的严格饱和判据，
+因此继续完成预声明的 30 迭代计划。已从 `iter_009.pth` 启动剩余 20 轮，使用
+`--start-iteration 10` 写入 `runs/z2-az-lite-run2-continuation-10/`，保留绝对迭代编号，
+并挂载 `iter_019` / `iter_029` 的自动 150 局检查。
+
 ## Z3 — 待 Z2 gate 排期
 
 判据：Z2 最优迭代 checkpoint 经 `splendor-league -a ...az_search,...`（AZ_SEARCH_CHECKPOINT
