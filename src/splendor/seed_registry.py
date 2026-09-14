@@ -19,7 +19,12 @@ Segment conventions
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from typing import Any
+
+SEED_REGISTRY_SCHEMA_VERSION = "splendor-seed-registry/1"
 
 
 @dataclass(frozen=True)
@@ -104,9 +109,56 @@ FORBIDDEN_RANGES: tuple[tuple[int, int], ...] = (
     (900_000, 940_000),
 )
 
+# Schema-v1 policy-imitation manifests predate the repository registry and
+# used these narrower exclusions.  Keeping the frozen compatibility value in
+# this authoritative module lets historical callers remain readable without
+# letting new schema-v2 runs choose their own forbidden ranges.
+LEGACY_MANIFEST_FORBIDDEN_RANGES: tuple[tuple[int, int], ...] = (
+    (910_000, 910_010),
+    (920_000, 920_050),
+    (930_000, 930_025),
+)
+
 
 class SeedRegistryError(ValueError):
     """Raised when a requested seed range violates the registry."""
+
+
+def registry_snapshot() -> dict[str, Any]:
+    """Return the canonical machine-readable seed-registry declaration.
+
+    Manifests persist the digest and the segment names they consume.  The
+    registry itself remains the only place that declares interval bounds,
+    purposes, sealing, and historically burned ranges.
+    """
+    return {
+        "schema": SEED_REGISTRY_SCHEMA_VERSION,
+        "segments": [
+            {
+                "name": segment.name,
+                "start": segment.start,
+                "end": segment.end,
+                "purpose": segment.purpose,
+                "sealed": segment.sealed,
+            }
+            for segment in ALL_SEGMENTS
+        ],
+        "forbidden_ranges": [list(bounds) for bounds in FORBIDDEN_RANGES],
+        "legacy_manifest_forbidden_ranges": [
+            list(bounds) for bounds in LEGACY_MANIFEST_FORBIDDEN_RANGES
+        ],
+    }
+
+
+def registry_sha256() -> str:
+    """Return a stable digest of the authoritative registry declaration."""
+    payload = json.dumps(
+        registry_snapshot(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def resolve_segment(name: str) -> SeedSegment:
