@@ -39,6 +39,7 @@ def save_model(
         name: value.detach().cpu().clone() for name, value in model.state_dict().items()
     }
     checkpoint: dict[str, Any] = {
+        "model_type": "dqn",
         "model_state_dict": model_state_dict,
         "step": step,
         "config": {
