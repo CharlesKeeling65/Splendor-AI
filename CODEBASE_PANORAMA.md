@@ -600,8 +600,11 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
 - **分阶段治理**：pilot 只能使用 `(0,1,2)`，reserve 只能使用 `(3,4)`。reserve 另需不可覆盖的
   `splendor-confirmatory-activation/1`，绑定 completed pilot manifest/declaration/lifecycle event、
   pilot evidence 路径与内容 hash 及时间顺序，并由 manifest 与 runtime 双重复核。
-- **验收边界**：known-vector/小规模测试均标记 `ci-fixture`；三组独立只读审计覆盖统计设计、
-  authority、schedule relabel、manifest/runtime 与 activation 攻击。此阶段只交付 preflight；
-  **未生成生产 root 或 96k pilot bank，未运行 GPU/pilot，未读取 validation/sealed split**。
+- **验收与执行边界**：known-vector/小规模测试均标记 `ci-fixture`；三组独立只读审计覆盖统计设计、
+  authority、schedule relabel、manifest/runtime 与 activation 攻击。生产 root 随后获批并为
+  `task1-t14-crossed-pilot-20260915` 唯一生成；payload SHA-256 为
+  `df124b90339613d1eae04791913068ea8d34ed50e4ab85024b344c05c83da6e6`，公开执行记录见
+  `docs/task1/T1.4_PRODUCTION_SEED_ROLL.json`。**未生成 96k pilot bank，未运行 GPU/pilot，
+  未读取 validation/sealed split**。
   最终质量门：相关 110 passed、全仓 551 passed（3 条既有 warning）、parity 44 passed，
   Ruff 全仓与 CI mypy 71 source files 通过。

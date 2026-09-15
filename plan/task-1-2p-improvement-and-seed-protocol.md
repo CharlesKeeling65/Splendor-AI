@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
 > 复核版本：2026-09-15。
-> 状态：实施中；T1.0–T1.3 与 T1.4 seed-roll preflight 已完成并通过独立验收；生产 roll、pilot 与训练仍等待逐阶段批准。本文中的训练阶段仍须各自通过批准门。
+> 状态：实施中；T1.0–T1.3、T1.4 seed-roll preflight 与单次生产 roll 已完成；bank 物化、pilot 与训练仍等待逐阶段批准。本文中的训练阶段仍须各自通过批准门。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -305,8 +305,10 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
   paired schedule、model-init lineage 与 opponent-pool snapshot 绑定到
   `paired-training-v2`；正式优化器拒绝小规模 CI profile，pilot 只能精确使用 `(0,1,2)`，
   schedule 必须逐坐标匹配 root-derived scenario/seat 顺序；reserve `(3,4)` 的启用必须由
-  新的 manifest 绑定 completed pilot manifest 与 evidence 的预注册 activation artifact。此项只验收
-  协议代码；生产 root 的生成仍须单独批准。
+  新的 manifest 绑定 completed pilot manifest 与 evidence 的预注册 activation artifact。协议代码经
+  独立验收后，生产 root 已获单独批准并于 2026-09-15 为
+  `task1-t14-crossed-pilot-20260915` 唯一生成；公开记录见
+  [`T1.4_PRODUCTION_SEED_ROLL.json`](../docs/task1/T1.4_PRODUCTION_SEED_ROLL.json)。
 - [ ] 在新 IID/压力 bank 上复测冻结 `ppo-best`；明确这是新协议基线，不能直接与 C4-R2 的伪重复区间拼接。
 - [ ] 固定 checkpoint × scenario × seat × opponent，估计 deal、seat、opponent 与交互造成的评测方差。
 - [ ] 在新 RNG 协议下精确复训现行 C2-R2 recipe 至少 3 replicates，命名 `O_bridge`。它保留当前非零

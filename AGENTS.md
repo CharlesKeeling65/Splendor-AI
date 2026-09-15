@@ -8,7 +8,8 @@
 > imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
 > **T1.0–T1.3 与 T1.4 seed-roll preflight 已完成**（基线冻结、RNG 分流/配对 schedule、
 > ScenarioV1/内容寻址 bank/sealed gate、配对评测/聚类统计/固定 N、一次性 CSPRNG-root
-> 有限总体抽样与 `paired-training-v2` 门）；生产 root、pilot 与训练仍受分阶段批准门约束。
+> 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，bank 物化、pilot 与训练
+> 仍受分阶段批准门约束。
 > 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 

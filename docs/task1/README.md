@@ -73,7 +73,8 @@ replicates, per-treatment inputs, and one-shot output paths are manifest-bound.
 The formal gate additionally binds the exact root-derived scenario/seat order;
 confirmatory reserve jobs require a separately frozen activation file tied to
 the completed pilot manifest and its evidence, not a caller-supplied hash.
-This is a training preflight only: no production root has been
-drawn, no formal bank has been materialized, no GPU job has run, and no sealed
-split has been read. Creating the production roll remains an explicit approval
-gate.
+The production root was explicitly approved and drawn once for
+`task1-t14-crossed-pilot-20260915`; its compact public record is
+[`T1.4_PRODUCTION_SEED_ROLL.json`](T1.4_PRODUCTION_SEED_ROLL.json). No formal bank
+has been materialized, no GPU job has run, and no validation or sealed split has
+been read. Those downstream actions remain behind separate approval gates.

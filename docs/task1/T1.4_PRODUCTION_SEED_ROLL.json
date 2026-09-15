@@ -1,0 +1,98 @@
+{
+  "approval": {
+    "scope": "one-production-seed-roll-only",
+    "statement": "好的 执行吧",
+    "training_authorized": false,
+    "validation_or_sealed_access_authorized": false
+  },
+  "execution": {
+    "code_revision": "923145c1cc2c4ed0d4dc84ce2c00f79630deaeb9",
+    "elapsed_seconds": 6.550948,
+    "executed_at": "2026-09-15T05:06:28.832524+00:00",
+    "python": "3.13.2",
+    "runtime": ".venv/bin/python",
+    "working_tree_clean_before_execution": true
+  },
+  "experiment_id": "task1-t14-crossed-pilot-20260915",
+  "phase": "T1.4",
+  "schema_version": "splendor-seed-roll-execution-evidence/1",
+  "seed_roll": {
+    "artifact_bytes": 1608040,
+    "artifact_path": "/home/wangyb/Git_project/Splendor-AI/runs/task1-t14-crossed-pilot-20260915/seed-roll-authority/artifacts/seed-roll-df124b90339613d1eae04791913068ea8d34ed50e4ab85024b344c05c83da6e6.json",
+    "artifact_sha256": "c3bda089b80d0313c959574b23a33afb77e769f3559d511a10aa8e7e6190e515",
+    "authority_dir": "/home/wangyb/Git_project/Splendor-AI/runs/task1-t14-crossed-pilot-20260915/seed-roll-authority",
+    "authority_event_count": 1,
+    "authority_event_sha256": "ce1ca52604ab8ce4c3ff4eb090a1ba098108fa3365d6bf8790ede4d998b8f3be",
+    "authority_ledger_sha256": "b70313f3000ca94e71eef5a02448ef0b7585c377de435f27b08c5dbcb8b9f902",
+    "binding_sha256": "076b3ba3368fd7580850dc730bacfd23f1f2f394dd38e0f252657451e4e659e2",
+    "confirmatory_reserve_replicate_ids": [
+      3,
+      4
+    ],
+    "design_profile": "task1-formal-5x32000",
+    "games_per_replicate": 32000,
+    "model_init_seed63": {
+      "0": 4038270227302336755,
+      "1": 7384098304331098078,
+      "2": 7912481506005945062,
+      "3": 5221585469771474038,
+      "4": 3983021555457500597
+    },
+    "payload_sha256": "df124b90339613d1eae04791913068ea8d34ed50e4ab85024b344c05c83da6e6",
+    "pilot_replicate_ids": [
+      0,
+      1,
+      2
+    ],
+    "randomization_root_hex": "d56ec06c5225dec36d7456499e6d9879649b403eb4365e7ae0527d7e9402f05b",
+    "randomization_root_sha256": "bb8c3231f710565a6b79c6ca5107cc2f3c55da4b5f1ee4c9e8dc8f58d54bee73",
+    "replicate_ids": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "request_sha256": "b47a2985784aa588b558043006221687bc38a4ee87d9ae50ff2e87ce61f1859c",
+    "reservation_sha256": "64abd7eedc0eaeb8360ed380b940c64fbec2333a519ed92ea063e2d5cfb28579",
+    "roll_identity_sha256": "cb01c9c88ce855af47b0df5a17a47fa3b142e84eeed2150b6021ef93f521d260",
+    "seat_counts_by_replicate": {
+      "0": [
+        16000,
+        16000
+      ],
+      "1": [
+        16000,
+        16000
+      ],
+      "2": [
+        16000,
+        16000
+      ],
+      "3": [
+        16000,
+        16000
+      ],
+      "4": [
+        16000,
+        16000
+      ]
+    },
+    "seed_registry_sha256": "cfc3c685fa4ab7dd2ac2fb96faf6fc598cb632eebe9b105a3b87858bf7b3af56",
+    "selected_source_seed_count": 160000,
+    "source_population": 200000,
+    "source_range": [
+      1150000,
+      1350000
+    ],
+    "source_segment": "task1_train_schedule"
+  },
+  "verification": {
+    "artifact_file_hash_matches": true,
+    "formal_profile_reload_passed": true,
+    "no_scenario_bank_created": true,
+    "no_training_output_created": true,
+    "no_validation_or_sealed_output_created": true,
+    "reservation_ledger_artifact_chain_passed": true
+  }
+}
