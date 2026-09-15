@@ -131,7 +131,7 @@ def _runtime(declaration_path: Path) -> ProductionRuntime:
         cuda_device_count=1,
         cuda_device_name="Quadro P5000",
         cuda_capability=(6, 1),
-        cuda_arch_list=("sm_61", "sm_70"),
+        cuda_arch_list=("sm_60", "sm_70"),
         torch_cuda_version="12.6",
     )
 
@@ -313,7 +313,7 @@ def test_declaration_rejects_cpu_and_treatment_relabeling(tmp_path: Path) -> Non
         ("cuda_available", False, "never falls back"),
         ("cuda_device_name", "Tesla T4", "Quadro P5000"),
         ("cuda_capability", (7, 5), "sm61"),
-        ("cuda_arch_list", ("sm_70",), "sm_61"),
+        ("cuda_arch_list", ("sm_50", "sm_70"), "sm_61-compatible"),
     ],
 )
 def test_runtime_gate_has_no_cpu_or_non_p5000_fallback(
@@ -327,6 +327,18 @@ def test_runtime_gate_has_no_cpu_or_non_p5000_fallback(
     runtime = replace(_runtime(path), **{field: value})
     with pytest.raises(PilotOrchestrationError, match=message):
         require_production_runtime(declaration, runtime)
+
+
+@pytest.mark.parametrize("architecture", ["sm_60", "sm_61"])
+def test_runtime_gate_accepts_binary_compatible_pascal_targets(
+    tmp_path: Path,
+    architecture: str,
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    runtime = replace(_runtime(path), cuda_arch_list=(architecture, "sm_70"))
+
+    assert require_production_runtime(declaration, runtime) == runtime
 
 
 def test_disk_guards_are_exact_and_output_tree_refuses_symlinks(

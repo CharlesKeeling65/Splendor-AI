@@ -100,7 +100,7 @@ WATCHDOG_POLL_SECONDS: Final = 5.0
 STATUS_REFRESH_SECONDS: Final = 30.0
 TERMINATE_GRACE_SECONDS: Final = 15.0
 EXPECTED_GPU_CAPABILITY: Final = (6, 1)
-EXPECTED_GPU_ARCH: Final = "sm_61"
+EXPECTED_GPU_COMPATIBLE_ARCHES: Final = ("sm_60", "sm_61")
 EXPECTED_GPU_NAME_SUFFIX: Final = "Quadro P5000"
 STATUS_FILE_NAME: Final = "orchestrator-status.json"
 COMPLETION_FILE_NAME: Final = "completion.json"
@@ -686,9 +686,16 @@ def require_production_runtime(
         raise PilotOrchestrationError(
             "production pilot requires compute capability sm61 (6.1)"
         )
-    if EXPECTED_GPU_ARCH not in snapshot.cuda_arch_list:
+    # CUDA cubins are binary-compatible within one compute-capability major
+    # version from a lower minor target to a higher minor device.  The official
+    # The PyTorch wheel installed in .venv-p5000 advertises sm_60 and executes
+    # it on this exact sm_61 desktop GPU; an sm_61-native build is valid too.
+    if not any(
+        architecture in snapshot.cuda_arch_list
+        for architecture in EXPECTED_GPU_COMPATIBLE_ARCHES
+    ):
         raise PilotOrchestrationError(
-            "the installed torch build does not advertise sm_61 support"
+            "the installed torch build has no sm_61-compatible Pascal target"
         )
     return snapshot
 

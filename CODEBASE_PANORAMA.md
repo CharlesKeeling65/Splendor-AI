@@ -628,7 +628,8 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   取最早 update。完成证据会独立重跑策略、回放动作、核对 41 个 checkpoint/model-state/config/
   initializer/opponent/code/bank hash，`best.pth` 必须与所选 checkpoint 字节一致。
 - **tmux/P5000 fail closed**：`task1-pilot` 只接受精确 O/O_bridge×r0/r1/r2、三 spawn workers、
-  `.venv-p5000` CUDA/P5000/sm61 与固定五成员训练 pool；18h wall、32GiB output、40GiB free-space
+  `.venv-p5000` CUDA/P5000 `(6,1)` 与兼容 `sm_60|sm_61` cubin、固定五成员训练 pool；18h wall、
+  32GiB output、40GiB free-space
   由父子独立 watchdog/lease/process group 执行。声明、launch snapshot、输出 reservation、status/
   completion 和 manifest 终态均一次性绑定；启动/worker/资源/证据任一失败即终止同组进程并 block
   原 running manifest。
