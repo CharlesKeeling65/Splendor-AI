@@ -66,6 +66,9 @@ from .seed_roll import (
     require_task1_formal_seed_roll,
 )
 
+MODULE_NAME: Final = (
+    "splendor.agents.our_agents.policy_imitation.pilot_orchestrator"
+)
 ORCHESTRATION_SCHEMA: Final = "splendor-t14-pilot-orchestration/2"
 COMPLETION_SCHEMA: Final = "splendor-t14-pilot-completion/2"
 STATUS_SCHEMA: Final = "splendor-t14-pilot-status/2"
@@ -2180,7 +2183,7 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
         command = [
             str(declaration.python_executable),
             "-m",
-            __name__,
+            MODULE_NAME,
             "_run-matrix",
             str(declaration.path),
             "--expected-sha256",
@@ -2517,7 +2520,7 @@ def launch(declaration_path: Path) -> None:
         child = [
             str(declaration.python_executable),
             "-m",
-            __name__,
+            MODULE_NAME,
             "_supervise",
             str(launched_declaration.path),
             "--expected-sha256",
@@ -2649,9 +2652,18 @@ def main() -> None:
         elif args.command == "launch":
             launch(args.declaration)
             declaration = load_pilot_declaration(args.declaration)
+            attach_command = shlex.join(
+                [
+                    str(declaration.python_executable),
+                    "-m",
+                    MODULE_NAME,
+                    "attach",
+                    str(declaration.path),
+                ]
+            )
             print(
                 f"launched tmux session {declaration.tmux_session}; "
-                f"attach with: task1-pilot attach {declaration.path}"
+                f"attach with: {attach_command}"
             )
         elif args.command == "status":
             print(json.dumps(status(args.declaration), indent=2, sort_keys=True))

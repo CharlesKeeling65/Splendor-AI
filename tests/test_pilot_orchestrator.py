@@ -623,6 +623,7 @@ def test_launch_creates_detached_tmux_supervisor_without_training(
     )
     monkeypatch.setattr(module, "_tmux_has_session", lambda _session: False)
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tmux")
+    monkeypatch.setattr(module, "__name__", "__main__")
     handshakes: list[Path] = []
     monkeypatch.setattr(
         module,
@@ -658,7 +659,7 @@ def test_launch_creates_detached_tmux_supervisor_without_training(
     assert shell_tokens[python_index : python_index + 4] == [
         python,
         "-m",
-        module.__name__,
+        module.MODULE_NAME,
         "_supervise",
     ]
     assert str(declaration.control_dir / module.SUPERVISOR_LOG_FILE_NAME) in (
@@ -669,6 +670,34 @@ def test_launch_creates_detached_tmux_supervisor_without_training(
     assert persisted["state"] == "launching"
     with pytest.raises(PilotOrchestrationError, match="already launched"):
         module.launch(path)
+
+
+def test_launch_cli_handoff_uses_frozen_python_module_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    monkeypatch.setattr(module, "launch", lambda _path: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["task1-pilot", "launch", str(declaration.path)],
+    )
+
+    module.main()
+
+    attach_command = shlex.join(
+        [
+            str(declaration.python_executable),
+            "-m",
+            module.MODULE_NAME,
+            "attach",
+            str(declaration.path),
+        ]
+    )
+    assert f"attach with: {attach_command}" in capsys.readouterr().out
 
 
 def test_launch_blocks_when_tmux_dies_before_supervisor_handshake(
@@ -1094,6 +1123,7 @@ def test_supervisor_marks_process_failure_and_blocks_manifest(
 ) -> None:
     path, _ = _payload(tmp_path)
     declaration = load_pilot_declaration(path)
+    monkeypatch.setattr(module, "__name__", "__main__")
     monkeypatch.setattr(module, "require_production_runtime", lambda _value: None)
     monkeypatch.setattr(
         module,
@@ -1130,6 +1160,11 @@ def test_supervisor_marks_process_failure_and_blocks_manifest(
             **_supervisor_binding(declaration),
         )
     command, kwargs = popen_calls[0]
+    assert command[:3] == [
+        str(declaration.python_executable),
+        "-m",
+        module.MODULE_NAME,
+    ]
     assert "--supervisor-pid" in command
     assert "--supervisor-fd" in command
     assert kwargs["start_new_session"] is True
@@ -1150,7 +1185,7 @@ def test_matrix_cli_requires_and_consumes_inherited_supervisor_pipe(
             [
                 sys.executable,
                 "-m",
-                module.__name__,
+                module.MODULE_NAME,
                 "_run-matrix",
                 str(missing),
                 "--expected-sha256",

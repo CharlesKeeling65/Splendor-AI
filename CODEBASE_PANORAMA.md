@@ -639,7 +639,8 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   functional ANOVA 中交互项占 validation-A 78.3880%、stress 79.2581%；详见
   `docs/task1/T1.4_BASELINE_RESULTS.md`，不得与历史 C4-R2 伪重复区间合并。
 - **当前边界**：non-sealed 10-row validation-A selector bank 已另行物化并 source replay 审计；最终
-  pilot 首次 launch declaration 通过 admission 后，tmux 在 supervisor/worker 握手前退出；当场核验
-  无 CUDA process/output/update，并将该 manifest 终态置为 `blocked`。由此新增一次性 early-stderr、
-  status-v2 exact schema 与 tmux-pane→supervisor→matrix PPID/PGID 的 30 秒握手；重试须使用新 manifest
-  与输出路径。GPU 训练仍未实际启动，validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
+  pilot 首次 launch declaration 通过 admission 后在握手前退出；由此新增一次性 early-stderr、status-v2
+  exact schema 与 tmux-pane→supervisor→matrix PPID/PGID 的 30 秒握手。首个 hardened retry 的日志进一步
+  定位到 `python -m` 入口把 runtime `__name__ == "__main__"` 错传给两级子进程；现已改用 canonical module
+  常量并加入口回归。两次 manifest 均 `blocked`，且均核验为无 CUDA process/output/update；后续尝试须用
+  新 manifest 与输出路径。GPU 训练仍未实际启动，validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
