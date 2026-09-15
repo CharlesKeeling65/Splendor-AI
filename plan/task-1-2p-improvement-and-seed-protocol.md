@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
 > 复核版本：2026-09-15。
-> 状态：实施中；T1.0–T1.3、T1.4 seed-roll preflight 与单次生产 roll 已完成；bank 物化、pilot 与训练仍等待逐阶段批准。本文中的训练阶段仍须各自通过批准门。
+> 状态：实施中；T1.0–T1.3、T1.4 seed-roll/单次生产 roll、safe episodic PBRS、正式 validation/选模与 tmux 编排门已完成；经后续明确授权已物化非 sealed pilot/基线 banks，下一步执行新协议基线，pilot 尚未启动。validation-B、sealed 与 reserve 仍受后续批准门约束。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -309,6 +309,14 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
   独立验收后，生产 root 已获单独批准并于 2026-09-15 为
   `task1-t14-crossed-pilot-20260915` 唯一生成；公开记录见
   [`T1.4_PRODUCTION_SEED_ROLL.json`](../docs/task1/T1.4_PRODUCTION_SEED_ROLL.json)。
+- [x] 实现并独立对抗审计 T1.4 执行门：显式区分
+  `O/safe-potential-v1` 与 `O_bridge/terminal-biased-potential-v1`，冻结 41 次
+  validation-A checkpoint 评测和整数胜局/最早 update 选模，严格绑定 initializer、完整 PPO
+  config、训练/validation 对手 source-config、ScenarioV1 bank、checkpoint model state 与逐局重放证据；
+  `task1-pilot` 另以 P5000/sm61、三 worker、18h/32GiB/40GiB、父子 lease、进程组和 manifest
+  生命周期 fail closed。经明确授权已物化并全量 source→ScenarioV1 复核 pilot 96,000-row
+  `train-schedule`，以及基线用 validation-A 200-row / stress 100-row 非 sealed banks；未读取
+  validation-B/sealed，未启用 reserve `(3,4)`。
 - [ ] 在新 IID/压力 bank 上复测冻结 `ppo-best`；明确这是新协议基线，不能直接与 C4-R2 的伪重复区间拼接。
 - [ ] 固定 checkpoint × scenario × seat × opponent，估计 deal、seat、opponent 与交互造成的评测方差。
 - [ ] 在新 RNG 协议下精确复训现行 C2-R2 recipe 至少 3 replicates，命名 `O_bridge`。它保留当前非零
@@ -358,9 +366,9 @@ DAgger 的硬边界：
 
 奖励消融在 O/A/B/C 之后单独进行；正确性修复本身已经在 T1.4 完成：
 
-- [ ] 先验证 episodic PBRS：`F_t = gamma*Phi(s_{t+1}) - Phi(s_t)`，在实际 discounted return 下检查
+- [x] 先验证 episodic PBRS：`F_t = gamma*Phi(s_{t+1}) - Phi(s_t)`，在实际 discounted return 下检查
   `G' = G - Phi(s_0) + gamma^T Phi(s_T)`；所有真正终止（包括 rounds limit/deadlock）的 `Phi(s_T)=0`；
-- [ ] 当前非零终局势能只允许作为 `O_bridge/terminal-biased-potential` 历史桥接，明确不保证策略不变；
+- [x] 当前非零终局势能只允许作为 `O_bridge/terminal-biased-potential` 历史桥接，明确不保证策略不变；
 - [ ] 比较 `none` 与修正后的 `safe-potential`，其余配置相同；终局 ±10 不在同一实验首次改变；
 - [ ] Rinascimento 式 event-value 项是非策略不变的探索分支，事件表/权重/调参数据必须冻结，不能与
   safe-potential 合并后声称单因素收益。

@@ -1970,11 +1970,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--shaping",
-        choices=("none", "potential", "event"),
+        choices=("none", "potential", "safe-potential", "event"),
         default="none",
         help=(
-            "Roadmap B2: training-side reward shaping; 'potential' is the "
-            "policy-invariant default (kappa via --shaping-kappa)"
+            "training-side reward shaping; 'potential' preserves the historical "
+            "non-zero terminal contract, while 'safe-potential' forces terminal "
+            "phi=0 (kappa via --shaping-kappa)"
         ),
     )
     parser.add_argument(

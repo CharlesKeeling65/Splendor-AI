@@ -2,18 +2,28 @@
 
 Two variants, kept strictly apart because only one of them is safe:
 
-**Potential shaping** (default, policy-invariant).  Following Ng, Harada &
-Russell (1999), the reward is augmented with
+**Potential shaping** follows Ng, Harada & Russell (1999), augmenting the
+reward with
 
     F(s, s') = gamma * phi(s') - phi(s),
     phi(s)   = calScore(s, i) - max_{j != i} calScore(s, j)
                + kappa * noble_progress(s, i)
 
-which provably leaves the optimal policy set unchanged for any phi that
-depends only on the state.  The potential reuses ``calScore`` - the exact
-function the evaluation path uses - so the shaped signal can never disagree
-with scoring, plus a small noble-coverage term to break the flat plateau of
-zero score deltas before the first purchase.
+For a finite episode, policy invariance additionally requires the absorbing
+terminal potential to be zero.  Two deliberately distinct, versioned
+contracts therefore exist:
+
+* ``terminal-biased-potential-v1`` is the legacy default.  It evaluates the
+  observed final game state and can have non-zero ``phi(s_T)``.  This preserves
+  historical C2-R2 / ``O_bridge`` semantics but is **not** claimed to be
+  policy-invariant.
+* ``safe-potential-v1`` resolves every episode-ending successor (terminated or
+  truncated) to ``phi(s_T)=0``.  It is the T1.4 ``O`` contract.
+
+The potential reuses ``calScore`` - the exact function the evaluation path
+uses - so the shaped signal cannot disagree with scoring, plus a small
+noble-coverage term to break the flat plateau of zero score deltas before the
+first purchase.
 
 **Event shaping** (experimental, NOT policy-invariant).  A few hand-tuned
 event bonuses (purchase, noble visit, denial reserve) in the spirit of
@@ -28,7 +38,7 @@ environment, and they work on top of any ``SplendorEnvBase`` implementation.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, cast, override
+from typing import Any, Literal, cast, override
 
 import gymnasium as gym
 from numpy.typing import NDArray
@@ -41,6 +51,70 @@ from splendor.splendor.types import ActionType
 
 DEFAULT_KAPPA = 0.05
 DEFAULT_DISCOUNT = 0.99
+
+PotentialRewardVersion = Literal[
+    "terminal-biased-potential-v1",
+    "safe-potential-v1",
+]
+TERMINAL_BIASED_POTENTIAL_V1: PotentialRewardVersion = "terminal-biased-potential-v1"
+SAFE_POTENTIAL_V1: PotentialRewardVersion = "safe-potential-v1"
+
+
+@dataclass(frozen=True)
+class PotentialRewardContract:
+    """Versioned episodic semantics for potential-based reward shaping.
+
+    ``terminal_phi=None`` means evaluating the final observed game state, as
+    the historical implementation did.  ``terminal_phi=0.0`` means treating
+    every episode-ending successor as the absorbing zero-potential state.
+    """
+
+    version: PotentialRewardVersion
+    terminal_phi: float | None
+    policy_invariant: bool
+
+    def __post_init__(self) -> None:
+        if self.version == SAFE_POTENTIAL_V1:
+            if self.terminal_phi != 0.0 or not self.policy_invariant:
+                raise ValueError(
+                    "safe-potential-v1 requires terminal_phi=0 and "
+                    "policy_invariant=True"
+                )
+        elif self.version == TERMINAL_BIASED_POTENTIAL_V1:
+            if self.terminal_phi is not None or self.policy_invariant:
+                raise ValueError(
+                    "terminal-biased-potential-v1 requires observed terminal "
+                    "potential and cannot claim policy invariance"
+                )
+        else:  # pragma: no cover - Literal protects typed callers
+            raise ValueError(f"unknown potential reward version: {self.version!r}")
+
+    def terminal_value(self, observed_phi: float) -> float:
+        """Resolve the potential used for an episode-ending successor."""
+        if self.terminal_phi is None:
+            return observed_phi
+        return self.terminal_phi
+
+
+TERMINAL_BIASED_POTENTIAL_CONTRACT = PotentialRewardContract(
+    version=TERMINAL_BIASED_POTENTIAL_V1,
+    terminal_phi=None,
+    policy_invariant=False,
+)
+SAFE_POTENTIAL_CONTRACT = PotentialRewardContract(
+    version=SAFE_POTENTIAL_V1,
+    terminal_phi=0.0,
+    policy_invariant=True,
+)
+
+
+def potential_reward_contract(version: str) -> PotentialRewardContract:
+    """Return the immutable contract for a persisted reward-version string."""
+    if version == TERMINAL_BIASED_POTENTIAL_V1:
+        return TERMINAL_BIASED_POTENTIAL_CONTRACT
+    if version == SAFE_POTENTIAL_V1:
+        return SAFE_POTENTIAL_CONTRACT
+    raise ValueError(f"unknown potential reward version: {version!r}")
 
 
 @dataclass(frozen=True)
@@ -98,19 +172,28 @@ class PotentialRewardShaper:
     one focal-agent decision, rivals folded in).  Call :meth:`reset` at the
     game's first decision state, then :meth:`advance` once per subsequent
     state the focal agent observes - the returned bonus is credited to the
-    transition that *led* to that state.  The sum of all bonuses over an
-    episode telescopes to ``gamma^T * phi(s_T) - phi(s_0)``.
+    transition that *led* to that state.  The discounted sum of all bonuses
+    over an episode telescopes to ``gamma^T * phi(s_T) - phi(s_0)``.
+
+    The default contract intentionally preserves the historical non-zero
+    terminal-potential behavior.  T1.4 callers must explicitly pass
+    :data:`SAFE_POTENTIAL_CONTRACT`.  :meth:`advance` recognizes engine
+    termination automatically; a runner-imposed truncation must pass
+    ``episode_ended=True`` (or call :meth:`finish`).
     """
 
     def __init__(
         self,
         kappa: float = DEFAULT_KAPPA,
         discount_factor: float = DEFAULT_DISCOUNT,
+        *,
+        contract: PotentialRewardContract = TERMINAL_BIASED_POTENTIAL_CONTRACT,
     ) -> None:
         if not 0.0 < discount_factor <= 1.0:
             raise ValueError("discount_factor must lie in (0, 1]")
         self.kappa = kappa
         self.discount_factor = discount_factor
+        self.contract = contract
         self._previous: dict[int, float] = {}
 
     def phi(self, state: SplendorState, seat: int, rule: SplendorGameRule) -> float:
@@ -123,12 +206,32 @@ class PotentialRewardShaper:
         self._previous[seat] = value
         return value
 
-    def advance(self, state: SplendorState, seat: int, rule: SplendorGameRule) -> float:
-        """Credit the transition leading to ``state`` and re-anchor there."""
+    def advance(
+        self,
+        state: SplendorState,
+        seat: int,
+        rule: SplendorGameRule,
+        *,
+        episode_ended: bool | None = None,
+    ) -> float:
+        """Credit the transition leading to ``state`` and re-anchor there.
+
+        When ``episode_ended`` is omitted, an engine terminal is inferred via
+        ``rule.gameEnds()``.  External truncation is not visible to the rule,
+        so its runner must pass ``True`` explicitly.
+        """
+        if episode_ended is None:
+            episode_ended = bool(rule.gameEnds())
         value = self.phi(state, seat, rule)
+        if episode_ended:
+            value = self.contract.terminal_value(value)
         bonus = self.discount_factor * value - self._previous[seat]
         self._previous[seat] = value
         return bonus
+
+    def finish(self, state: SplendorState, seat: int, rule: SplendorGameRule) -> float:
+        """Close a normal, deadlock, round-limit, or truncated episode."""
+        return self.advance(state, seat, rule, episode_ended=True)
 
 
 def card_affordable(agent: SplendorState.AgentState, card_cost: dict[str, int]) -> bool:
@@ -191,10 +294,17 @@ class ShapingConfig:
     kind: str = "none"  # "none" | "potential" | "event"
     kappa: float = DEFAULT_KAPPA
     discount_factor: float = DEFAULT_DISCOUNT
+    potential_version: PotentialRewardVersion = TERMINAL_BIASED_POTENTIAL_V1
 
     def __post_init__(self) -> None:
         if self.kind not in {"none", "potential", "event"}:
             raise ValueError(f"unknown shaping kind: {self.kind!r}")
+        potential_reward_contract(self.potential_version)
+
+    @property
+    def potential_contract(self) -> PotentialRewardContract:
+        """Resolve the version stored in a manifest into runtime semantics."""
+        return potential_reward_contract(self.potential_version)
 
 
 class PotentialShapingWrapper(gym.Wrapper):
@@ -204,6 +314,10 @@ class PotentialShapingWrapper(gym.Wrapper):
     TerminalRewardWrapper`: the shaped bonus is additive to the base reward,
     so ``reward + gamma*phi(s') - phi(s)`` applies to the base signal however
     it is composed.  ``gamma`` must match the trainer's discount factor.
+
+    The default remains ``terminal-biased-potential-v1`` for backward
+    compatibility.  T1.4 safe PBRS must explicitly pass
+    ``contract=SAFE_POTENTIAL_CONTRACT``.
     """
 
     def __init__(
@@ -212,18 +326,29 @@ class PotentialShapingWrapper(gym.Wrapper):
         *,
         kappa: float = DEFAULT_KAPPA,
         discount_factor: float = DEFAULT_DISCOUNT,
+        contract: PotentialRewardContract = TERMINAL_BIASED_POTENTIAL_CONTRACT,
     ) -> None:
         super().__init__(env)
         if not 0.0 < discount_factor <= 1.0:
             raise ValueError("discount_factor must lie in (0, 1]")
         self.kappa = kappa
         self.discount_factor = discount_factor
+        self.contract = contract
         self.my_id: int = -1
         self._previous = 0.0
         self.potentials: list[float] = []
 
-    def _phi(self, state: SplendorState, rule: SplendorGameRule) -> float:
-        return potential(state, rule, self.my_id, kappa=self.kappa)
+    def _phi(
+        self,
+        state: SplendorState,
+        rule: SplendorGameRule,
+        *,
+        episode_ended: bool = False,
+    ) -> float:
+        value = potential(state, rule, self.my_id, kappa=self.kappa)
+        if episode_ended:
+            return self.contract.terminal_value(value)
+        return value
 
     @override
     def reset(
@@ -248,7 +373,11 @@ class PotentialShapingWrapper(gym.Wrapper):
             env = cast(SplendorEnvBase, self.env)
             obs, reward, terminated, truncated, info = env.step(action, payment)
         splendor_env = cast(SplendorEnv, self.env.unwrapped)
-        value = self._phi(splendor_env.state, splendor_env.game_rule)
+        value = self._phi(
+            splendor_env.state,
+            splendor_env.game_rule,
+            episode_ended=bool(terminated or truncated),
+        )
         self.potentials.append(value)
         reward = float(reward) + self.discount_factor * value - self._previous
         self._previous = value

@@ -621,8 +621,9 @@ def parse_args() -> DQNArguments:
         choices=("none", "potential", "event"),
         help=(
             "Training-side reward shaping (roadmap B2). 'potential' is the "
-            "policy-invariant default candidate; 'event' is the experimental "
-            "non-invariant control group."
+            "legacy terminal-biased-potential-v1 behavior; 'event' is the "
+            "experimental non-invariant control group. T1.4 safe-potential-v1 "
+            "is not selected by this legacy CLI entry."
         ),
     )
 

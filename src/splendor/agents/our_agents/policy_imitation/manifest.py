@@ -421,6 +421,7 @@ def _validate_declaration_v2(  # noqa: C901,PLR0912,PLR0915 - fail closed
                 "replicate_stage",
                 "activation_artifact_path",
                 "activation_artifact_sha256",
+                "validation",
             }
             if set(formal_training) != required_v2_fields:
                 raise ValueError("paired-training-v2 binding schema mismatch")
@@ -525,6 +526,66 @@ def _validate_declaration_v2(  # noqa: C901,PLR0912,PLR0915 - fail closed
                 raise ValueError(
                     "paired-training-v2 scenario bank is not bound by the artifact contract"
                 )
+            from .protocol import (  # noqa: PLC0415 - avoid manifest import cycle
+                FormalValidationContract,
+                FormalValidationOpponentContract,
+            )
+
+            raw_validation = formal_training.get("validation")
+            if not isinstance(raw_validation, Mapping):
+                raise ValueError(
+                    "paired-training-v2 requires a formal validation contract"
+                )
+            raw_opponents = raw_validation.get("opponents")
+            if not isinstance(raw_opponents, list):
+                raise ValueError("formal validation opponents are invalid")
+            try:
+                validation_contract = FormalValidationContract(
+                    scenario_bank_sha256=cast(
+                        str,
+                        raw_validation.get("scenario_bank_sha256"),
+                    ),
+                    scenario_ids=tuple(
+                        cast(list[str], raw_validation.get("scenario_ids"))
+                    ),
+                    opponents=tuple(
+                        FormalValidationOpponentContract(
+                            opponent_id=cast(str, opponent.get("opponent_id")),
+                            source_sha256=cast(str, opponent.get("source_sha256")),
+                            config_sha256=cast(str, opponent.get("config_sha256")),
+                            checkpoint_sha256=cast(
+                                str | None,
+                                opponent.get("checkpoint_sha256"),
+                            ),
+                        )
+                        for opponent in raw_opponents
+                        if isinstance(opponent, Mapping)
+                    ),
+                    seats=tuple(cast(list[int], raw_validation.get("seats"))),
+                    eval_updates=tuple(
+                        cast(list[int], raw_validation.get("eval_updates"))
+                    ),
+                    selection_rule=cast(
+                        str,
+                        raw_validation.get("selection_rule"),
+                    ),
+                    protocol=cast(str, raw_validation.get("protocol")),
+                    batch_id=cast(str, raw_validation.get("batch_id")),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"formal validation contract is invalid: {exc}"
+                ) from exc
+            if dict(raw_validation) != validation_contract.as_dict():
+                raise ValueError("formal validation binding schema mismatch")
+            if (
+                not isinstance(scenario_banks, Mapping)
+                or scenario_banks.get("validation-A")
+                != validation_contract.scenario_bank_sha256
+            ):
+                raise ValueError(
+                    "formal validation-A bank is not bound by the artifact contract"
+                )
             contracts = formal_training.get("treatment_contracts")
             if not isinstance(contracts, list) or len(contracts) != len(treatments):
                 raise ValueError(
@@ -603,20 +664,53 @@ def _validate_declaration_v2(  # noqa: C901,PLR0912,PLR0915 - fail closed
             raise ValueError("paired-training-v1 cannot declare a seed roll")
     raw_statistics = declaration.get("statistical_protocol")
     statistical_protocol = None
+    baseline_descriptive = False
     if raw_statistics is not None:
         from .statistics import (  # noqa: PLC0415 - avoid manifest import cycle
             StatisticsError,
             validate_analysis_plan_binding,
             validate_statistical_protocol_binding,
         )
+        from .t14_baseline import (  # noqa: PLC0415 - avoid manifest import cycle
+            T14_BASELINE_STATISTICAL_PROTOCOL,
+            T14BaselineError,
+            validate_t14_baseline_statistical_binding,
+        )
 
-        try:
-            statistical_protocol = validate_statistical_protocol_binding(raw_statistics)
-        except StatisticsError as exc:
-            raise ValueError(
-                f"manifest statistical protocol is invalid: {exc}"
-            ) from exc
+        baseline_descriptive = (
+            isinstance(raw_statistics, Mapping)
+            and raw_statistics.get("protocol")
+            == T14_BASELINE_STATISTICAL_PROTOCOL
+        )
+        if not baseline_descriptive:
+            try:
+                statistical_protocol = validate_statistical_protocol_binding(
+                    raw_statistics
+                )
+            except StatisticsError as exc:
+                raise ValueError(
+                    f"manifest statistical protocol is invalid: {exc}"
+                ) from exc
     raw_evaluation = declaration.get("paired_evaluation")
+    if baseline_descriptive:
+        if raw_evaluation is None:
+            raise ValueError(
+                "T1.4 baseline descriptive statistics require paired_evaluation"
+            )
+        if raw_formal_training is not None:
+            raise ValueError(
+                "T1.4 baseline descriptive manifest cannot declare formal training"
+            )
+        if (
+            declaration.get("hypotheses") != {"kind": "descriptive-only"}
+            or declaration.get("estimands")
+            != {"kind": "finite-population-functional-anova"}
+            or declaration.get("decision_rule")
+            != {"inference": "forbidden", "selection": "forbidden"}
+        ):
+            raise ValueError(
+                "T1.4 baseline manifest cannot declare inference or selection"
+            )
     if raw_evaluation is not None:
         from .paired_evaluation import (  # noqa: PLC0415 - avoid import cycle
             PairedEvaluationError,
@@ -627,10 +721,21 @@ def _validate_declaration_v2(  # noqa: C901,PLR0912,PLR0915 - fail closed
             raise ValueError("formal paired evaluation requires a statistical_protocol")
         try:
             validate_paired_evaluation_binding(raw_evaluation)
-            assert statistical_protocol is not None
-            validate_analysis_plan_binding(raw_evaluation, statistical_protocol)
+            if baseline_descriptive:
+                validate_t14_baseline_statistical_binding(
+                    raw_statistics,
+                    raw_evaluation,
+                    phase=declaration.get("phase"),
+                )
+            else:
+                assert statistical_protocol is not None
+                validate_analysis_plan_binding(raw_evaluation, statistical_protocol)
         except PairedEvaluationError as exc:
             raise ValueError(f"manifest paired evaluation is invalid: {exc}") from exc
+        except T14BaselineError as exc:
+            raise ValueError(
+                f"manifest T1.4 baseline statistics are invalid: {exc}"
+            ) from exc
         except StatisticsError as exc:
             raise ValueError(
                 f"manifest evaluation/statistics binding is invalid: {exc}"

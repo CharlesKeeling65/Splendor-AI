@@ -25,19 +25,24 @@ from splendor.agents.our_agents.policy_imitation.ppo_selfplay import (
     FormalPPOTrainingJob,
     PPOConfig,
     make_formal_treatment_contract,
+    make_formal_validation_contract,
 )
 from splendor.agents.our_agents.policy_imitation.protocol import (
     FormalGameRng,
     FormalJobOutput,
     FormalTrainingSpec,
     FormalTreatmentContract,
+    FormalValidationContract,
+    FormalValidationOpponentContract,
     make_paired_training_schedule,
     paired_schedule_hash,
     sha256_canonical_json,
 )
 from splendor.agents.our_agents.policy_imitation.scenario_bank import (
     audit_seed_roll_scenario_bank,
+    generate_iid_scenarios,
     load_scenario_bank,
+    write_scenario_bank,
     write_seed_roll_scenario_bank,
 )
 from splendor.agents.our_agents.policy_imitation.seed_roll import (
@@ -64,6 +69,17 @@ from splendor.seed_registry import TASK1_SCENARIO_SPLITS, TASK1_TRAIN_SCHEDULE
 
 ROOT_ZERO = "00" * 32
 ROOT_ONE = "01" * 32
+
+
+def _dummy_validation_contract() -> FormalValidationContract:
+    return FormalValidationContract(
+        scenario_bank_sha256="f" * 64,
+        scenario_ids=tuple(f"{index:064x}" for index in range(10)),
+        opponents=tuple(
+            FormalValidationOpponentContract(name, "d" * 64, "e" * 64)
+            for name in ("ga", "heuristic", "minimax")
+        ),
+    )
 
 
 def _concurrent_roll_worker(arguments: tuple[str, str, str]) -> dict[str, object]:
@@ -149,6 +165,7 @@ def _activation_training_spec(  # noqa: PLR0913 - protocol axes explicit
             str(activation_path) if activation_path is not None else None
         ),
         activation_artifact_sha256=activation_sha256,
+        validation=_dummy_validation_contract(),
         treatment_contracts=(
             FormalTreatmentContract(
                 treatment_id="O",
@@ -176,7 +193,12 @@ def _create_formal_manifest(
     spec: FormalTrainingSpec,
 ) -> dict[str, object]:
     artifact_contract: dict[str, object] = {
-        "scenario_banks": {"train-schedule": "b" * 64},
+        "scenario_banks": {
+            "train-schedule": "b" * 64,
+            "validation-A": spec.validation.scenario_bank_sha256
+            if spec.validation is not None
+            else "f" * 64,
+        },
         "schedule": "training_schedule.jsonl.zst",
     }
     if spec.activation_artifact_path is not None:
@@ -808,6 +830,7 @@ def test_rolled_bank_source_replay_schedule_and_manifest_binding(  # noqa: PLR09
             for replicate_id in (0, 1)
             for treatment_id in ("O", "O_bridge")
         ),
+        validation=_dummy_validation_contract(),
     )
     assert forged_spec.schedule == forged_rows
     with pytest.raises(SeedRollError, match="scenario/seat order"):
@@ -878,9 +901,23 @@ def test_rolled_bank_source_replay_schedule_and_manifest_binding(  # noqa: PLR09
             config=PPOConfig(updates=1, games_per_update=2, hidden_layers=(8,)),
             opponent_pool=opponent_pool,
         )
+    validation_result = write_scenario_bank(
+        tmp_path / "validation-banks",
+        "validation-A",
+        generate_iid_scenarios("validation-A", 10),
+        compression="none",
+    )
+    validation_bank = load_scenario_bank(
+        Path(str(validation_result["artifact_path"]))
+    )
+    validation_opponents = tuple(
+        FormalOpponentSpec(name, name, 1.0)
+        for name in ("ga", "heuristic", "minimax")
+    )
     config = PPOConfig(
-        updates=1,
+        updates=2000,
         games_per_update=2,
+        eval_every=50,
         hidden_layers=(8,),
         seed=0,
         device_name="cpu",
@@ -918,6 +955,11 @@ def test_rolled_bank_source_replay_schedule_and_manifest_binding(  # noqa: PLR09
             for replicate_id in (0, 1)
             for treatment_id in ("O", "O_bridge")
         ),
+        validation=make_formal_validation_contract(
+            validation_bank,
+            validation_opponents,
+            device_name="cpu",
+        ),
     )
     manifest_path = tmp_path / "manifest.json"
     manifest = create_manifest_v2(
@@ -931,7 +973,10 @@ def test_rolled_bank_source_replay_schedule_and_manifest_binding(  # noqa: PLR09
         estimands={"d": "paired O minus O_bridge"},
         decision_rule={"selection": "none"},
         artifact_contract={
-            "scenario_banks": {"train-schedule": bank.payload_sha256},
+            "scenario_banks": {
+                "train-schedule": bank.payload_sha256,
+                "validation-A": validation_bank.payload_sha256,
+            },
             "schedule": "training_schedule.jsonl.zst",
         },
         baselines={"ppo-best": {"sha256": "a" * 64}},
@@ -966,6 +1011,8 @@ def test_rolled_bank_source_replay_schedule_and_manifest_binding(  # noqa: PLR09
         opponent_pool=opponent_pool,
         scenario_bank_path=bank.artifact_path,
         seed_roll_path=artifact.path,
+        validation_scenario_bank_path=validation_bank.artifact_path,
+        validation_opponents=validation_opponents,
     )
     with pytest.raises(ValueError, match="config"):
         replace(job, config=replace(config, learning_rate=1e-2))

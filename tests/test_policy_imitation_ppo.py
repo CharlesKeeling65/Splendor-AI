@@ -346,6 +346,23 @@ def test_new_config_weights_reject_nan(field: str) -> None:
         PPOConfig(**{field: float("nan")})  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("minibatch_size", 256.0),
+        ("seed", False),
+        ("value_coefficient", True),
+        ("hidden_layers", (8.0,)),
+    ],
+)
+def test_ppo_config_rejects_bool_and_float_type_aliases(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=r"integer|numeric|hidden_layers"):
+        PPOConfig(**{field: value})  # type: ignore[arg-type]
+
+
 def test_configured_fake_fast_env_smoke_writes_incremental_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -604,7 +604,34 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   authority、schedule relabel、manifest/runtime 与 activation 攻击。生产 root 随后获批并为
   `task1-t14-crossed-pilot-20260915` 唯一生成；payload SHA-256 为
   `df124b90339613d1eae04791913068ea8d34ed50e4ab85024b344c05c83da6e6`，公开执行记录见
-  `docs/task1/T1.4_PRODUCTION_SEED_ROLL.json`。**未生成 96k pilot bank，未运行 GPU/pilot，
-  未读取 validation/sealed split**。
+  `docs/task1/T1.4_PRODUCTION_SEED_ROLL.json`。root draw 当时未生成 bank 或启动 GPU；后续经明确
+  授权物化状态见 §7.14，validation-B/sealed/reserve 仍未触及。
   最终质量门：相关 110 passed、全仓 551 passed（3 条既有 warning）、parity 44 passed，
   Ruff 全仓与 CI mypy 71 source files 通过。
+
+### 7.14 Task-1 T1.4 reward、基线与 pilot 执行门（2026-09-15）
+
+- **非 sealed banks 已物化**：production roll 的 pilot `(0,1,2)` 共 96,000 个 ScenarioV1 已按
+  root 顺序写入 `runs/task1-t14-crossed-pilot-20260915/banks/pilot/` 并逐一 source replay；payload
+  `3769f236...3988c`、state-set `939f4b09...399f2`。基线另物化 validation-A 前 200 个自然开局
+  （payload `1e50d230...8e376f`）和从完整 20,000 stress population 按四层各 25 个、outcome-free
+  抽取的 100 个开局（payload `b20630c8...49bc3`）。均为非 sealed；validation-B、sealed-test 和
+  reserve `(3,4)` 未生成、未读取、未激活。
+- **版本化 episodic reward**：`shaping.py` 新增 `safe-potential-v1`，所有正常终局、deadlock、
+  round-limit 与 truncation 都以 absorbing `Phi(s_T)=0` 闭合；逐轨迹验证折叠项为 `-Phi(s_0)`。
+  旧默认保留 `terminal-biased-potential-v1`，仅作为 `O_bridge`，不会静默改写历史路径。
+- **新协议冻结基线**：`t14_baseline.py` 只允许冻结 `ppo-best` 与 validation-A/stress 两个非 sealed
+  bank、双座位、固定 `ga/heuristic/minimax` source-config 矩阵；复用标准 paired evaluator，输出
+  crossed scenario×seat×opponent 描述性方差分解，不做 CI、显著性或候选选择。
+- **正式 validation/checkpoint selection**：`paired-training-v2` 强制每个 update 0/50/.../2000 在
+  validation-A 前 10 个 ScenarioV1、双座位、固定三对手上运行 60 局；按总整数 wins 最大、完全平局
+  取最早 update。完成证据会独立重跑策略、回放动作、核对 41 个 checkpoint/model-state/config/
+  initializer/opponent/code/bank hash，`best.pth` 必须与所选 checkpoint 字节一致。
+- **tmux/P5000 fail closed**：`task1-pilot` 只接受精确 O/O_bridge×r0/r1/r2、三 spawn workers、
+  `.venv-p5000` CUDA/P5000/sm61 与固定五成员训练 pool；18h wall、32GiB output、40GiB free-space
+  由父子独立 watchdog/lease/process group 执行。声明、launch snapshot、输出 reservation、status/
+  completion 和 manifest 终态均一次性绑定；启动/worker/资源/证据任一失败即终止同组进程并 block
+  原 running manifest。
+- **当前边界**：实现与非 sealed bank 审计完成，冻结 `ppo-best` 元数据也已现场重算一致；新协议
+  baseline、10-row selector bank、最终 pilot manifest 和 GPU/tmux 训练尚未产生结果。独立对抗审计
+  与全仓质量门通过后才进入上述运行步骤。

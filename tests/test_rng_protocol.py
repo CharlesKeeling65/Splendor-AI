@@ -37,6 +37,13 @@ def _spawn_probe(job: tuple[int, float]) -> tuple[int, str, str | None]:
     )
 
 
+def _spawn_fail_or_sleep(job: str) -> None:
+    """Fail one worker while another would otherwise keep the pool waiting."""
+    if job == "fail":
+        raise RuntimeError("intentional formal worker failure")
+    time.sleep(30.0)
+
+
 def test_rng_protocol_known_vector() -> None:
     lineage = derive_seed({"stream_name": "policy_action", "update": 0})
     assert lineage.canonical_key_json == '{"stream_name":"policy_action","update":0}'
@@ -202,6 +209,21 @@ def test_formal_spawn_executor_preserves_input_order(
     assert [result[0] for result in results] == [0, 1, 2]
     assert all(name != "MainProcess" for _, name, _ in results)
     assert all(count == "2" for _, _, count in results)
+
+
+def test_formal_spawn_executor_terminates_siblings_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(protocol_module, "_started_with_zero_hash_seed", lambda: True)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="intentional formal worker failure"):
+        run_formal_spawn_jobs(
+            ("fail", "sleep"),
+            worker=_spawn_fail_or_sleep,
+            worker_count=2,
+        )
+    assert time.monotonic() - started < 10.0
 
 
 def test_formal_cuda_never_falls_back_to_cpu(

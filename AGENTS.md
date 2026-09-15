@@ -8,8 +8,10 @@
 > imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
 > **T1.0–T1.3 与 T1.4 seed-roll preflight 已完成**（基线冻结、RNG 分流/配对 schedule、
 > ScenarioV1/内容寻址 bank/sealed gate、配对评测/聚类统计/固定 N、一次性 CSPRNG-root
-> 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，bank 物化、pilot 与训练
-> 仍受分阶段批准门约束。
+> 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，非 sealed 96k pilot bank
+> 及 validation-A200/stress100 基线 banks 已物化审计，safe PBRS、正式 checkpoint selection 与
+> P5000/tmux 编排门已实现。下一步依序执行新协议基线/正式 pilot；validation-B、sealed 与 reserve
+> 仍受后续批准门约束。
 > 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
@@ -84,7 +86,7 @@ play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进�
 
 `tests/` 已随阶段同步建立，全量离线（CI 不碰网络）：`.venv/bin/python -m pytest tests/`（或 `make test`）。
 
-测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）；Task-1 另由 `test_rng_protocol`/`test_scenario_bank`/`test_paired_evaluation`/`test_paired_statistics`/`test_seed_roll` 覆盖 RNG、bank、评测统计与一次性 seed-roll/正式训练门。
+测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）；Task-1 另由 `test_rng_protocol`/`test_scenario_bank`/`test_paired_evaluation`/`test_paired_statistics`/`test_seed_roll`/`test_episodic_potential`/`test_task1_t14_baseline`/`test_formal_validation`/`test_pilot_orchestrator` 覆盖 RNG、bank、评测统计、一次性 seed-roll、safe PBRS、T1.4 基线、正式选模与 tmux/资源/生命周期训练门。
 CI（GitHub Actions）：ruff + mypy（新代码路径）+ pytest，Python 3.12/3.13 矩阵。
 lint 工具链只从 `.[dev]`（= `requirements/development.txt`）来，CI **不得**再 `uv pip install ruff` 覆盖 pin
 （无 pin 的 ruff 曾在无代码变更时因新增默认规则把整个仓库的 lint 门刷红）。

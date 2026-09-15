@@ -29,6 +29,7 @@ _UINT32_MAX = (1 << 32) - 1
 _SHA256_HEX_LENGTH = 64
 _ASCII_CONTROL_LIMIT = 32
 _FORMAL_WORKER_COUNT_ENV = "SPLENDOR_FORMAL_WORKER_COUNT"
+TERMINATE_WORKER_SECONDS = 5.0
 _FORMAL_GAME_STREAMS = frozenset(
     {
         "scenario_source",
@@ -660,6 +661,133 @@ class FormalJobOutput:
         }
 
 
+FORMAL_VALIDATION_PROTOCOL = "scenario-validation-a-v1"
+FORMAL_VALIDATION_BATCH_ID = "validation-A-checkpoint-selection"
+FORMAL_VALIDATION_OPPONENT_IDS = ("ga", "heuristic", "minimax")
+FORMAL_VALIDATION_SCENARIO_COUNT = 10
+FORMAL_VALIDATION_UPDATES = tuple(range(0, 2001, 50))
+FORMAL_VALIDATION_SELECTION_RULE = "max-total-integer-wins-earliest-update"
+
+
+@dataclass(frozen=True)
+class FormalValidationOpponentContract:
+    """Source/config identity of one immutable validation opponent factory."""
+
+    opponent_id: str
+    source_sha256: str
+    config_sha256: str
+    checkpoint_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.opponent_id) is not str or not self.opponent_id:
+            raise ValueError("formal validation opponent ID is invalid")
+        if type(self.source_sha256) is not str:
+            raise ValueError("formal validation opponent source SHA-256 is required")
+        if type(self.config_sha256) is not str:
+            raise ValueError("formal validation opponent config SHA-256 is required")
+        _validate_optional_sha256(self.source_sha256, "validation opponent source")
+        _validate_optional_sha256(self.config_sha256, "validation opponent config")
+        _validate_optional_sha256(
+            self.checkpoint_sha256,
+            "validation opponent checkpoint",
+        )
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "opponent_id": self.opponent_id,
+            "source_sha256": self.source_sha256,
+            "config_sha256": self.config_sha256,
+            "checkpoint_sha256": self.checkpoint_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class FormalValidationContract:
+    """Pre-registered ScenarioV1 checkpoint-selection declaration."""
+
+    scenario_bank_sha256: str
+    scenario_ids: tuple[str, ...]
+    opponents: tuple[FormalValidationOpponentContract, ...]
+    seats: tuple[int, ...] = (0, 1)
+    eval_updates: tuple[int, ...] = FORMAL_VALIDATION_UPDATES
+    selection_rule: str = FORMAL_VALIDATION_SELECTION_RULE
+    protocol: str = FORMAL_VALIDATION_PROTOCOL
+    batch_id: str = FORMAL_VALIDATION_BATCH_ID
+
+    def __post_init__(self) -> None:  # noqa: C901 - strict immutable schema
+        if self.protocol != FORMAL_VALIDATION_PROTOCOL:
+            raise ValueError("formal validation protocol is invalid")
+        if self.batch_id != FORMAL_VALIDATION_BATCH_ID:
+            raise ValueError("formal validation RNG batch namespace is invalid")
+        if type(self.scenario_bank_sha256) is not str:
+            raise ValueError("formal validation scenario-bank SHA-256 is required")
+        _validate_optional_sha256(
+            self.scenario_bank_sha256,
+            "validation scenario-bank",
+        )
+        if (
+            type(self.scenario_ids) is not tuple
+            or len(self.scenario_ids) != FORMAL_VALIDATION_SCENARIO_COUNT
+            or len(set(self.scenario_ids)) != len(self.scenario_ids)
+            or any(
+                type(scenario_id) is not str
+                or len(scenario_id) != _SHA256_HEX_LENGTH
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in scenario_id
+                )
+                for scenario_id in self.scenario_ids
+            )
+        ):
+            raise ValueError(
+                "formal validation-A must bind exactly 10 unique ScenarioV1 IDs"
+            )
+        if (
+            type(self.seats) is not tuple
+            or any(type(seat) is not int for seat in self.seats)
+            or self.seats != (0, 1)
+        ):
+            raise ValueError("formal validation requires the fixed seats (0, 1)")
+        if (
+            type(self.eval_updates) is not tuple
+            or any(type(update) is not int for update in self.eval_updates)
+            or self.eval_updates != FORMAL_VALIDATION_UPDATES
+        ):
+            raise ValueError(
+                "formal validation updates must be exactly 0,50,...,2000"
+            )
+        if self.selection_rule != FORMAL_VALIDATION_SELECTION_RULE:
+            raise ValueError("formal validation checkpoint-selection rule is invalid")
+        if type(self.opponents) is not tuple or any(
+            type(opponent) is not FormalValidationOpponentContract
+            for opponent in self.opponents
+        ):
+            raise ValueError("formal validation opponents must be a contract tuple")
+        opponent_ids = tuple(opponent.opponent_id for opponent in self.opponents)
+        if opponent_ids != FORMAL_VALIDATION_OPPONENT_IDS:
+            raise ValueError(
+                "formal validation opponents must be exactly "
+                "('ga', 'heuristic', 'minimax')"
+            )
+        if any(opponent.checkpoint_sha256 is not None for opponent in self.opponents):
+            raise ValueError(
+                "formal validation built-in opponents cannot declare checkpoints"
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "protocol": self.protocol,
+            "batch_id": self.batch_id,
+            "scenario_bank_sha256": self.scenario_bank_sha256,
+            "scenario_ids": list(self.scenario_ids),
+            "scenario_count": len(self.scenario_ids),
+            "seats": list(self.seats),
+            "opponents": [opponent.as_dict() for opponent in self.opponents],
+            "eval_updates": list(self.eval_updates),
+            "selection_rule": self.selection_rule,
+        }
+
+
 @dataclass(frozen=True)
 class FormalTrainingSpec:
     """Explicit opt-in contract binding one trainer to its paired schedule."""
@@ -679,8 +807,9 @@ class FormalTrainingSpec:
     replicate_stage: Literal["pilot", "confirmatory-reserve"] | None = None
     activation_artifact_path: str | None = None
     activation_artifact_sha256: str | None = None
+    validation: FormalValidationContract | None = None
 
-    def __post_init__(self) -> None:  # noqa: C901,PLR0912 - fail-closed contract
+    def __post_init__(self) -> None:  # noqa: C901,PLR0912,PLR0915 - fail-closed contract
         for field_name, value in (
             ("experiment_id", self.experiment_id),
             ("phase", self.phase),
@@ -751,11 +880,18 @@ class FormalTrainingSpec:
                 or self.replicate_stage is not None
                 or self.activation_artifact_path is not None
                 or self.activation_artifact_sha256 is not None
+                or self.validation is not None
             ):
                 raise ValueError(
                     "paired-training-v1 cannot declare v2 treatment/job contracts"
                 )
             return
+        if self.validation is None:
+            raise ValueError(
+                "paired-training-v2 requires a formal validation-A contract"
+            )
+        if self.validation.scenario_bank_sha256 == self.scenario_bank_sha256:
+            raise ValueError("training and validation must use distinct scenario banks")
         if self.replicate_stage not in {"pilot", "confirmatory-reserve"}:
             raise ValueError(
                 "paired-training-v2 must declare pilot or confirmatory-reserve stage"
@@ -849,6 +985,8 @@ class FormalTrainingSpec:
             binding["replicate_stage"] = self.replicate_stage
             binding["activation_artifact_path"] = self.activation_artifact_path
             binding["activation_artifact_sha256"] = self.activation_artifact_sha256
+            assert self.validation is not None
+            binding["validation"] = self.validation.as_dict()
         return binding
 
     def treatment_contract(self, treatment_id: str) -> FormalTreatmentContract:
@@ -1022,6 +1160,9 @@ class FormalTrainingSpec:
             "replicate_stage": self.replicate_stage,
             "activation_artifact_path": self.activation_artifact_path,
             "activation_artifact_sha256": self.activation_artifact_sha256,
+            "validation": (
+                self.validation.as_dict() if self.validation is not None else None
+            ),
             "manifest_binding": self.manifest_binding(),
             "model_init_lineage": self.model_init_lineage().as_dict(),
             "worker_lineages": [
@@ -1066,7 +1207,7 @@ def require_formal_spawn_context() -> mp.context.BaseContext:
     return context
 
 
-def run_formal_spawn_jobs(
+def run_formal_spawn_jobs(  # noqa: C901,PLR0912 - fail-fast pool teardown
     jobs: Sequence[_JobT],
     *,
     worker: Callable[[_JobT], _ResultT],
@@ -1087,16 +1228,44 @@ def run_formal_spawn_jobs(
     results: list[object] = [missing] * len(jobs)
     previous_count = os.environ.get(_FORMAL_WORKER_COUNT_ENV)
     os.environ[_FORMAL_WORKER_COUNT_ENV] = str(worker_count)
+    pool: ProcessPoolExecutor | None = None
+    futures: dict[Future[_ResultT], int] = {}
     try:
-        with ProcessPoolExecutor(
+        pool = ProcessPoolExecutor(
             max_workers=worker_count,
             mp_context=context,
-        ) as pool:
-            future_indexes: dict[Future[_ResultT], int] = {
-                pool.submit(worker, job): index for index, job in enumerate(jobs)
-            }
-            for future in as_completed(future_indexes):
-                results[future_indexes[future]] = future.result()
+        )
+        futures = {
+            pool.submit(worker, job): index for index, job in enumerate(jobs)
+        }
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        # Python 3.12/3.13 lack the public terminate_workers() API.  Capture
+        # the spawned processes before non-waiting shutdown, then terminate
+        # them so one failed formal job cannot leave siblings consuming a GPU
+        # until the executor context manager's ordinary blocking shutdown.
+        processes = (
+            tuple(getattr(pool, "_processes", {}).values())
+            if pool is not None
+            else ()
+        )
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=TERMINATE_WORKER_SECONDS)
+            if process.is_alive():
+                process.kill()
+                process.join()
+        raise
+    else:
+        assert pool is not None
+        pool.shutdown(wait=True)
     finally:
         if previous_count is None:
             os.environ.pop(_FORMAL_WORKER_COUNT_ENV, None)

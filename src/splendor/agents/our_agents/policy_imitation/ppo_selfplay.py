@@ -1,8 +1,10 @@
 """PPO self-play initialized from BC with a declared fixed opponent pool."""
 
+import hashlib
 import json
 import os
 import random
+import shutil
 import stat
 import tempfile
 import time
@@ -10,7 +12,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -22,6 +24,10 @@ from torch import distributions, nn, optim
 from splendor.agents.our_agents.dqn.constants import HIDDEN_DIMS, HUGE_NEG
 from splendor.agents.our_agents.dqn.features import extract_observation, observation_dim
 from splendor.agents.our_agents.policy_imitation.shaping import (
+    SAFE_POTENTIAL_CONTRACT,
+    SAFE_POTENTIAL_V1,
+    TERMINAL_BIASED_POTENTIAL_CONTRACT,
+    TERMINAL_BIASED_POTENTIAL_V1,
     EventRewardShaper,
     PotentialRewardShaper,
 )
@@ -38,9 +44,14 @@ from .bc_network import ACTION_DIM, BehaviorCloningNetwork, FixedNormalizer
 from .bc_training import DeviceName, load_bc_checkpoint, resolve_device
 from .policies import CandidateSpec, build_builtin_candidate
 from .protocol import (
+    FORMAL_VALIDATION_OPPONENT_IDS,
+    FORMAL_VALIDATION_SCENARIO_COUNT,
+    FORMAL_VALIDATION_SELECTION_RULE,
     FormalGameRng,
     FormalTrainingSpec,
     FormalTreatmentContract,
+    FormalValidationContract,
+    FormalValidationOpponentContract,
     RngKey,
     RuntimeSnapshot,
     SeedLineage,
@@ -63,6 +74,7 @@ from .scenario_bank import (
     ScenarioBank,
     audit_seed_roll_scenario_bank,
     inspect_scenario_bank,
+    load_scenario_bank,
     load_scenario_bank_subset,
     scenario_lookup,
 )
@@ -345,6 +357,48 @@ class PPOConfig:
     device_name: DeviceName = "cpu"
 
     def __post_init__(self) -> None:  # noqa: C901, PLR0912 - validate each bound
+        integer_fields = (
+            "minibatch_size",
+            "update_epochs",
+            "updates",
+            "games_per_update",
+            "history_limit",
+            "critic_warmup_epochs",
+            "critic_hidden_dim",
+            "n_seats",
+            "eval_every",
+            "seed",
+        )
+        if any(type(getattr(self, field)) is not int for field in integer_fields):
+            raise ValueError("PPO integer knobs must be exact integers, not bool/float")
+        if (
+            type(self.hidden_layers) is not tuple
+            or not self.hidden_layers
+            or any(type(width) is not int or width < 1 for width in self.hidden_layers)
+        ):
+            raise ValueError("PPO hidden_layers must be a non-empty tuple of integers")
+        numeric_fields = (
+            "learning_rate",
+            "discount_factor",
+            "gae_lambda",
+            "clip_epsilon",
+            "entropy_coefficient",
+            "value_coefficient",
+            "max_grad_norm",
+            "terminal_value",
+            "reference_kl_coefficient",
+            "current_weight",
+            "history_weight",
+            "shaping_kappa",
+        )
+        if any(
+            type(getattr(self, field)) not in {int, float}
+            for field in numeric_fields
+        ) or any(
+            value is not None and type(value) not in {int, float}
+            for value in (self.target_kl, self.critic_learning_rate)
+        ):
+            raise ValueError("PPO numeric knobs must be numbers, not bool")
         _validate_value_mode(self.value_mode)
         _validate_initialization(self.initialization)
         if (
@@ -409,7 +463,12 @@ class PPOConfig:
             raise ValueError("critic_hidden_dim must be non-negative")
         if not MIN_SEATS <= self.n_seats <= MAX_SEATS:
             raise ValueError("n_seats must lie in [2, 4]")
-        if self.shaping_kind not in ("none", "potential", "event"):
+        if self.shaping_kind not in (
+            "none",
+            "potential",
+            "safe-potential",
+            "event",
+        ):
             raise ValueError(f"unknown shaping kind {self.shaping_kind!r}")
         if self.value_mode == "outcome" and self.terminal_value > 1.0:
             raise ValueError(
@@ -427,6 +486,15 @@ class PPOConfig:
             )
         if self.seed < 0:
             raise ValueError("PPO seed must be non-negative")
+
+    @property
+    def potential_reward_version(self) -> str | None:
+        """Return the persisted terminal-potential contract, when applicable."""
+        if self.shaping_kind == "potential":
+            return TERMINAL_BIASED_POTENTIAL_V1
+        if self.shaping_kind == "safe-potential":
+            return SAFE_POTENTIAL_V1
+        return None
 
 
 @dataclass(frozen=True)
@@ -454,9 +522,18 @@ class FormalOpponentSpec:
     checkpoint: Path | None = None
 
     def __post_init__(self) -> None:
-        if not self.entry_name or not self.candidate_name:
+        if (
+            type(self.entry_name) is not str
+            or not self.entry_name
+            or type(self.candidate_name) is not str
+            or not self.candidate_name
+        ):
             raise ValueError("formal opponent names must not be empty")
-        if not np.isfinite(self.weight) or self.weight < 0:
+        if (
+            type(self.weight) not in {int, float}
+            or not np.isfinite(self.weight)
+            or self.weight < 0
+        ):
             raise ValueError("formal opponent weight must be finite and non-negative")
         checkpoint_required = self.candidate_name in {"ppo", "corrected-dqn"}
         if checkpoint_required and self.checkpoint is None:
@@ -505,12 +582,90 @@ def formal_opponent_pool_sha256(entries: Sequence[FormalOpponentSpec]) -> str:
     )
 
 
+def _formal_validation_opponent_contracts(
+    entries: Sequence[FormalOpponentSpec],
+    *,
+    device_name: DeviceName,
+) -> tuple[FormalValidationOpponentContract, ...]:
+    """Rebuild and hash the exact three source-only validation factories."""
+    from .paired_evaluation import (  # noqa: PLC0415 - avoid import cycle
+        policy_config_sha256,
+        policy_source_sha256,
+    )
+
+    if tuple(entry.entry_name for entry in entries) != FORMAL_VALIDATION_OPPONENT_IDS:
+        raise ValueError(
+            "formal validation opponent entries must be exactly "
+            "('ga', 'heuristic', 'minimax')"
+        )
+    contracts: list[FormalValidationOpponentContract] = []
+    for entry in entries:
+        if (
+            entry.entry_name != entry.candidate_name
+            or entry.weight != 1.0
+            or entry.checkpoint is not None
+        ):
+            raise ValueError(
+                "formal validation opponents must be unweighted source-only "
+                "ga/heuristic/minimax factories"
+            )
+        candidate = entry.build(device_name=device_name).candidate
+        contracts.append(
+            FormalValidationOpponentContract(
+                opponent_id=entry.entry_name,
+                source_sha256=policy_source_sha256(candidate),
+                config_sha256=policy_config_sha256(candidate),
+            )
+        )
+    return tuple(contracts)
+
+
+def make_formal_validation_contract(
+    scenario_bank: ScenarioBank,
+    opponents: Sequence[FormalOpponentSpec],
+    *,
+    device_name: DeviceName,
+) -> FormalValidationContract:
+    """Freeze the T1.4 ten-scenario validation-A checkpoint selector."""
+    if (
+        scenario_bank.logical_split != "validation-A"
+        or scenario_bank.sealed
+        or scenario_bank.selection_kind != "iid"
+    ):
+        raise ValueError(
+            "formal checkpoint selection requires a nonsealed IID validation-A bank"
+        )
+    if (
+        scenario_bank.scenario_count != FORMAL_VALIDATION_SCENARIO_COUNT
+        or len(scenario_bank.scenarios) != scenario_bank.scenario_count
+    ):
+        raise ValueError(
+            "formal checkpoint selection requires a fully materialized 10-scenario bank"
+        )
+    ordered = tuple(
+        scenario.scenario_id
+        for scenario in sorted(
+            scenario_bank.scenarios,
+            key=lambda scenario: scenario.source_seed,
+        )
+    )
+    return FormalValidationContract(
+        scenario_bank_sha256=scenario_bank.payload_sha256,
+        scenario_ids=ordered,
+        opponents=_formal_validation_opponent_contracts(
+            opponents,
+            device_name=device_name,
+        ),
+    )
+
+
 def formal_ppo_config_sha256(config: PPOConfig) -> str:
     """Hash every trainer/reward/pool-dynamics setting used by one arm."""
     return sha256_canonical_json(
         {
             "protocol": "formal-ppo-config-v1",
             "config": asdict(config),
+            "potential_reward_version": config.potential_reward_version,
         }
     )
 
@@ -548,8 +703,10 @@ class FormalPPOTrainingJob:
     opponent_pool: tuple[FormalOpponentSpec, ...]
     scenario_bank_path: Path
     seed_roll_path: Path | None = None
+    validation_scenario_bank_path: Path | None = None
+    validation_opponents: tuple[FormalOpponentSpec, ...] = ()
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901,PLR0912 - fail-closed job contract
         if not self.opponent_pool:
             raise ValueError("formal PPO job needs a non-empty opponent pool")
         names = [entry.entry_name for entry in self.opponent_pool]
@@ -564,6 +721,15 @@ class FormalPPOTrainingJob:
                 "paired-training-v2 jobs require exactly one seed-roll artifact"
             )
         if self.formal_spec.seed_roll_payload_sha256 is not None:
+            if (
+                self.formal_spec.validation is None
+                or self.validation_scenario_bank_path is None
+                or not self.validation_opponents
+            ):
+                raise ValueError(
+                    "paired-training-v2 jobs require a bound validation-A bank "
+                    "and opponent factories"
+                )
             contract = self.formal_spec.treatment_contract(
                 self.formal_spec.treatment_id
             )
@@ -584,6 +750,40 @@ class FormalPPOTrainingJob:
             )
             if str(self.output_dir.resolve()) != expected_output.output_dir:
                 raise ValueError("formal PPO output directory does not match its spec")
+            validation_manifest = inspect_scenario_bank(
+                self.validation_scenario_bank_path
+            )
+            if (
+                validation_manifest.get("logical_split") != "validation-A"
+                or validation_manifest.get("sealed") is not False
+                or validation_manifest.get("selection_kind") != "iid"
+                or validation_manifest.get("scenario_count")
+                != FORMAL_VALIDATION_SCENARIO_COUNT
+                or validation_manifest.get("payload_sha256")
+                != self.formal_spec.validation.scenario_bank_sha256
+            ):
+                raise ValueError(
+                    "formal PPO validation bank does not match its validation-A contract"
+                )
+            actual_validation_opponents = _formal_validation_opponent_contracts(
+                self.validation_opponents,
+                device_name=self.config.device_name,
+            )
+            if actual_validation_opponents != self.formal_spec.validation.opponents:
+                raise ValueError(
+                    "formal PPO validation opponent factories do not match their contract"
+                )
+            expected_updates = tuple(
+                range(0, self.config.updates + 1, self.config.eval_every)
+            )
+            if expected_updates != self.formal_spec.validation.eval_updates:
+                raise ValueError(
+                    "formal PPO config does not match the validation update schedule"
+                )
+        elif self.validation_scenario_bank_path is not None or self.validation_opponents:
+            raise ValueError(
+                "paired-training-v1 cannot receive formal validation inputs"
+            )
 
 
 def _formal_output_reservation_payload_for(
@@ -1093,10 +1293,15 @@ def collect_ppo_game(  # noqa: C901,PLR0912,PLR0913,PLR0915 - game accounting is
         # the terminal state) arrives - gamma*phi(s') - phi(s) telescopes.
         potential_shaper: PotentialRewardShaper | None = None
         event_shaper: EventRewardShaper | None = None
-        if config.shaping_kind == "potential":
+        if config.shaping_kind in {"potential", "safe-potential"}:
             potential_shaper = PotentialRewardShaper(
                 kappa=config.shaping_kappa,
                 discount_factor=config.discount_factor,
+                contract=(
+                    SAFE_POTENTIAL_CONTRACT
+                    if config.shaping_kind == "safe-potential"
+                    else TERMINAL_BIASED_POTENTIAL_CONTRACT
+                ),
             )
         elif config.shaping_kind == "event":
             event_shaper = EventRewardShaper()
@@ -1792,6 +1997,7 @@ def save_ppo_checkpoint(  # noqa: PLR0913 - provenance fields are explicit
     opponent_pool: Sequence[OpponentPoolEntry],
     metrics: dict[str, Any],
     formal_protocol: Mapping[str, Any] | None = None,
+    formal_treatment_contract: FormalTreatmentContract | None = None,
 ) -> None:
     """Save policy, critic, normalizer, source BC and opponent provenance."""
     state_dict = {
@@ -1808,6 +2014,7 @@ def save_ppo_checkpoint(  # noqa: PLR0913 - provenance fields are explicit
         "value_mode": model.value_mode,
         "config": {
             **asdict(config),
+            "potential_reward_version": config.potential_reward_version,
             "hidden_layers": list(config.hidden_layers),
             "input_dim": model.input_dim,
             "output_dim": model.output_dim,
@@ -1832,6 +2039,30 @@ def save_ppo_checkpoint(  # noqa: PLR0913 - provenance fields are explicit
     }
     if formal_protocol is not None:
         payload["formal_protocol"] = dict(formal_protocol)
+    if formal_treatment_contract is not None:
+        if formal_protocol is None:
+            raise ValueError("formal checkpoint contract requires formal protocol")
+        if (
+            formal_ppo_config_sha256(config)
+            != formal_treatment_contract.trainer_config_sha256
+            or not Path(source_bc).is_file()
+            or sha256_file(Path(source_bc))
+            != formal_treatment_contract.initial_checkpoint_sha256
+        ):
+            raise ValueError(
+                "formal checkpoint config or initializer violates its treatment contract"
+            )
+        raw_contracts = formal_protocol.get("treatment_contracts")
+        if (
+            not isinstance(raw_contracts, list)
+            or formal_treatment_contract.as_dict() not in raw_contracts
+        ):
+            raise ValueError(
+                "formal checkpoint protocol does not contain its treatment contract"
+            )
+        payload["formal_treatment_contract"] = (
+            formal_treatment_contract.as_dict()
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
@@ -1848,6 +2079,94 @@ def save_ppo_checkpoint(  # noqa: PLR0913 - provenance fields are explicit
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _checkpoint_ppo_config(payload: Mapping[str, Any]) -> PPOConfig:
+    """Reconstruct the exact trainer dataclass from checkpoint metadata."""
+    raw = payload.get("config")
+    if not isinstance(raw, Mapping):
+        raise ValueError("formal checkpoint PPO config is missing")
+    config_fields = {field.name for field in fields(PPOConfig)}
+    required_metadata = {
+        "potential_reward_version",
+        "input_dim",
+        "output_dim",
+        "normalizer_fitted",
+    }
+    if set(raw) != config_fields | required_metadata:
+        raise ValueError("formal checkpoint PPO config schema is invalid")
+    values = {name: raw[name] for name in config_fields}
+    hidden_layers = values.get("hidden_layers")
+    if not isinstance(hidden_layers, list):
+        raise ValueError("formal checkpoint hidden_layers must be a JSON-style list")
+    values["hidden_layers"] = tuple(hidden_layers)
+    config = PPOConfig(**values)
+    if (
+        raw.get("potential_reward_version") != config.potential_reward_version
+        or raw.get("input_dim") != observation_dim(config.feature_version)
+        or raw.get("output_dim") != ACTION_DIM
+        or type(raw.get("normalizer_fitted")) is not bool
+        or payload.get("value_mode") != config.value_mode
+        or payload.get("initialization") != config.initialization
+    ):
+        raise ValueError("formal checkpoint derived PPO metadata is inconsistent")
+    return config
+
+
+def validate_formal_ppo_checkpoint_binding(
+    checkpoint_path: Path,
+    formal_spec: FormalTrainingSpec,
+    *,
+    expected_update: int,
+) -> str:
+    """Bind a v2 PPO artifact to its declared config, BC, pool, and update."""
+    contract = formal_spec.treatment_contract(formal_spec.treatment_id)
+    checkpoint_sha256 = sha256_file(checkpoint_path)
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, Mapping):
+        raise ValueError("formal PPO checkpoint payload is invalid")
+    config = _checkpoint_ppo_config(payload)
+    source_bc = payload.get("source_bc")
+    runtime = payload.get("runtime")
+    if (
+        payload.get("model_type") != "imitation_ppo_policy_value"
+        or payload.get("update") != expected_update
+        or payload.get("formal_protocol") != formal_spec.as_dict()
+        or payload.get("formal_treatment_contract") != contract.as_dict()
+        or formal_ppo_config_sha256(config) != contract.trainer_config_sha256
+        or type(source_bc) is not str
+        or payload.get("normalizer_source") != source_bc
+        or not Path(cast(str, source_bc)).is_file()
+        or sha256_file(Path(cast(str, source_bc)))
+        != contract.initial_checkpoint_sha256
+        or not isinstance(runtime, Mapping)
+        or runtime.get("requested_device") != config.device_name
+        or runtime.get("resolved_device") != config.device_name
+        or runtime.get("cuda_available") is not True
+    ):
+        raise ValueError(
+            "formal PPO checkpoint does not match its config/initializer/runtime contract"
+        )
+    load_ppo_checkpoint(checkpoint_path, device_name="cpu")
+    return checkpoint_sha256
+
+
+def ppo_checkpoint_model_state_sha256(checkpoint_path: Path) -> str:
+    """Hash the ordered tensor state used by PPO policy/value inference."""
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    state = payload.get("model_state_dict") if isinstance(payload, Mapping) else None
+    if not isinstance(state, Mapping) or not state:
+        raise ValueError("PPO checkpoint model_state_dict is missing")
+    digest = hashlib.sha256()
+    for name, tensor in sorted(state.items()):
+        if type(name) is not str or not isinstance(tensor, torch.Tensor):
+            raise ValueError("PPO checkpoint model state entry is invalid")
+        contiguous = tensor.detach().cpu().contiguous()
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(str(contiguous.dtype).encode("ascii") + b"\0")
+        digest.update(sha256_canonical_json(list(contiguous.shape)).encode("ascii"))
+        digest.update(contiguous.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
 
 
 def load_ppo_checkpoint(
@@ -1934,6 +2253,492 @@ def _validation_score(validation: dict[str, Any]) -> tuple[int, int]:
     wins = sum(int(report["wins"]) for report in reports)
     games = sum(int(report["games"]) for report in reports)
     return wins, -games
+
+
+def _validate_formal_validation_bank(
+    bank: ScenarioBank,
+    contract: FormalValidationContract,
+) -> None:
+    """Require the exact, fully materialized ten-row validation-A bank."""
+    if (
+        bank.logical_split != "validation-A"
+        or bank.sealed
+        or bank.selection_kind != "iid"
+        or bank.scenario_count != len(contract.scenario_ids)
+        or len(bank.scenarios) != bank.scenario_count
+        or bank.payload_sha256 != contract.scenario_bank_sha256
+    ):
+        raise ValueError(
+            "formal validation requires its exact nonsealed IID validation-A bank"
+        )
+    observed_ids = tuple(
+        scenario.scenario_id
+        for scenario in sorted(bank.scenarios, key=lambda item: item.source_seed)
+    )
+    if observed_ids != contract.scenario_ids:
+        raise ValueError("formal validation scenario IDs/order do not match the contract")
+
+
+def _build_formal_validation_evaluation_spec(  # noqa: PLR0913 - contract axes explicit
+    checkpoint_path: Path,
+    scenario_bank: ScenarioBank,
+    opponent_specs: Sequence[FormalOpponentSpec],
+    formal_spec: FormalTrainingSpec,
+    source_manifest: Path,
+    *,
+    update: int,
+    device_name: DeviceName,
+) -> tuple[object, str]:
+    """Reconstruct the exact checkpoint-bound formal validation spec."""
+    contract = formal_spec.validation
+    if contract is None:
+        raise ValueError("paired-training-v2 is missing formal validation")
+    if update not in contract.eval_updates:
+        raise ValueError("checkpoint update is absent from the validation contract")
+    from .manifest import load_manifest  # noqa: PLC0415 - avoid import cycle
+
+    manifest = load_manifest(source_manifest)
+    declaration_sha256 = manifest.get("declaration_sha256")
+    declaration = manifest.get("declaration")
+    provenance = manifest.get("provenance")
+    code = provenance.get("code") if isinstance(provenance, Mapping) else None
+    if (
+        type(declaration_sha256) is not str
+        or manifest.get("status") != "running"
+        or not isinstance(declaration, Mapping)
+        or not isinstance(code, Mapping)
+    ):
+        raise RuntimeError("formal validation manifest provenance is missing")
+    if (
+        declaration.get("experiment_id") != formal_spec.experiment_id
+        or declaration.get("phase") != formal_spec.phase
+        or declaration.get("formal_training") != formal_spec.manifest_binding()
+    ):
+        raise RuntimeError("formal validation manifest does not bind the training spec")
+    code_sha256 = sha256_canonical_json(dict(code))
+    _validate_formal_validation_bank(scenario_bank, contract)
+    actual_opponents = _formal_validation_opponent_contracts(
+        opponent_specs,
+        device_name=device_name,
+    )
+    if actual_opponents != contract.opponents:
+        raise ValueError("formal validation opponent factories changed")
+    if getattr(formal_spec, "seed_roll_payload_sha256", None) is not None:
+        checkpoint_sha256 = validate_formal_ppo_checkpoint_binding(
+            checkpoint_path,
+            formal_spec,
+            expected_update=update,
+        )
+    else:
+        checkpoint_sha256 = sha256_file(checkpoint_path)
+        checkpoint_payload = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if (
+            not isinstance(checkpoint_payload, Mapping)
+            or checkpoint_payload.get("update") != update
+            or checkpoint_payload.get("formal_protocol") != formal_spec.as_dict()
+        ):
+            raise ValueError(
+                "formal validation checkpoint metadata does not match its update/spec"
+            )
+    validation_model = load_ppo_checkpoint(
+        checkpoint_path,
+        device_name=device_name,
+    )
+    candidate = build_policy_candidate(
+        validation_model,
+        name=f"ppo-validation-update-{update}",
+        snapshot=str(checkpoint_path),
+        device_name=device_name,
+    )
+    from .paired_evaluation import (  # noqa: PLC0415 - avoid import cycle
+        EvaluationPolicy,
+        PairedEvaluationSpec,
+        snapshotless_policy_sha256,
+    )
+
+    candidate_policy = EvaluationPolicy(
+        policy_id=f"{formal_spec.treatment_id}-update-{update}",
+        policy_sha256=checkpoint_sha256,
+        candidate=candidate,
+        role="treatment",
+        treatment_id=formal_spec.treatment_id,
+        replicate_id=formal_spec.replicate_id,
+        model_seed=formal_spec.model_init_lineage().seed63,
+        checkpoint_sha256=checkpoint_sha256,
+    )
+    opponent_candidates = tuple(
+        opponent_spec.build(device_name=device_name).candidate
+        for opponent_spec in opponent_specs
+    )
+    opponent_policies = tuple(
+        EvaluationPolicy(
+            policy_id=opponent_spec.entry_name,
+            policy_sha256=snapshotless_policy_sha256(opponent),
+            candidate=opponent,
+            role="opponent",
+        )
+        for opponent_spec, opponent in zip(
+            opponent_specs,
+            opponent_candidates,
+            strict=True,
+        )
+    )
+    evaluation_spec = PairedEvaluationSpec(
+        experiment_id=formal_spec.experiment_id,
+        phase=f"{formal_spec.phase}-validation-A",
+        batch_id=contract.batch_id,
+        code_sha256=code_sha256,
+        manifest_declaration_sha256=declaration_sha256,
+        candidates=(candidate_policy,),
+        opponents=opponent_policies,
+        scenario_bank=scenario_bank,
+        episodes_filename=f"validation-update-{update}.jsonl",
+        seats=contract.seats,
+    )
+    return evaluation_spec, checkpoint_sha256
+
+
+def _formal_validation_payload(  # noqa: PLR0913 - evidence axes explicit
+    evaluation_spec: object,
+    reports: Mapping[str, Mapping[str, Any]],
+    checkpoint_path: Path,
+    checkpoint_sha256: str,
+    formal_spec: FormalTrainingSpec,
+    *,
+    update: int,
+) -> dict[str, Any]:
+    """Audit records and derive the complete formal validation evidence."""
+    from .paired_evaluation import (  # noqa: PLC0415 - avoid import cycle
+        PairedEvaluationSpec,
+        audit_episode_batch,
+    )
+
+    if not isinstance(evaluation_spec, PairedEvaluationSpec):
+        raise TypeError("formal validation evaluation spec is invalid")
+    contract = formal_spec.validation
+    if contract is None:  # pragma: no cover - spec builder already enforces this
+        raise ValueError("paired-training-v2 is missing formal validation")
+    all_records = [
+        record
+        for opponent in contract.opponents
+        for record in reports[opponent.opponent_id]["records"]
+    ]
+    batch_audit = audit_episode_batch(evaluation_spec, all_records)
+    if batch_audit["status"] != "valid":
+        raise ValueError("formal validation batch contains failed or missing games")
+    score = _validation_score(dict(reports))
+    if sha256_file(checkpoint_path) != checkpoint_sha256:
+        raise RuntimeError("formal validation checkpoint changed during evaluation")
+    payload: dict[str, Any] = {
+        "protocol": contract.protocol,
+        "update": update,
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": checkpoint_sha256,
+        "scenario_bank_sha256": contract.scenario_bank_sha256,
+        "scenario_ids": list(contract.scenario_ids),
+        "seats": list(contract.seats),
+        "opponents": [opponent.as_dict() for opponent in contract.opponents],
+        "selection_rule": contract.selection_rule,
+        "rng_batch_id": contract.batch_id,
+        "paired_schedule_sha256": evaluation_spec.schedule_sha256,
+        "paired_batch_audit": batch_audit,
+        "total_integer_wins": score[0],
+        "scheduled_games": -score[1],
+        "reports": dict(reports),
+        "status": "valid",
+    }
+    payload["evidence_sha256"] = sha256_canonical_json(payload)
+    return payload
+
+
+def validate_formal_validation_evidence(  # noqa: C901,PLR0913 - audit axes explicit
+    evidence: Mapping[str, Any],
+    checkpoint_path: Path,
+    scenario_bank: ScenarioBank,
+    opponent_specs: Sequence[FormalOpponentSpec],
+    formal_spec: FormalTrainingSpec,
+    source_manifest: Path,
+    *,
+    update: int,
+    device_name: DeviceName,
+) -> dict[str, Any]:
+    """Rebuild and replay-audit a persisted 60-game validation artifact.
+
+    The evidence hash is only a corruption checksum.  Trust instead comes from
+    reconstructing the checkpoint-bound schedule, independently rerunning each
+    policy decision under its named RNG lineage, replaying every completed
+    action trace from ScenarioV1, and recomputing all selector fields.
+    """
+    evaluation_spec, checkpoint_sha256 = _build_formal_validation_evaluation_spec(
+        checkpoint_path,
+        scenario_bank,
+        opponent_specs,
+        formal_spec,
+        source_manifest,
+        update=update,
+        device_name=device_name,
+    )
+    from .paired_evaluation import (  # noqa: PLC0415 - avoid import cycle
+        PairedEvaluationSpec,
+        play_paired_evaluation_game,
+    )
+
+    if not isinstance(evaluation_spec, PairedEvaluationSpec):
+        raise TypeError("formal validation evaluation spec is invalid")
+    contract = formal_spec.validation
+    assert contract is not None
+    if set(evidence) != {
+        "protocol",
+        "update",
+        "checkpoint_path",
+        "checkpoint_sha256",
+        "scenario_bank_sha256",
+        "scenario_ids",
+        "seats",
+        "opponents",
+        "selection_rule",
+        "rng_batch_id",
+        "paired_schedule_sha256",
+        "paired_batch_audit",
+        "total_integer_wins",
+        "scheduled_games",
+        "reports",
+        "status",
+        "evidence_sha256",
+    }:
+        raise ValueError("formal validation evidence keys are invalid")
+    reports_raw = evidence.get("reports")
+    expected_opponent_ids = tuple(
+        opponent.opponent_id for opponent in contract.opponents
+    )
+    if not isinstance(reports_raw, Mapping) or set(reports_raw) != set(
+        expected_opponent_ids
+    ):
+        raise ValueError("formal validation reports do not match fixed opponents")
+    rebuilt_reports: dict[str, dict[str, Any]] = {}
+    expected_games_per_opponent = len(contract.scenario_ids) * len(contract.seats)
+    scenarios = {
+        scenario.scenario_id: scenario for scenario in scenario_bank.scenarios
+    }
+    opponents = {
+        opponent.policy_id: opponent for opponent in evaluation_spec.opponents
+    }
+    candidate = evaluation_spec.candidates[0]
+    timing_fields = {"candidate_latency", "opponent_latency", "elapsed_seconds"}
+    for opponent_id in expected_opponent_ids:
+        report_raw = reports_raw[opponent_id]
+        if not isinstance(report_raw, Mapping) or set(report_raw) != {
+            "games",
+            "completed_games",
+            "failed_games",
+            "candidate_illegal_actions",
+            "opponent_illegal_actions",
+            "wins",
+            "draws",
+            "losses",
+            "records",
+        }:
+            raise ValueError("formal validation report keys are invalid")
+        records = report_raw.get("records")
+        if not isinstance(records, list) or len(records) != expected_games_per_opponent:
+            raise ValueError("formal validation report has the wrong episode count")
+        if any(not isinstance(record, Mapping) for record in records):
+            raise ValueError("formal validation episode record is invalid")
+        record_mappings = cast(list[Mapping[str, Any]], records)
+        rerun_index = 0
+        for scenario_id in contract.scenario_ids:
+            for seat in contract.seats:
+                rerun = play_paired_evaluation_game(
+                    evaluation_spec,
+                    candidate,
+                    opponents[opponent_id],
+                    scenarios[scenario_id],
+                    seat,
+                )
+                persisted = record_mappings[rerun_index]
+                rerun_index += 1
+                persisted_decisions = {
+                    key: value
+                    for key, value in persisted.items()
+                    if key not in timing_fields
+                }
+                rerun_decisions = {
+                    key: value for key, value in rerun.items() if key not in timing_fields
+                }
+                if persisted_decisions != rerun_decisions:
+                    raise ValueError(
+                        "formal validation episode disagrees with independent policy rerun"
+                    )
+        completed = [
+            record
+            for record in record_mappings
+            if record.get("status") == "completed"
+        ]
+        rebuilt = {
+            "games": len(record_mappings),
+            "completed_games": len(completed),
+            "failed_games": len(record_mappings) - len(completed),
+            "candidate_illegal_actions": sum(
+                cast(int, record.get("candidate_illegal_actions", -1))
+                for record in record_mappings
+            ),
+            "opponent_illegal_actions": sum(
+                cast(int, record.get("opponent_illegal_actions", -1))
+                for record in record_mappings
+            ),
+            "wins": sum(record.get("outcome") == 1 for record in completed),
+            "draws": sum(record.get("outcome") == 0 for record in completed),
+            "losses": sum(record.get("outcome") == -1 for record in completed),
+            "records": record_mappings,
+        }
+        if dict(report_raw) != rebuilt:
+            raise ValueError("formal validation report aggregates were relabelled")
+        rebuilt_reports[opponent_id] = rebuilt
+    rebuilt_payload = _formal_validation_payload(
+        evaluation_spec,
+        rebuilt_reports,
+        checkpoint_path,
+        checkpoint_sha256,
+        formal_spec,
+        update=update,
+    )
+    if dict(evidence) != rebuilt_payload:
+        raise ValueError("formal validation evidence disagrees with replayed records")
+    return rebuilt_payload
+
+
+def evaluate_formal_validation_checkpoint(  # noqa: PLR0913 - contract axes explicit
+    checkpoint_path: Path,
+    scenario_bank: ScenarioBank,
+    opponent_specs: Sequence[FormalOpponentSpec],
+    formal_spec: FormalTrainingSpec,
+    source_manifest: Path,
+    *,
+    update: int,
+    device_name: DeviceName,
+) -> dict[str, Any]:
+    """Evaluate one saved PPO checkpoint on the frozen ScenarioV1 matrix.
+
+    There is intentionally no integer-seed parameter.  Every scheduled game
+    is reconstructed from the contract-bound snapshot and both seats are
+    enumerated.  Any failed/incomplete game or illegal action invalidates the
+    whole checkpoint evaluation.
+    """
+    evaluation_spec_raw, checkpoint_sha256 = (
+        _build_formal_validation_evaluation_spec(
+            checkpoint_path,
+            scenario_bank,
+            opponent_specs,
+            formal_spec,
+            source_manifest,
+            update=update,
+            device_name=device_name,
+        )
+    )
+    from .paired_evaluation import (  # noqa: PLC0415
+        PairedEvaluationSpec,
+        play_paired_evaluation_game,
+    )
+
+    if not isinstance(evaluation_spec_raw, PairedEvaluationSpec):
+        raise TypeError("formal validation evaluation spec is invalid")
+    evaluation_spec = evaluation_spec_raw
+    contract = formal_spec.validation
+    assert contract is not None
+    candidate_policy = evaluation_spec.candidates[0]
+    opponent_policies = evaluation_spec.opponents
+    scenarios = {
+        scenario.scenario_id: scenario for scenario in scenario_bank.scenarios
+    }
+    reports: dict[str, Any] = {}
+    for opponent in opponent_policies:
+        records: list[dict[str, object]] = []
+        for scenario_id in contract.scenario_ids:
+            scenario = scenarios[scenario_id]
+            for seat in contract.seats:
+                record = play_paired_evaluation_game(
+                    evaluation_spec,
+                    candidate_policy,
+                    opponent,
+                    scenario,
+                    seat,
+                )
+                records.append(record)
+        completed = [record for record in records if record["status"] == "completed"]
+        reports[opponent.policy_id] = {
+            "games": len(records),
+            "completed_games": len(completed),
+            "failed_games": len(records) - len(completed),
+            "candidate_illegal_actions": sum(
+                cast(int, record["candidate_illegal_actions"])
+                for record in records
+            ),
+            "opponent_illegal_actions": sum(
+                cast(int, record["opponent_illegal_actions"])
+                for record in records
+            ),
+            "wins": sum(record["outcome"] == 1 for record in completed),
+            "draws": sum(record["outcome"] == 0 for record in completed),
+            "losses": sum(record["outcome"] == -1 for record in completed),
+            "records": records,
+        }
+    return _formal_validation_payload(
+        evaluation_spec,
+        reports,
+        checkpoint_path,
+        checkpoint_sha256,
+        formal_spec,
+        update=update,
+    )
+
+
+def _copy_checkpoint_exact(source: Path, destination: Path) -> None:
+    """Atomically copy a selected checkpoint so ``best`` has identical bytes."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        shutil.copyfile(source, temporary)
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        temporary.replace(destination)
+        _fsync_directory(destination.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def select_formal_validation_record(
+    records: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Select maximum integer wins, breaking every tie by earliest update."""
+    if not records:
+        raise ValueError("formal checkpoint selection needs validation records")
+    updates: list[int] = []
+    for record in records:
+        update = record.get("update")
+        wins = record.get("total_integer_wins")
+        if type(update) is not int or update < 0:
+            raise ValueError("formal validation record update is invalid")
+        if type(wins) is not int or wins < 0:
+            raise ValueError("formal validation record integer wins are invalid")
+        updates.append(update)
+    if len(updates) != len(set(updates)):
+        raise ValueError("formal validation records repeat an update")
+    return min(
+        records,
+        key=lambda record: (
+            -cast(int, record["total_integer_wins"]),
+            cast(int, record["update"]),
+        ),
+    )
 
 
 def _pool_metadata(
@@ -2186,6 +2991,8 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     formal_scenario_bank: ScenarioBank | None = None,
     formal_seed_roll: SeedRollArtifact | None = None,
     formal_opponent_specs: Sequence[FormalOpponentSpec] | None = None,
+    formal_validation_scenario_bank: ScenarioBank | None = None,
+    formal_validation_opponent_specs: Sequence[FormalOpponentSpec] | None = None,
 ) -> dict[str, Any]:
     """Train PPO from BC and select only by fixed validation opponents.
 
@@ -2196,6 +3003,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     formal_rows = None
     formal_runtime: dict[str, Any] | None = None
     formal_protocol: dict[str, Any] | None = None
+    checkpoint_treatment_contract: FormalTreatmentContract | None = None
     formal_scenarios: dict[str, ScenarioV1] = {}
     if formal_spec is None:
         if not training_seeds or len(set(training_seeds)) != len(training_seeds):
@@ -2208,6 +3016,11 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             raise ValueError("legacy PPO training cannot receive a seed roll")
         if formal_opponent_specs is not None:
             raise ValueError("legacy PPO training cannot receive formal opponent specs")
+        if (
+            formal_validation_scenario_bank is not None
+            or formal_validation_opponent_specs is not None
+        ):
+            raise ValueError("legacy PPO training cannot receive formal validation")
     else:
         if training_seeds:
             raise ValueError("formal PPO training forbids legacy training_seeds")
@@ -2216,6 +3029,10 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         if validation_seeds:
             raise ValueError(
                 "formal PPO validation requires ScenarioV1; integer seeds are forbidden"
+            )
+        if validation_opponents:
+            raise ValueError(
+                "formal PPO validation opponents must use immutable formal specs"
             )
         formal_rows = formal_spec.selected_rows(
             updates=config.updates,
@@ -2286,6 +3103,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             if source_manifest is None:
                 raise RuntimeError("paired-training-v2 requires a source manifest")
             contract = formal_spec.treatment_contract(formal_spec.treatment_id)
+            checkpoint_treatment_contract = contract
             if config.seed != 0:
                 raise ValueError(
                     "paired-training-v2 requires config.seed=0 because its "
@@ -2302,6 +3120,35 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             if formal_opponent_specs is None or not formal_opponent_specs:
                 raise ValueError(
                     "paired-training-v2 requires immutable formal opponent specs"
+                )
+            if (
+                formal_spec.validation is None
+                or formal_validation_scenario_bank is None
+                or formal_validation_opponent_specs is None
+                or not formal_validation_opponent_specs
+            ):
+                raise ValueError(
+                    "paired-training-v2 requires its bound ScenarioV1 validation inputs"
+                )
+            _validate_formal_validation_bank(
+                formal_validation_scenario_bank,
+                formal_spec.validation,
+            )
+            if (
+                _formal_validation_opponent_contracts(
+                    formal_validation_opponent_specs,
+                    device_name=config.device_name,
+                )
+                != formal_spec.validation.opponents
+            ):
+                raise ValueError(
+                    "formal validation opponent factories do not match their contract"
+                )
+            if tuple(range(0, config.updates + 1, config.eval_every)) != (
+                formal_spec.validation.eval_updates
+            ):
+                raise ValueError(
+                    "formal PPO config does not match the validation update schedule"
                 )
             if opponent_pool:
                 raise ValueError(
@@ -2323,6 +3170,11 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             raise ValueError(
                 "paired-training-v1 cannot receive v2 formal opponent specs"
             )
+        elif (
+            formal_validation_scenario_bank is not None
+            or formal_validation_opponent_specs is not None
+        ):
+            raise ValueError("paired-training-v1 cannot receive formal validation")
         formal_spec.require_worker_runtime()
         formal_runtime = configure_formal_torch_determinism(
             config.device_name
@@ -2393,8 +3245,13 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     best_score: tuple[int, int] | None = None
     best_update: int | None = 0
     best_path = output_dir / "best.pth"
+    selection_evidence_path = output_dir / "checkpoint-selection.json"
+    formal_validation_records: list[dict[str, Any]] = []
     run_started = time.perf_counter()
     validation_enabled = bool(validation_seeds and validation_opponents)
+    formal_validation_enabled = (
+        formal_spec is not None and formal_spec.seed_roll_payload_sha256 is not None
+    )
     formal_row_by_coordinate = (
         {(row.update, row.game_index): row for row in formal_rows}
         if formal_rows is not None
@@ -2436,12 +3293,63 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             "validation_seeds": [int(seed) for seed in validation_seeds]
             if validation_seeds
             else None,
+            "formal_checkpoint_selection": (
+                {
+                    "path": str(selection_evidence_path),
+                    "sha256": (
+                        sha256_file(selection_evidence_path)
+                        if selection_evidence_path.is_file()
+                        else None
+                    ),
+                }
+                if formal_validation_enabled
+                else None
+            ),
             "logs": logs,
             "elapsed_seconds": time.perf_counter() - run_started,
         }
         if error is not None:
             payload["error"] = error
         return payload
+
+    def write_selection_evidence(status: str) -> None:
+        """Persist a complete, hash-addressed proof of the current selector."""
+        if not formal_validation_enabled:
+            return
+        assert formal_spec is not None
+        assert formal_spec.validation is not None
+        selected = (
+            select_formal_validation_record(formal_validation_records)
+            if formal_validation_records
+            else None
+        )
+        if selected is not None and selected["update"] != best_update:
+            raise RuntimeError("formal checkpoint selector state is inconsistent")
+        best_sha256 = sha256_file(best_path) if best_path.is_file() else None
+        if (
+            selected is not None
+            and best_sha256 != selected["checkpoint_sha256"]
+        ):
+            raise RuntimeError("best checkpoint bytes do not match the selected update")
+        payload: dict[str, Any] = {
+            "protocol": "formal-checkpoint-selection-v1",
+            "status": status,
+            "experiment_id": formal_spec.experiment_id,
+            "phase": formal_spec.phase,
+            "replicate_id": formal_spec.replicate_id,
+            "treatment_id": formal_spec.treatment_id,
+            "validation_contract": formal_spec.validation.as_dict(),
+            "selection_rule": FORMAL_VALIDATION_SELECTION_RULE,
+            "evaluations": formal_validation_records,
+            "selected_update": best_update,
+            "selected_checkpoint_sha256": (
+                selected["checkpoint_sha256"] if selected is not None else None
+            ),
+            "best_path": str(best_path),
+            "best_sha256": best_sha256,
+        }
+        payload["selection_evidence_sha256"] = sha256_canonical_json(payload)
+        _write_json(selection_evidence_path, payload)
 
     def write_progress(
         status: str,
@@ -2507,17 +3415,59 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         opponent_pool=opponent_pool,
         metrics=initial_record,
         formal_protocol=formal_protocol,
+        formal_treatment_contract=checkpoint_treatment_contract,
     )
-    save_ppo_checkpoint(
-        model,
-        best_path,
-        update=0,
-        config=config,
-        source_bc=str(initial_bc),
-        opponent_pool=opponent_pool,
-        metrics=initial_record,
-        formal_protocol=formal_protocol,
-    )
+    if formal_validation_enabled:
+        assert formal_spec is not None
+        assert formal_spec.validation is not None
+        assert formal_validation_scenario_bank is not None
+        assert formal_validation_opponent_specs is not None
+        try:
+            initial_validation = evaluate_formal_validation_checkpoint(
+                initial_path,
+                formal_validation_scenario_bank,
+                formal_validation_opponent_specs,
+                formal_spec,
+                Path(cast(str, source_manifest)),
+                update=0,
+                device_name=config.device_name,
+            )
+        except Exception as exc:
+            message = f"formal validation update 0 failed: {type(exc).__name__}: {exc}"
+            initial_record["status"] = "validation-failed"
+            initial_record["error"] = message
+            write_progress("failed", 0, error=message)
+            raise RuntimeError(message) from exc
+        initial_record["validation"] = initial_validation
+        best_score = (
+            int(initial_validation["total_integer_wins"]),
+            -int(initial_validation["scheduled_games"]),
+        )
+        formal_validation_records.append(
+            {
+                "update": 0,
+                "checkpoint_path": str(initial_path),
+                "checkpoint_sha256": initial_validation["checkpoint_sha256"],
+                "validation_evidence_sha256": initial_validation["evidence_sha256"],
+                "total_integer_wins": initial_validation["total_integer_wins"],
+                "scheduled_games": initial_validation["scheduled_games"],
+            }
+        )
+        _write_json(output_dir / "validation-update-0.json", initial_validation)
+        _copy_checkpoint_exact(initial_path, best_path)
+        write_selection_evidence("running")
+    else:
+        save_ppo_checkpoint(
+            model,
+            best_path,
+            update=0,
+            config=config,
+            source_bc=str(initial_bc),
+            opponent_pool=opponent_pool,
+            metrics=initial_record,
+            formal_protocol=formal_protocol,
+            formal_treatment_contract=checkpoint_treatment_contract,
+        )
     write_progress("running", 0, update_seconds=initial_record["elapsed_seconds"])
 
     for update in range(1, config.updates + 1):
@@ -2732,24 +3682,82 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             opponent_pool=entries,
             metrics=update_record,
             formal_protocol=formal_protocol,
+            formal_treatment_contract=checkpoint_treatment_contract,
         )
+        if formal_validation_enabled:
+            assert formal_spec is not None
+            assert formal_spec.validation is not None
+            assert formal_validation_scenario_bank is not None
+            assert formal_validation_opponent_specs is not None
+            if update in formal_spec.validation.eval_updates:
+                try:
+                    validation = evaluate_formal_validation_checkpoint(
+                        update_path,
+                        formal_validation_scenario_bank,
+                        formal_validation_opponent_specs,
+                        formal_spec,
+                        Path(cast(str, source_manifest)),
+                        update=update,
+                        device_name=config.device_name,
+                    )
+                except Exception as exc:
+                    message = (
+                        f"formal validation update {update} failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    update_record["status"] = "validation-failed"
+                    update_record["error"] = message
+                    write_progress(
+                        "failed",
+                        update,
+                        update_seconds=update_record["elapsed_seconds"],
+                        error=message,
+                    )
+                    raise RuntimeError(message) from exc
+                update_record["validation"] = validation
+                _write_json(
+                    output_dir / f"validation-update-{update}.json",
+                    validation,
+                )
+                formal_validation_records.append(
+                    {
+                        "update": update,
+                        "checkpoint_path": str(update_path),
+                        "checkpoint_sha256": validation["checkpoint_sha256"],
+                        "validation_evidence_sha256": validation["evidence_sha256"],
+                        "total_integer_wins": validation["total_integer_wins"],
+                        "scheduled_games": validation["scheduled_games"],
+                    }
+                )
         if validation is not None:
-            score = _validation_score(validation)
+            score = (
+                (
+                    int(validation["total_integer_wins"]),
+                    -int(validation["scheduled_games"]),
+                )
+                if formal_validation_enabled
+                else _validation_score(validation)
+            )
             # Validation games are fixed by the manifest.  Compare exact wins
             # only, keeping the earliest checkpoint on a tie.
             if best_score is None or score[0] > best_score[0]:
                 best_score = score
                 best_update = update
-                save_ppo_checkpoint(
-                    model,
-                    best_path,
-                    update=update,
-                    config=config,
-                    source_bc=str(initial_bc),
-                    opponent_pool=entries,
-                    metrics=update_record,
-                    formal_protocol=formal_protocol,
-                )
+                if formal_validation_enabled:
+                    _copy_checkpoint_exact(update_path, best_path)
+                else:
+                    save_ppo_checkpoint(
+                        model,
+                        best_path,
+                        update=update,
+                        config=config,
+                        source_bc=str(initial_bc),
+                        opponent_pool=entries,
+                        metrics=update_record,
+                        formal_protocol=formal_protocol,
+                        formal_treatment_contract=checkpoint_treatment_contract,
+                    )
+            write_selection_evidence("running")
         history.append(
             OpponentPoolEntry(
                 name=f"history-update-{update}",
@@ -2781,7 +3789,19 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         opponent_pool=last_effective_entries,
         metrics={"logs": logs},
         formal_protocol=formal_protocol,
+        formal_treatment_contract=checkpoint_treatment_contract,
     )
+    if formal_validation_enabled:
+        assert formal_spec is not None
+        assert formal_spec.validation is not None
+        completed_validation_updates = tuple(
+            cast(int, record["update"]) for record in formal_validation_records
+        )
+        if completed_validation_updates != formal_spec.validation.eval_updates:
+            message = "formal validation did not complete every declared checkpoint"
+            write_progress("failed", config.updates, error=message)
+            raise RuntimeError(message)
+    write_selection_evidence("completed")
     result = result_payload("completed")
     _write_json(
         status_path,
@@ -2805,6 +3825,7 @@ def _run_formal_ppo_training_job(job: FormalPPOTrainingJob) -> dict[str, Any]:
     if job.formal_spec.seed_roll_payload_sha256 is not None:
         _require_formal_output_reservation(job)
         contract = job.formal_spec.treatment_contract(job.formal_spec.treatment_id)
+        assert job.formal_spec.validation is not None
         if sha256_file(job.initial_bc) != contract.initial_checkpoint_sha256:
             raise ValueError("formal PPO initial checkpoint changed before worker")
         if formal_ppo_config_sha256(job.config) != contract.trainer_config_sha256:
@@ -2814,6 +3835,16 @@ def _run_formal_ppo_training_job(job: FormalPPOTrainingJob) -> dict[str, Any]:
             != contract.opponent_pool_sha256
         ):
             raise ValueError("formal PPO opponent pool changed before worker execution")
+        if (
+            _formal_validation_opponent_contracts(
+                job.validation_opponents,
+                device_name=job.config.device_name,
+            )
+            != job.formal_spec.validation.opponents
+        ):
+            raise ValueError(
+                "formal PPO validation opponents changed before worker execution"
+            )
     is_v2 = job.formal_spec.seed_roll_payload_sha256 is not None
     opponent_pool = (
         []
@@ -2831,6 +3862,11 @@ def _run_formal_ppo_training_job(job: FormalPPOTrainingJob) -> dict[str, Any]:
         job.scenario_bank_path,
         {row.scenario_id for row in selected_rows},
     )
+    validation_bank = (
+        load_scenario_bank(job.validation_scenario_bank_path)
+        if job.validation_scenario_bank_path is not None
+        else None
+    )
     seed_roll = (
         load_seed_roll_artifact(job.seed_roll_path)
         if job.seed_roll_path is not None
@@ -2847,6 +3883,10 @@ def _run_formal_ppo_training_job(job: FormalPPOTrainingJob) -> dict[str, Any]:
         formal_scenario_bank=scenario_bank,
         formal_seed_roll=seed_roll,
         formal_opponent_specs=job.opponent_pool if is_v2 else None,
+        formal_validation_scenario_bank=validation_bank,
+        formal_validation_opponent_specs=(
+            job.validation_opponents if is_v2 else None
+        ),
     )
 
 
@@ -2914,6 +3954,8 @@ def run_formal_ppo_training_jobs(  # noqa: C901,PLR0912 - complete matrix gate
         raise ValueError("formal PPO jobs do not share one manifest binding")
     if first_spec.seed_roll_payload_sha256 is not None:
         require_formal_spawn_context()
+        if first_spec.validation is None:
+            raise ValueError("paired-training-v2 is missing formal validation")
         roll_paths = {job.seed_roll_path for job in jobs}
         if None in roll_paths or len(roll_paths) != 1:
             raise ValueError("formal PPO jobs must share one seed-roll artifact")
@@ -2937,6 +3979,30 @@ def run_formal_ppo_training_jobs(  # noqa: C901,PLR0912 - complete matrix gate
             schedule=first_spec.schedule,
             expected_treatments=first_spec.expected_treatments,
         )
+        validation_paths = {
+            job.validation_scenario_bank_path.resolve()
+            for job in jobs
+            if job.validation_scenario_bank_path is not None
+        }
+        if len(validation_paths) != 1 or any(
+            job.validation_scenario_bank_path is None for job in jobs
+        ):
+            raise ValueError(
+                "paired-training-v2 jobs must share one physical validation-A bank"
+            )
+        validation_bank = load_scenario_bank(next(iter(validation_paths)))
+        _validate_formal_validation_bank(validation_bank, first_spec.validation)
+        for job in jobs:
+            if (
+                _formal_validation_opponent_contracts(
+                    job.validation_opponents,
+                    device_name=job.config.device_name,
+                )
+                != first_spec.validation.opponents
+            ):
+                raise ValueError(
+                    "formal PPO validation opponent factories changed before spawn"
+                )
         manifest_paths = {job.source_manifest.resolve() for job in jobs}
         if len(manifest_paths) != 1:
             raise ValueError("paired-training-v2 jobs must share one manifest file")

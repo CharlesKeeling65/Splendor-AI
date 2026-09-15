@@ -76,5 +76,25 @@ the completed pilot manifest and its evidence, not a caller-supplied hash.
 The production root was explicitly approved and drawn once for
 `task1-t14-crossed-pilot-20260915`; its compact public record is
 [`T1.4_PRODUCTION_SEED_ROLL.json`](T1.4_PRODUCTION_SEED_ROLL.json). No formal bank
-has been materialized, no GPU job has run, and no validation or sealed split has
-been read. Those downstream actions remain behind separate approval gates.
+was materialized as part of the root draw itself. After the later explicit
+implementation/training authorization, the non-sealed 96,000-row pilot
+`train-schedule` bank and the non-sealed 200-row validation-A and 100-row stress
+baseline banks were materialized and audited. No validation-B, sealed, or
+reserved-replicate bank has been read or created, and no GPU job has yet run.
+
+[`T1.4_PILOT_ORCHESTRATION.md`](T1.4_PILOT_ORCHESTRATION.md) documents the
+fail-closed P5000/tmux production entry for the approved six-job pilot. It pins
+the exact O/O_bridge recipes, 3×2 job matrix, five-member training pool,
+ScenarioV1 validation selector, P5000 runtime, resource watchdog, one-shot
+output reservations, checkpoint evidence, and lifecycle transitions. The
+baseline replay, final production manifest, and actual tmux launch remain
+separate recorded steps.
+
+## T1.4 episodic reward contract
+
+[`T1.4_REWARD_CONTRACT.md`](T1.4_REWARD_CONTRACT.md) separates the historical
+`O_bridge/terminal-biased-potential-v1` semantics from the explicit
+`O/safe-potential-v1` contract. The safe contract fixes the absorbing terminal
+potential at zero for normal, deadlock, round-limit, and truncation exits while
+leaving the `+10 / 0 / -10` terminal utility unchanged. Legacy constructors and
+CLI entries retain their old non-zero-terminal behavior.
