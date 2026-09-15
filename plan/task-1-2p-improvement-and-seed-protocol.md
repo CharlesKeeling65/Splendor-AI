@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
 > 复核版本：2026-09-15。
-> 状态：实施中；T1.0–T1.3、T1.4 seed-roll/单次生产 roll、safe episodic PBRS、正式 validation/选模与 tmux 编排门已完成；经后续明确授权已物化非 sealed pilot/基线 banks，下一步执行新协议基线，pilot 尚未启动。validation-B、sealed 与 reserve 仍受后续批准门约束。
+> 状态：实施中；T1.0–T1.3、T1.4 seed-roll/单次生产 roll、safe episodic PBRS、正式 validation/选模与 tmux 编排门已完成；经后续明确授权已物化 non-sealed pilot/基线 banks，并完成 1,800 局新协议冻结基线及方差分解；下一步启动 CUDA/P5000 crossed pilot。validation-B、sealed 与 reserve 仍受后续批准门约束。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -315,10 +315,15 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
   config、训练/validation 对手 source-config、ScenarioV1 bank、checkpoint model state 与逐局重放证据；
   `task1-pilot` 另以 P5000/sm61、三 worker、18h/32GiB/40GiB、父子 lease、进程组和 manifest
   生命周期 fail closed。经明确授权已物化并全量 source→ScenarioV1 复核 pilot 96,000-row
-  `train-schedule`，以及基线用 validation-A 200-row / stress 100-row 非 sealed banks；未读取
-  validation-B/sealed，未启用 reserve `(3,4)`。
-- [ ] 在新 IID/压力 bank 上复测冻结 `ppo-best`；明确这是新协议基线，不能直接与 C4-R2 的伪重复区间拼接。
-- [ ] 固定 checkpoint × scenario × seat × opponent，估计 deal、seat、opponent 与交互造成的评测方差。
+  `train-schedule`、checkpoint selection 用 validation-A first-10，以及基线用 validation-A
+  200-row / stress 100-row 非 sealed banks；未读取 validation-B/sealed，未启用 reserve `(3,4)`。
+- [x] 在新 IID/压力 bank 上复测冻结 `ppo-best`：validation-A 1,200 局为 740/3/457、
+  stress 600 局为 351/1/248，均 0 failure；这是新协议描述性基线，不能与 C4-R2 的伪重复区间
+  拼接。内容寻址报告与恢复审计见
+  [`T1.4_BASELINE_RESULTS.md`](../docs/task1/T1.4_BASELINE_RESULTS.md)。
+- [x] 固定 checkpoint × scenario × seat × opponent，按预注册 finite-population functional ANOVA
+  估计 deal、seat、opponent 与交互方差；validation-A/stress 中交互项分别占 78.3880%/79.2581%，
+  完整口径与不可识别边界见上述结果文档。model-seed 方差仍须由 crossed pilot 给出。
 - [ ] 在新 RNG 协议下精确复训现行 C2-R2 recipe 至少 3 replicates，命名 `O_bridge`。它保留当前非零
   terminal potential，只用于量化 runner/protocol 迁移，不作为后续“safe PBRS”控制，也不进入正式 shortlist。
 - [ ] 修正 terminal potential 后冻结主实验共同 reward contract：终局效用 `±10/0`、`gamma=0.99`、

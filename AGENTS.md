@@ -10,8 +10,8 @@
 > ScenarioV1/内容寻址 bank/sealed gate、配对评测/聚类统计/固定 N、一次性 CSPRNG-root
 > 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，非 sealed 96k pilot bank
 > 及 validation-A200/stress100 基线 banks 已物化审计，safe PBRS、正式 checkpoint selection 与
-> P5000/tmux 编排门已实现。下一步依序执行新协议基线/正式 pilot；validation-B、sealed 与 reserve
-> 仍受后续批准门约束。
+> P5000/tmux 编排门已实现；1,800 局新协议冻结基线及 fixed-model 方差分解已完成，10-row selector
+> bank 已审计。下一步启动正式 CUDA/P5000 pilot；validation-B、sealed 与 reserve 仍受后续批准门约束。
 > 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 

@@ -78,17 +78,21 @@ The production root was explicitly approved and drawn once for
 [`T1.4_PRODUCTION_SEED_ROLL.json`](T1.4_PRODUCTION_SEED_ROLL.json). No formal bank
 was materialized as part of the root draw itself. After the later explicit
 implementation/training authorization, the non-sealed 96,000-row pilot
-`train-schedule` bank and the non-sealed 200-row validation-A and 100-row stress
-baseline banks were materialized and audited. No validation-B, sealed, or
-reserved-replicate bank has been read or created, and no GPU job has yet run.
+`train-schedule` bank, the non-sealed 10-row checkpoint-selector bank, and the
+non-sealed 200-row validation-A and 100-row stress baseline banks were
+materialized and audited. The 1,800-game new-protocol frozen baseline is now
+complete; its W/D/L, fixed-model variance decomposition, hashes, and recovery
+record are in [`T1.4_BASELINE_RESULTS.md`](T1.4_BASELINE_RESULTS.md). No
+validation-B, sealed, or reserved-replicate bank has been read or created, and
+no GPU training job has yet run.
 
 [`T1.4_PILOT_ORCHESTRATION.md`](T1.4_PILOT_ORCHESTRATION.md) documents the
 fail-closed P5000/tmux production entry for the approved six-job pilot. It pins
 the exact O/O_bridge recipes, 3×2 job matrix, five-member training pool,
 ScenarioV1 validation selector, P5000 runtime, resource watchdog, one-shot
 output reservations, checkpoint evidence, and lifecycle transitions. The
-baseline replay, final production manifest, and actual tmux launch remain
-separate recorded steps.
+baseline replay is complete. The final production manifest and actual CUDA tmux
+launch remain separate recorded steps.
 
 ## T1.4 episodic reward contract
 

@@ -632,6 +632,10 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   由父子独立 watchdog/lease/process group 执行。声明、launch snapshot、输出 reservation、status/
   completion 和 manifest 终态均一次性绑定；启动/worker/资源/证据任一失败即终止同组进程并 block
   原 running manifest。
-- **当前边界**：实现与非 sealed bank 审计完成，冻结 `ppo-best` 元数据也已现场重算一致；新协议
-  baseline、10-row selector bank、最终 pilot manifest 和 GPU/tmux 训练尚未产生结果。独立对抗审计
-  与全仓质量门通过后才进入上述运行步骤。
+- **冻结基线已闭合**：validation-A 200 scenarios × 2 seats × 3 opponents 为 740/3/457，stress
+  100 × 2 × 3 为 351/1/248，合计 1,800 局、0 failure；内容寻址报告
+  `18979a2d...ffb9` 经 ScenarioV1+动作索引幂等重放，两个 manifest 均完成。finite-population
+  functional ANOVA 中交互项占 validation-A 78.3880%、stress 79.2581%；详见
+  `docs/task1/T1.4_BASELINE_RESULTS.md`，不得与历史 C4-R2 伪重复区间合并。
+- **当前边界**：non-sealed 10-row validation-A selector bank 已另行物化并 source replay 审计；最终
+  pilot manifest 与 GPU/tmux 训练尚未启动。validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
