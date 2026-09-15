@@ -642,5 +642,7 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   pilot 首次 launch declaration 通过 admission 后在握手前退出；由此新增一次性 early-stderr、status-v2
   exact schema 与 tmux-pane→supervisor→matrix PPID/PGID 的 30 秒握手。首个 hardened retry 的日志进一步
   定位到 `python -m` 入口把 runtime `__name__ == "__main__"` 错传给两级子进程；现已改用 canonical module
-  常量并加入口回归。两次 manifest 均 `blocked`，且均核验为无 CUDA process/output/update；后续尝试须用
-  新 manifest 与输出路径。GPU 训练仍未实际启动，validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
+  常量并加入口回归。第二个 retry 被越界的隔离测试进程物化为 CPU runtime provenance，host activation
+  在 tmux 前由 runtime 等值门拒绝。三个 manifest 均 `blocked`，且均核验为无 CUDA process/output/update；
+  后续尝试须用新 manifest 与输出路径，且 production prepare/activate/launch 仅可由 host 主流程执行。
+  GPU 训练仍未实际启动，validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
