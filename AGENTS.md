@@ -6,8 +6,10 @@
 > 浏览器层七件套含真实 DOM 实测回填 + play-web 部署 harness），**P4 经 ADR 裁决暂缓**，
 > **P5 已完成**（CI/Makefile/文档），**P6 已完成**（TCP JSONL 远程推理、DQN/前馈
 > imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
-> **T1.0–T1.3 已完成**（基线冻结、RNG 分流/配对 schedule、ScenarioV1/内容寻址 bank/
-> sealed gate、配对评测/聚类统计/固定 N 协议）；T1.4 起的 pilot 与训练仍受分阶段批准门约束。训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
+> **T1.0–T1.3 与 T1.4 seed-roll preflight 已完成**（基线冻结、RNG 分流/配对 schedule、
+> ScenarioV1/内容寻址 bank/sealed gate、配对评测/聚类统计/固定 N、一次性 CSPRNG-root
+> 有限总体抽样与 `paired-training-v2` 门）；生产 root、pilot 与训练仍受分阶段批准门约束。
+> 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
 ## 项目概述
@@ -81,7 +83,7 @@ play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进�
 
 `tests/` 已随阶段同步建立，全量离线（CI 不碰网络）：`.venv/bin/python -m pytest tests/`（或 `make test`）。
 
-测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）。
+测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）；Task-1 另由 `test_rng_protocol`/`test_scenario_bank`/`test_paired_evaluation`/`test_paired_statistics`/`test_seed_roll` 覆盖 RNG、bank、评测统计与一次性 seed-roll/正式训练门。
 CI（GitHub Actions）：ruff + mypy（新代码路径）+ pytest，Python 3.12/3.13 矩阵。
 lint 工具链只从 `.[dev]`（= `requirements/development.txt`）来，CI **不得**再 `uv pip install ruff` 覆盖 pin
 （无 pin 的 ruff 曾在无代码变更时因新增默认规则把整个仓库的 lint 门刷红）。
@@ -113,6 +115,8 @@ CJK 全角标点（`，（）；`）是本仓库的**内容而非笔误**（状�
 | `docs/ALGORITHM_SURVEY_20260912.md` | **策略算法调研**：启发式/minimax/DQN/PPO/GA 的数学本质、代码归因与 2/3/4 人局分析 |
 | `docs/SPLENDOR_LITERATURE_SURVEY_20260912.md` | **Splendor arXiv 文献调研**（Rinascimento 三部曲 + 确定性化 MCTS）与取长补短矩阵 |
 | `docs/IMPROVEMENT_ROADMAP_20260912.md` | **提升路径与分阶段实施计划**（阶段 A–F、G1–G5 验收、种子段与排期） |
+| `plan/task-1-2p-improvement-and-seed-protocol.md` | **Task-1 2p 科学提升主计划**（T1.0–T1.7、批准门、统计与 seed-roll） |
+| `docs/task1/` | **Task-1 已实现协议证据**（T1.0 基线、T1.1 RNG、T1.2 bank、T1.3 统计、T1.4 seed-roll preflight） |
 | `ALGORITHM_COMPARISON.md` | 算法对比结论（GA 最稳、PPO 需重训——DQN 要超越的目标） |
 
 关键裁决速记：牌库 **90 张**（40/30/20，"78"是发牌后剩余的误读）；四元组 `(tier, colour, points, cost)` 全库零重复；265 维观测天然与网页信息集对齐；支付方式是两侧唯一硬语义差距。

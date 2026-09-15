@@ -9,7 +9,8 @@ import math
 import os
 import shutil
 import subprocess
-from collections import defaultdict
+import tempfile
+from collections import Counter, defaultdict
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -29,7 +30,12 @@ from splendor.seed_registry import (
     validate_registry_disjointness,
 )
 
-from .protocol import canonical_json_bytes, sha256_canonical_json, sha256_file
+from .protocol import (
+    PairedTrainingRow,
+    canonical_json_bytes,
+    sha256_canonical_json,
+    sha256_file,
+)
 from .scenario import (
     ScenarioV1,
     ScenarioValidationError,
@@ -39,6 +45,18 @@ from .scenario import (
     scenario_state_set_sha256,
     validate_scenario,
     with_sampling_metadata,
+)
+from .seed_roll import (
+    RolledScenarioSelection,
+    SeedRollArtifact,
+    SeedRollError,
+    SeedRollSelectionDesign,
+    iter_seed_roll_scenarios,
+    parse_seed_roll_selection_design,
+    seed_roll_selection_design,
+    validate_rolled_scenario_selection,
+    validate_scenarios_against_seed_roll,
+    validate_seed_rolled_training_schedule,
 )
 
 BANK_SCHEMA_VERSION: Final = "splendor-scenario-bank/1"
@@ -77,7 +95,7 @@ class ScenarioBank:
     manifest_path: Path
     sealed: bool
     scenario_count: int
-    selection_design: StressSelectionDesign | None
+    selection_design: StressSelectionDesign | SeedRollSelectionDesign | None
 
 
 @dataclass(frozen=True)
@@ -537,21 +555,28 @@ def _bank_manifest_path(artifact_path: Path) -> Path:
     return artifact_path.with_name(f"{artifact_path.name}.manifest.json")
 
 
-def write_scenario_bank(  # noqa: C901,PLR0912 - selection/artifact gates
+def write_scenario_bank(  # noqa: C901,PLR0912,PLR0915 - selection/artifact gates
     output_dir: Path,
     logical_split: str,
-    scenarios: Sequence[ScenarioV1] | BalancedStressSelection,
+    scenarios: Sequence[ScenarioV1] | BalancedStressSelection | RolledScenarioSelection,
     *,
     compression: Compression = "zstd",
 ) -> dict[str, object]:
     """Write a never-overwritten bank and sidecar under content-derived names."""
     stress_selection: BalancedStressSelection | None
+    rolled_selection: RolledScenarioSelection | None
     scenario_rows: Sequence[ScenarioV1]
     if isinstance(scenarios, BalancedStressSelection):
         stress_selection = scenarios
+        rolled_selection = None
+        scenario_rows = scenarios.scenarios
+    elif isinstance(scenarios, RolledScenarioSelection):
+        stress_selection = None
+        rolled_selection = scenarios
         scenario_rows = scenarios.scenarios
     else:
         stress_selection = None
+        rolled_selection = None
         scenario_rows = scenarios
     if not scenario_rows:
         raise ScenarioBankError("cannot write an empty scenario bank")
@@ -575,8 +600,26 @@ def write_scenario_bank(  # noqa: C901,PLR0912 - selection/artifact gates
         _validate_stress_selection_rows(scenario_rows, stress_selection.design)
         selection_design = stress_selection.design.to_dict()
         selection_design_sha256 = stress_selection.design.sha256
+    elif selection_kind == "natural-deal-srswor":
+        if rolled_selection is None:
+            raise ScenarioBankError(
+                "natural-deal SRSWOR banks require their complete seed-roll selection design"
+            )
+        try:
+            validate_rolled_scenario_selection(
+                scenario_rows,
+                rolled_selection.design,
+            )
+        except SeedRollError as exc:
+            raise ScenarioBankError(
+                f"invalid natural-deal SRSWOR selection: {exc}"
+            ) from exc
+        selection_design = rolled_selection.design.to_dict()
+        selection_design_sha256 = rolled_selection.design.sha256
     elif stress_selection is not None:
         raise ScenarioBankError("stress selection rows have the wrong selection kind")
+    elif rolled_selection is not None:
+        raise ScenarioBankError("rolled selection rows have the wrong selection kind")
 
     raw_payload = _payload_bytes(scenario_rows)
     payload_sha256 = hashlib.sha256(raw_payload).hexdigest()
@@ -634,7 +677,170 @@ def write_scenario_bank(  # noqa: C901,PLR0912 - selection/artifact gates
     }
 
 
-def _read_bank_manifest(  # noqa: C901,PLR0912 - verify every immutable field
+def _publish_temporary_file(source: Path, destination: Path) -> None:
+    """Atomically publish same-filesystem bytes without overwriting a bank."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except FileExistsError as exc:
+        raise ScenarioBankError(
+            f"scenario bank artifact already exists: {destination}"
+        ) from exc
+    destination.chmod(0o444)
+    descriptor = os.open(destination.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _compress_zstd_file(source: Path, destination: Path) -> None:
+    executable = shutil.which("zstd")
+    if executable is None:
+        raise ScenarioBankError("writing .jsonl.zst banks requires the zstd executable")
+    with source.open("rb") as source_stream, destination.open("xb") as output_stream:
+        result = subprocess.run(
+            [executable, "--quiet", "--compress", "--stdout", "--threads=1", "-19"],
+            stdin=source_stream,
+            stdout=output_stream,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        output_stream.flush()
+        os.fsync(output_stream.fileno())
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ScenarioBankError(f"zstd compression failed: {message}")
+
+
+def write_seed_roll_scenario_bank(  # noqa: PLR0915 - streaming lifecycle is explicit
+    output_dir: Path,
+    artifact: SeedRollArtifact,
+    active_replicate_ids: Sequence[int],
+    *,
+    compression: Compression = "zstd",
+) -> dict[str, object]:
+    """Stream a root-derived training bank without retaining every ScenarioV1."""
+    if compression not in {"none", "zstd"}:
+        raise ScenarioBankError(f"unsupported bank compression {compression!r}")
+    destination_dir = Path(output_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        design = seed_roll_selection_design(artifact, active_replicate_ids)
+    except SeedRollError as exc:
+        raise ScenarioBankError(f"invalid seed-roll authority: {exc}") from exc
+    payload_digest = hashlib.sha256()
+    row_hashes: list[tuple[str, str]] = []
+    state_ids: list[str] = []
+    seen_state_ids: set[str] = set()
+    counts: Counter[str] = Counter()
+    previous_source_seed: int | None = None
+    raw_temporary: Path | None = None
+    artifact_temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=destination_dir,
+            prefix=".rolled-scenarios.",
+            suffix=".jsonl.tmp",
+            delete=False,
+        ) as stream:
+            raw_temporary = Path(stream.name)
+            for scenario in iter_seed_roll_scenarios(artifact, design):
+                validate_scenario(scenario)
+                if (
+                    previous_source_seed is not None
+                    and scenario.source_seed <= previous_source_seed
+                ):
+                    raise ScenarioBankError(
+                        "seed-roll scenario stream is not in canonical source order"
+                    )
+                previous_source_seed = scenario.source_seed
+                if scenario.scenario_id in seen_state_ids:
+                    raise ScenarioBankError("seed-roll scenario stream repeats a state")
+                assert scenario.selection_stratum is not None
+                counts[scenario.selection_stratum] += 1
+                line = canonical_json_bytes(scenario.to_dict()) + b"\n"
+                stream.write(line)
+                payload_digest.update(line)
+                row_hashes.append(
+                    (scenario.scenario_id, hashlib.sha256(line[:-1]).hexdigest())
+                )
+                state_ids.append(scenario.scenario_id)
+                seen_state_ids.add(scenario.scenario_id)
+            stream.flush()
+            os.fsync(stream.fileno())
+        expected_counts = {
+            f"replicate-{replicate_id}": design.games_per_replicate
+            for replicate_id in design.active_replicate_ids
+        }
+        if len(state_ids) != design.selected_count or dict(counts) != expected_counts:
+            raise ScenarioBankError(
+                "seed-roll scenario stream does not match its replicate design"
+            )
+        payload_sha256 = payload_digest.hexdigest()
+        if compression == "zstd":
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=destination_dir,
+                prefix=".rolled-scenarios.",
+                suffix=".jsonl.zst.tmp",
+            )
+            os.close(descriptor)
+            artifact_temporary = Path(temporary_name)
+            artifact_temporary.unlink()
+            _compress_zstd_file(raw_temporary, artifact_temporary)
+            suffix = ".jsonl.zst"
+        else:
+            artifact_temporary = raw_temporary
+            suffix = ".jsonl"
+        artifact_sha256 = sha256_file(artifact_temporary)
+        artifact_path = destination_dir / f"train-schedule-{payload_sha256}{suffix}"
+        manifest_path = _bank_manifest_path(artifact_path)
+        manifest: dict[str, object] = {
+            "schema_version": BANK_SCHEMA_VERSION,
+            "logical_split": "train-schedule",
+            "source_segment": TASK1_SCENARIO_SPLITS["train-schedule"].name,
+            "source_range": [
+                TASK1_SCENARIO_SPLITS["train-schedule"].start,
+                TASK1_SCENARIO_SPLITS["train-schedule"].end,
+            ],
+            "sealed": False,
+            "selection_kind": "natural-deal-srswor",
+            "scenario_count": len(state_ids),
+            "scenario_collection_sha256": sha256_canonical_json(sorted(row_hashes)),
+            "state_set_sha256": sha256_canonical_json(sorted(state_ids)),
+            "payload_sha256": payload_sha256,
+            "artifact_sha256": artifact_sha256,
+            "compression": compression,
+            "artifact": artifact_path.name,
+            "seed_registry_sha256": registry_sha256(),
+            "selection_design": design.to_dict(),
+            "selection_design_sha256": design.sha256,
+        }
+        _publish_temporary_file(artifact_temporary, artifact_path)
+        _write_exclusive(
+            manifest_path,
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n",
+        )
+        return {
+            **manifest,
+            "artifact_path": str(artifact_path),
+            "manifest_path": str(manifest_path),
+        }
+    finally:
+        for temporary in (raw_temporary, artifact_temporary):
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+
+def _read_bank_manifest(  # noqa: C901,PLR0912,PLR0915 - immutable field gate
     artifact_path: Path,
 ) -> dict[str, object]:
     manifest_path = _bank_manifest_path(artifact_path)
@@ -707,9 +913,26 @@ def _read_bank_manifest(  # noqa: C901,PLR0912 - verify every immutable field
     if type(selection_kind) is not str:
         raise ScenarioBankError("scenario bank selection_kind is invalid")
     if selection_kind == "stress-balanced":
-        design = _parse_stress_selection_design(raw.get("selection_design"))
-        if raw.get("selection_design_sha256") != design.sha256:
+        stress_design = _parse_stress_selection_design(raw.get("selection_design"))
+        if raw.get("selection_design_sha256") != stress_design.sha256:
             raise ScenarioBankError("stress selection-design SHA-256 mismatch")
+    elif selection_kind == "natural-deal-srswor":
+        try:
+            rolled_design = parse_seed_roll_selection_design(
+                raw.get("selection_design")
+            )
+        except SeedRollError as exc:
+            raise ScenarioBankError(
+                f"invalid natural-deal SRSWOR selection design: {exc}"
+            ) from exc
+        if raw.get("selection_design_sha256") != rolled_design.sha256:
+            raise ScenarioBankError(
+                "natural-deal SRSWOR selection-design SHA-256 mismatch"
+            )
+        if raw.get("scenario_count") != rolled_design.selected_count:
+            raise ScenarioBankError(
+                "natural-deal SRSWOR scenario count/design mismatch"
+            )
     elif (
         raw.get("selection_design") is not None
         or raw.get("selection_design_sha256") is not None
@@ -763,6 +986,20 @@ def _load_scenario_bank(  # noqa: C901,PLR0912,PLR0915 - every layer is verified
     expected_segment = _resolve_bank_split(logical_split)
     row_hashes: list[tuple[str, str]] = []
     seen_ids: set[str] = set()
+    rolled_design = (
+        parse_seed_roll_selection_design(manifest["selection_design"])
+        if manifest["selection_kind"] == "natural-deal-srswor"
+        else None
+    )
+    rolled_counts: Counter[str] = Counter()
+    rolled_strata = (
+        {
+            f"replicate-{replicate_id}"
+            for replicate_id in rolled_design.active_replicate_ids
+        }
+        if rolled_design is not None
+        else set()
+    )
     previous_source_seed: int | None = None
     row_count = 0
     with _open_payload_stream(path, manifest["compression"]) as stream:
@@ -800,6 +1037,18 @@ def _load_scenario_bank(  # noqa: C901,PLR0912,PLR0915 - every layer is verified
             seen_ids.add(scenario.scenario_id)
             if scenario.selection_kind != manifest["selection_kind"]:
                 raise ScenarioBankError("scenario bank selection-kind mismatch")
+            if rolled_design is not None:
+                if (
+                    scenario.selection_design_sha256 != rolled_design.sha256
+                    or scenario.inclusion_probability
+                    != rolled_design.inclusion_probability
+                    or scenario.selection_stratum not in rolled_strata
+                ):
+                    raise ScenarioBankError(
+                        "natural-deal SRSWOR scenario row does not match its design"
+                    )
+                assert scenario.selection_stratum is not None
+                rolled_counts[scenario.selection_stratum] += 1
             row_hashes.append(
                 (
                     scenario.scenario_id,
@@ -814,6 +1063,11 @@ def _load_scenario_bank(  # noqa: C901,PLR0912,PLR0915 - every layer is verified
         raise ScenarioBankError("scenario bank payload SHA-256 mismatch")
     if row_count != manifest["scenario_count"]:
         raise ScenarioBankError("scenario bank row count mismatch")
+    if rolled_design is not None and dict(rolled_counts) != dict.fromkeys(
+        rolled_strata,
+        rolled_design.games_per_replicate,
+    ):
+        raise ScenarioBankError("natural-deal SRSWOR bank replicate counts mismatch")
     if (
         sha256_canonical_json(sorted(row_hashes))
         != manifest["scenario_collection_sha256"]
@@ -827,11 +1081,14 @@ def _load_scenario_bank(  # noqa: C901,PLR0912,PLR0915 - every layer is verified
             raise ScenarioBankError(
                 f"scenario bank is missing requested states: {missing[:3]}"
             )
-    selection_design: StressSelectionDesign | None = None
+    selection_design: StressSelectionDesign | SeedRollSelectionDesign | None = None
     if manifest["selection_kind"] == "stress-balanced":
         design = _parse_stress_selection_design(manifest["selection_design"])
         _validate_stress_selection_rows(scenarios, design)
         selection_design = design
+    elif manifest["selection_kind"] == "natural-deal-srswor":
+        assert rolled_design is not None
+        selection_design = rolled_design
     return ScenarioBank(
         logical_split=logical_split,
         source_segment=str(manifest["source_segment"]),
@@ -863,6 +1120,59 @@ def load_scenario_bank_subset(
         allow_sealed=False,
         scenario_ids=scenario_ids,
     )
+
+
+def audit_seed_roll_scenario_bank(
+    artifact_path: Path,
+    seed_roll: SeedRollArtifact,
+    active_replicate_ids: Sequence[int],
+    *,
+    schedule: Sequence[PairedTrainingRow] | None = None,
+    expected_treatments: Sequence[str] = (),
+) -> dict[str, object]:
+    """Replay every rolled bank row against its registered source before training.
+
+    Formal training performs this complete parent-side audit before spawning any
+    optimizer.  Worker subset loading remains an additional per-job check; it is
+    not the first time an unused row is authenticated.
+    """
+    bank = load_scenario_bank(artifact_path)
+    if not isinstance(bank.selection_design, SeedRollSelectionDesign):
+        raise ScenarioBankError(
+            "formal seed-roll audit requires a natural-deal SRSWOR bank"
+        )
+    if schedule is None and expected_treatments:
+        raise ScenarioBankError(
+            "seed-roll bank audit received treatments without a schedule"
+        )
+    if schedule is not None and not expected_treatments:
+        raise ScenarioBankError("seed-roll schedule audit requires expected treatments")
+    try:
+        if schedule is None:
+            validate_scenarios_against_seed_roll(
+                seed_roll,
+                bank.scenarios,
+                active_replicate_ids,
+                selection_design=bank.selection_design,
+            )
+        else:
+            validate_seed_rolled_training_schedule(
+                seed_roll,
+                bank.scenarios,
+                schedule,
+                active_replicate_ids,
+                expected_treatments=expected_treatments,
+                selection_design=bank.selection_design,
+            )
+    except SeedRollError as exc:
+        raise ScenarioBankError(f"seed-roll bank replay failed: {exc}") from exc
+    return {
+        "payload_sha256": bank.payload_sha256,
+        "artifact_sha256": bank.artifact_sha256,
+        "state_set_sha256": bank.state_set_sha256,
+        "scenario_count": bank.scenario_count,
+        "selection_design_sha256": bank.selection_design.sha256,
+    }
 
 
 def freeze_candidate_set(
@@ -994,6 +1304,8 @@ def _read_ledger(  # noqa: C901,PLR0912,PLR0915 - strict event/state parser
             ) from exc
         if not isinstance(raw, dict):
             raise ScenarioBankError("consumption ledger event must be an object")
+        if line != canonical_json_bytes(raw).decode("utf-8") + "\n":
+            raise ScenarioBankError("consumption ledger event is not canonical JSON")
         if raw.get("schema_version") != CONSUMPTION_LEDGER_SCHEMA_VERSION:
             raise ScenarioBankError("consumption ledger schema mismatch")
         event_kind = raw.get("event")
@@ -1094,7 +1406,7 @@ def _append_ledger_event(
         }
         event["event_sha256"] = sha256_canonical_json(event)
         stream.seek(0, os.SEEK_END)
-        stream.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
+        stream.write(canonical_json_bytes(event).decode("utf-8") + "\n")
         stream.flush()
         os.fsync(stream.fileno())
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
@@ -1244,6 +1556,7 @@ __all__ = [
     "ScenarioBank",
     "ScenarioBankError",
     "StressSelectionDesign",
+    "audit_seed_roll_scenario_bank",
     "consume_sealed_scenario_bank",
     "freeze_candidate_set",
     "generate_iid_scenarios",
@@ -1255,4 +1568,5 @@ __all__ = [
     "validate_split_disjointness",
     "validate_task1_split_registry",
     "write_scenario_bank",
+    "write_seed_roll_scenario_bank",
 ]

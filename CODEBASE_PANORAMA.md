@@ -577,3 +577,31 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   replicate→scenario nested bootstrap；`d_deploy` 与 `d_method` 独立做 prospective power，固定 N
   只能继承 manifest 预绑定的 pilot artifact，不得以 final outcome 重估。实现经六轮独立对抗复审；
   本阶段未运行 pilot、未生成/读取正式 sealed bank、未启动训练。
+
+### 7.13 Task-1 T1.4 seed-roll preflight（2026-09-15）
+
+- **一次性随机化 authority**：新增 `policy_imitation/seed_roll.py`。对注册的
+  `task1_train_schedule=[1150000,1350000)` 有限总体，以一次性 256-bit OS-CSPRNG root
+  和 domain-separated HMAC-SHA256 产生无放回全排列，预留 5×32,000 个互斥 block；每个
+  replicate 独立 keyed seat rank 且精确 16,000/16,000，model-init lineage 同 root 派生。
+  reservation 先于抽 root、authority ledger hash-chain、content-addressed canonical artifact、
+  fsync/O_NOFOLLOW/real-path 校验共同阻断 reroll、伪造事件与 symlink retry。
+- **抽样口径**：这是 finite-population SRSWOR，不冒充严格 IID；单 replicate、pilot 三块、
+  五块合并的一阶纳入概率分别为 0.16/0.48/0.80，seat-specific 为 0.08/0.24/0.40。
+  `natural-deal-srswor` 只供训练，`PairedEvaluationSpec` 在构造阶段直接拒绝。
+- **Scenario 与 schedule 绑定**：新增流式 rolled-bank writer、完整 source→ScenarioV1
+  replay audit 和 root-order schedule gate。parent 在 spawn 前核对整库及全部 treatment；worker
+  对自己的 subset 再核对每个 `(update, game_index)` 的 scenario identity/seat，重排后即使重算
+  RNG lineage 也不能进入 optimizer。只有精确 `phase=T1.4`、5×32,000 profile 被正式入口接受。
+- **`paired-training-v2`**：manifest/runner 冻结每 treatment 的 BC checkpoint、完整 PPO/reward
+  config、opponent-pool snapshot，以及精确 replicate×treatment 输出矩阵；父进程一次性预留
+  输出目录，worker 重验，checkpoint/result 原子发布。T1.4 禁止回退到 v1，formal CUDA 将来
+  只能用 `.venv-p5000` 且不得 CPU fallback。
+- **分阶段治理**：pilot 只能使用 `(0,1,2)`，reserve 只能使用 `(3,4)`。reserve 另需不可覆盖的
+  `splendor-confirmatory-activation/1`，绑定 completed pilot manifest/declaration/lifecycle event、
+  pilot evidence 路径与内容 hash 及时间顺序，并由 manifest 与 runtime 双重复核。
+- **验收边界**：known-vector/小规模测试均标记 `ci-fixture`；三组独立只读审计覆盖统计设计、
+  authority、schedule relabel、manifest/runtime 与 activation 攻击。此阶段只交付 preflight；
+  **未生成生产 root 或 96k pilot bank，未运行 GPU/pilot，未读取 validation/sealed split**。
+  最终质量门：相关 110 passed、全仓 551 passed（3 条既有 warning）、parity 44 passed，
+  Ruff 全仓与 CI mypy 71 source files 通过。

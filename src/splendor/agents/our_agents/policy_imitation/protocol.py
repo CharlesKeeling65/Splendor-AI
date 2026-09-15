@@ -16,7 +16,7 @@ from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 import numpy as np
 import torch
@@ -27,7 +27,17 @@ _SEED63_MASK = (1 << 63) - 1
 _U53_DENOMINATOR = 1 << 53
 _UINT32_MAX = (1 << 32) - 1
 _SHA256_HEX_LENGTH = 64
+_ASCII_CONTROL_LIMIT = 32
 _FORMAL_WORKER_COUNT_ENV = "SPLENDOR_FORMAL_WORKER_COUNT"
+_FORMAL_GAME_STREAMS = frozenset(
+    {
+        "scenario_source",
+        "pool_draw",
+        "policy_action",
+        "opponent_init",
+        "opponent_action",
+    }
+)
 _JobT = TypeVar("_JobT")
 _ResultT = TypeVar("_ResultT")
 
@@ -46,6 +56,7 @@ class RngKey:
     stream_name: str
     experiment_id: str | None = None
     protocol_version: str = RNG_PROTOCOL_VERSION
+    randomization_root_sha256: str | None = None
     phase: str | None = None
     coupling_group: str | None = None
     replicate_id: int | None = None
@@ -78,6 +89,14 @@ class RngKey:
                 f"unsupported RNG protocol {self.protocol_version!r}; "
                 f"expected {RNG_PROTOCOL_VERSION!r}"
             )
+        if self.randomization_root_sha256 is not None and (
+            len(self.randomization_root_sha256) != _SHA256_HEX_LENGTH
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.randomization_root_sha256
+            )
+        ):
+            raise ValueError("RNG randomization_root_sha256 must be lowercase SHA-256")
         if self.treatment_id is not None and not self.coupling_group:
             raise ValueError(
                 "RNG keys with treatment lineage require an explicit coupling_group"
@@ -227,6 +246,7 @@ class FormalGameRng:
     seat: int
     update: int
     game_index: int
+    randomization_root_sha256: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -241,6 +261,16 @@ class FormalGameRng:
         for field_name in ("replicate_id", "seat", "update", "game_index"):
             if getattr(self, field_name) < 0:
                 raise ValueError(f"formal RNG {field_name} must be non-negative")
+        if self.randomization_root_sha256 is not None and (
+            len(self.randomization_root_sha256) != _SHA256_HEX_LENGTH
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.randomization_root_sha256
+            )
+        ):
+            raise ValueError(
+                "formal RNG randomization_root_sha256 must be lowercase SHA-256"
+            )
 
     def key(
         self,
@@ -252,6 +282,29 @@ class FormalGameRng:
         opponent_step: int | None = None,
     ) -> RngKey:
         """Build a treatment-labelled key in this game's coupling namespace."""
+        if self.randomization_root_sha256 is not None:
+            if stream_name not in _FORMAL_GAME_STREAMS:
+                raise ValueError(f"unsupported formal game RNG stream {stream_name!r}")
+            if epoch is not None:
+                raise ValueError("formal game RNG streams cannot declare an epoch")
+            if stream_name in {"scenario_source", "pool_draw"} and any(
+                value is not None for value in (opponent_id, focal_step, opponent_step)
+            ):
+                raise ValueError(
+                    f"formal {stream_name} stream has irrelevant event axes"
+                )
+            if stream_name == "policy_action" and (
+                focal_step is None
+                or opponent_id is not None
+                or opponent_step is not None
+            ):
+                raise ValueError("formal policy_action requires only focal_step")
+            if stream_name in {"opponent_init", "opponent_action"} and (
+                opponent_id is None or opponent_step is None or focal_step is not None
+            ):
+                raise ValueError(
+                    f"formal {stream_name} requires opponent_id and opponent_step"
+                )
         if stream_name == "scenario_source":
             # A scenario is a seat-independent immutable environment object.
             # Reusing its identity must never silently redeal because a runner
@@ -259,6 +312,7 @@ class FormalGameRng:
             return RngKey(
                 experiment_id=self.experiment_id,
                 phase=self.phase,
+                randomization_root_sha256=self.randomization_root_sha256,
                 coupling_group=f"scenario:{self.scenario_id}",
                 stream_name=stream_name,
                 treatment_id=self.treatment_id,
@@ -267,6 +321,7 @@ class FormalGameRng:
         return RngKey(
             experiment_id=self.experiment_id,
             phase=self.phase,
+            randomization_root_sha256=self.randomization_root_sha256,
             coupling_group=self.coupling_group,
             stream_name=stream_name,
             replicate_id=self.replicate_id,
@@ -317,6 +372,7 @@ class PairedTrainingRow:
     coupling_group: str
     scenario_source: SeedLineage
     pool_draw: SeedLineage
+    randomization_root_sha256: str | None = None
 
     def game_rng(self) -> FormalGameRng:
         """Recover the event namespace used for action-time derivations."""
@@ -330,11 +386,12 @@ class PairedTrainingRow:
             seat=self.seat,
             update=self.update,
             game_index=self.game_index,
+            randomization_root_sha256=self.randomization_root_sha256,
         )
 
     def semantic_dict(self) -> dict[str, object]:
         """Return treatment-neutral CRN semantics for equality checks."""
-        return {
+        payload: dict[str, object] = {
             "experiment_id": self.experiment_id,
             "phase": self.phase,
             "replicate_id": self.replicate_id,
@@ -346,10 +403,13 @@ class PairedTrainingRow:
             "scenario_source_digest": self.scenario_source.digest_hex,
             "pool_draw_digest": self.pool_draw.digest_hex,
         }
+        if self.randomization_root_sha256 is not None:
+            payload["randomization_root_sha256"] = self.randomization_root_sha256
+        return payload
 
     def as_dict(self) -> dict[str, object]:
         """Return the complete treatment-labelled schedule row."""
-        return {
+        payload: dict[str, object] = {
             "experiment_id": self.experiment_id,
             "phase": self.phase,
             "replicate_id": self.replicate_id,
@@ -362,9 +422,12 @@ class PairedTrainingRow:
             "scenario_source": self.scenario_source.as_dict(),
             "pool_draw": self.pool_draw.as_dict(),
         }
+        if self.randomization_root_sha256 is not None:
+            payload["randomization_root_sha256"] = self.randomization_root_sha256
+        return payload
 
 
-def make_paired_training_schedule(  # noqa: PLR0913 - protocol axes stay explicit
+def make_paired_training_schedule(  # noqa: C901,PLR0913 - protocol axes explicit
     *,
     experiment_id: str,
     phase: str,
@@ -373,6 +436,7 @@ def make_paired_training_schedule(  # noqa: PLR0913 - protocol axes stay explici
     seats_by_replicate: Mapping[int, Sequence[int]],
     updates: int,
     games_per_update: int,
+    randomization_root_sha256: str | None = None,
 ) -> tuple[PairedTrainingRow, ...]:
     """Create an order/worker-invariant paired training schedule.
 
@@ -400,6 +464,12 @@ def make_paired_training_schedule(  # noqa: PLR0913 - protocol axes stay explici
             raise ValueError(f"replicate {replicate_id} repeats a training scenario")
         if any(seat not in (0, 1) for seat in seats):
             raise ValueError("formal 2p training seats must be 0 or 1")
+        if randomization_root_sha256 is not None and (
+            len(seats) % 2 or seats.count(0) != seats.count(1)
+        ):
+            raise ValueError(
+                "seed-rolled formal training requires exact per-replicate seat balance"
+            )
         coupling_group = f"replicate-{replicate_id}"
         for treatment_id in treatments:
             for ordinal, (scenario_id, seat) in enumerate(
@@ -417,6 +487,7 @@ def make_paired_training_schedule(  # noqa: PLR0913 - protocol axes stay explici
                     seat=seat,
                     update=update,
                     game_index=game_index,
+                    randomization_root_sha256=randomization_root_sha256,
                 )
                 rows.append(
                     PairedTrainingRow(
@@ -431,6 +502,7 @@ def make_paired_training_schedule(  # noqa: PLR0913 - protocol axes stay explici
                         coupling_group=coupling_group,
                         scenario_source=context.lineage("scenario_source"),
                         pool_draw=context.lineage("pool_draw"),
+                        randomization_root_sha256=randomization_root_sha256,
                     )
                 )
     result = tuple(rows)
@@ -454,6 +526,9 @@ def validate_paired_training_schedule(  # noqa: C901,PLR0912 - every schedule ax
     experiment_phases = {(row.experiment_id, row.phase) for row in rows}
     if len(experiment_phases) != 1:
         raise ValueError("paired schedule mixes experiment or phase identities")
+    randomization_roots = {row.randomization_root_sha256 for row in rows}
+    if len(randomization_roots) != 1:
+        raise ValueError("paired schedule mixes randomization roots")
     replicate_ids = sorted({row.replicate_id for row in rows})
     expected = set(expected_treatments) if expected_treatments is not None else None
     if expected is not None and (
@@ -490,6 +565,15 @@ def validate_paired_training_schedule(  # noqa: C901,PLR0912 - every schedule ax
         scenario_ids = [str(semantic["scenario_id"]) for semantic in reference.values()]
         if len(set(scenario_ids)) != len(scenario_ids):
             raise ValueError(f"replicate {replicate_id} repeats a training scenario")
+        roots = {
+            semantic.get("randomization_root_sha256") for semantic in reference.values()
+        }
+        if roots != {None}:
+            seats = [cast(int, semantic["seat"]) for semantic in reference.values()]
+            if len(seats) % 2 or seats.count(0) != seats.count(1):
+                raise ValueError(
+                    "seed-rolled formal training requires exact per-replicate seat balance"
+                )
         for semantic in reference.values():
             scenario_id = str(semantic["scenario_id"])
             other_replicate = seen_scenarios.setdefault(scenario_id, replicate_id)
@@ -505,6 +589,77 @@ def validate_paired_training_schedule(  # noqa: C901,PLR0912 - every schedule ax
                 raise ValueError("schedule pool-draw lineage is inconsistent")
 
 
+def _validate_optional_sha256(value: object, field_name: str) -> None:
+    if value is not None and (
+        type(value) is not str
+        or len(value) != _SHA256_HEX_LENGTH
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"formal {field_name} SHA-256 is invalid")
+
+
+@dataclass(frozen=True)
+class FormalTreatmentContract:
+    """Immutable trainer inputs that may legitimately differ by treatment."""
+
+    treatment_id: str
+    initial_checkpoint_sha256: str
+    trainer_config_sha256: str
+    opponent_pool_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.treatment_id) is not str or not self.treatment_id:
+            raise ValueError("formal treatment contract needs a treatment ID")
+        for field_name, value in (
+            ("initial checkpoint", self.initial_checkpoint_sha256),
+            ("trainer config", self.trainer_config_sha256),
+            ("opponent pool", self.opponent_pool_sha256),
+        ):
+            if value is None:
+                raise ValueError(f"formal {field_name} SHA-256 is required")
+            _validate_optional_sha256(value, field_name)
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "treatment_id": self.treatment_id,
+            "initial_checkpoint_sha256": self.initial_checkpoint_sha256,
+            "trainer_config_sha256": self.trainer_config_sha256,
+            "opponent_pool_sha256": self.opponent_pool_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class FormalJobOutput:
+    """One predeclared output location for a treatment/replicate job."""
+
+    replicate_id: int
+    treatment_id: str
+    output_dir: str
+
+    def __post_init__(self) -> None:
+        if type(self.replicate_id) is not int or self.replicate_id < 0:
+            raise ValueError("formal job output replicate_id is invalid")
+        if type(self.treatment_id) is not str or not self.treatment_id:
+            raise ValueError("formal job output treatment_id is invalid")
+        if (
+            type(self.output_dir) is not str
+            or not self.output_dir
+            or not Path(self.output_dir).is_absolute()
+            or os.path.normpath(self.output_dir) != self.output_dir
+            or Path(self.output_dir).resolve(strict=False) != Path(self.output_dir)
+        ):
+            raise ValueError(
+                "formal job output must be a normalized absolute directory"
+            )
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "replicate_id": self.replicate_id,
+            "treatment_id": self.treatment_id,
+            "output_dir": self.output_dir,
+        }
+
+
 @dataclass(frozen=True)
 class FormalTrainingSpec:
     """Explicit opt-in contract binding one trainer to its paired schedule."""
@@ -517,18 +672,60 @@ class FormalTrainingSpec:
     schedule: tuple[PairedTrainingRow, ...]
     scenario_bank_sha256: str | None = None
     worker_count: int = 1
+    seed_roll_payload_sha256: str | None = None
+    randomization_root_sha256: str | None = None
+    treatment_contracts: tuple[FormalTreatmentContract, ...] = ()
+    job_outputs: tuple[FormalJobOutput, ...] = ()
+    replicate_stage: Literal["pilot", "confirmatory-reserve"] | None = None
+    activation_artifact_path: str | None = None
+    activation_artifact_sha256: str | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901,PLR0912 - fail-closed contract
+        for field_name, value in (
+            ("experiment_id", self.experiment_id),
+            ("phase", self.phase),
+            ("treatment_id", self.treatment_id),
+        ):
+            if (
+                type(value) is not str
+                or not value
+                or value != value.strip()
+                or any(ord(character) < _ASCII_CONTROL_LIMIT for character in value)
+            ):
+                raise ValueError(f"formal {field_name} must be a canonical identifier")
+        if any(
+            type(value) is not str
+            or not value
+            or value != value.strip()
+            or any(ord(character) < _ASCII_CONTROL_LIMIT for character in value)
+            for value in self.expected_treatments
+        ):
+            raise ValueError(
+                "formal expected_treatments must use canonical identifiers"
+            )
         if self.worker_count < 1:
             raise ValueError("formal worker_count must be positive")
-        if self.scenario_bank_sha256 is not None and (
-            len(self.scenario_bank_sha256) != _SHA256_HEX_LENGTH
-            or any(
-                character not in "0123456789abcdef"
-                for character in self.scenario_bank_sha256
-            )
+        _validate_optional_sha256(self.scenario_bank_sha256, "scenario-bank")
+        roll_values = (
+            self.seed_roll_payload_sha256,
+            self.randomization_root_sha256,
+        )
+        if any(value is None for value in roll_values) and any(
+            value is not None for value in roll_values
         ):
-            raise ValueError("formal scenario-bank SHA-256 is invalid")
+            raise ValueError(
+                "formal seed-roll payload and randomization root must be paired"
+            )
+        for digest_name, digest_value in (
+            ("seed-roll payload", self.seed_roll_payload_sha256),
+            ("randomization root", self.randomization_root_sha256),
+        ):
+            _validate_optional_sha256(digest_value, digest_name)
+        if (
+            self.seed_roll_payload_sha256 is not None
+            and self.scenario_bank_sha256 is None
+        ):
+            raise ValueError("paired-training-v2 requires a scenario-bank SHA-256")
         validate_paired_training_schedule(
             self.schedule,
             expected_treatments=self.expected_treatments,
@@ -542,11 +739,94 @@ class FormalTrainingSpec:
             raise ValueError("formal treatment is absent from expected_treatments")
         if self.replicate_id not in {row.replicate_id for row in self.schedule}:
             raise ValueError("formal replicate is absent from schedule")
+        schedule_roots = {row.randomization_root_sha256 for row in self.schedule}
+        if schedule_roots != {self.randomization_root_sha256}:
+            raise ValueError(
+                "formal training randomization root does not match its schedule"
+            )
+        if self.seed_roll_payload_sha256 is None:
+            if (
+                self.treatment_contracts
+                or self.job_outputs
+                or self.replicate_stage is not None
+                or self.activation_artifact_path is not None
+                or self.activation_artifact_sha256 is not None
+            ):
+                raise ValueError(
+                    "paired-training-v1 cannot declare v2 treatment/job contracts"
+                )
+            return
+        if self.replicate_stage not in {"pilot", "confirmatory-reserve"}:
+            raise ValueError(
+                "paired-training-v2 must declare pilot or confirmatory-reserve stage"
+            )
+        if self.replicate_stage == "pilot":
+            if (
+                self.activation_artifact_path is not None
+                or self.activation_artifact_sha256 is not None
+            ):
+                raise ValueError(
+                    "pilot training cannot declare a post-pilot activation artifact"
+                )
+        else:
+            if (
+                self.activation_artifact_path is None
+                or self.activation_artifact_sha256 is None
+            ):
+                raise ValueError(
+                    "confirmatory-reserve training requires a bound activation "
+                    "artifact path and SHA-256"
+                )
+            if (
+                not Path(self.activation_artifact_path).is_absolute()
+                or os.path.normpath(self.activation_artifact_path)
+                != self.activation_artifact_path
+                or Path(self.activation_artifact_path).resolve(strict=False)
+                != Path(self.activation_artifact_path)
+            ):
+                raise ValueError(
+                    "confirmatory activation artifact must use a normalized "
+                    "absolute non-symlink path"
+                )
+            _validate_optional_sha256(
+                self.activation_artifact_sha256,
+                "confirmatory activation artifact",
+            )
+        contract_ids = tuple(
+            contract.treatment_id for contract in self.treatment_contracts
+        )
+        expected_contract_ids = tuple(sorted(self.expected_treatments))
+        if contract_ids != expected_contract_ids:
+            raise ValueError(
+                "paired-training-v2 treatment contracts must exactly cover the "
+                "sorted treatment set"
+            )
+        output_coordinates = tuple(
+            (output.replicate_id, output.treatment_id) for output in self.job_outputs
+        )
+        expected_outputs = tuple(
+            (replicate_id, treatment_id)
+            for replicate_id in sorted({row.replicate_id for row in self.schedule})
+            for treatment_id in expected_contract_ids
+        )
+        if output_coordinates != expected_outputs:
+            raise ValueError(
+                "paired-training-v2 job outputs must exactly cover the canonical "
+                "replicate x treatment matrix"
+            )
+        if len({output.output_dir for output in self.job_outputs}) != len(
+            self.job_outputs
+        ):
+            raise ValueError("paired-training-v2 job output directories must be unique")
 
     def manifest_binding(self) -> dict[str, object]:
         """Return the treatment-neutral declaration a manifest must freeze."""
         binding: dict[str, object] = {
-            "protocol": "paired-training-v1",
+            "protocol": (
+                "paired-training-v2"
+                if self.seed_roll_payload_sha256 is not None
+                else "paired-training-v1"
+            ),
             "paired_schedule_sha256": paired_schedule_hash(
                 self.schedule,
                 treatment_id=self.treatment_id,
@@ -558,7 +838,37 @@ class FormalTrainingSpec:
         }
         if self.scenario_bank_sha256 is not None:
             binding["scenario_bank_sha256"] = self.scenario_bank_sha256
+        if self.seed_roll_payload_sha256 is not None:
+            assert self.randomization_root_sha256 is not None
+            binding["seed_roll_payload_sha256"] = self.seed_roll_payload_sha256
+            binding["randomization_root_sha256"] = self.randomization_root_sha256
+            binding["treatment_contracts"] = [
+                contract.as_dict() for contract in self.treatment_contracts
+            ]
+            binding["job_outputs"] = [output.as_dict() for output in self.job_outputs]
+            binding["replicate_stage"] = self.replicate_stage
+            binding["activation_artifact_path"] = self.activation_artifact_path
+            binding["activation_artifact_sha256"] = self.activation_artifact_sha256
         return binding
+
+    def treatment_contract(self, treatment_id: str) -> FormalTreatmentContract:
+        """Return one exact v2 treatment contract."""
+        for contract in self.treatment_contracts:
+            if contract.treatment_id == treatment_id:
+                return contract
+        raise ValueError(f"no formal treatment contract for {treatment_id!r}")
+
+    def output_for(self, replicate_id: int, treatment_id: str) -> FormalJobOutput:
+        """Return one exact v2 job output declaration."""
+        for output in self.job_outputs:
+            if (
+                output.replicate_id == replicate_id
+                and output.treatment_id == treatment_id
+            ):
+                return output
+        raise ValueError(
+            f"no formal output for replicate={replicate_id}, treatment={treatment_id!r}"
+        )
 
     def require_worker_runtime(self) -> None:
         """Reject an N-worker declaration executed directly in the parent.
@@ -569,6 +879,13 @@ class FormalTrainingSpec:
         recording parallel execution while running the trainer in-process.
         """
         require_formal_spawn_context()
+        if (
+            self.seed_roll_payload_sha256 is not None
+            and mp.current_process().name == "MainProcess"
+        ):
+            raise RuntimeError(
+                "paired-training-v2 must run through the one-shot spawn job matrix"
+            )
         if self.worker_count == 1:
             return
         if mp.current_process().name == "MainProcess":
@@ -619,6 +936,7 @@ class FormalTrainingSpec:
             RngKey(
                 experiment_id=self.experiment_id,
                 phase=self.phase,
+                randomization_root_sha256=self.randomization_root_sha256,
                 coupling_group=f"replicate-{self.replicate_id}",
                 stream_name="model_init",
                 replicate_id=self.replicate_id,
@@ -631,6 +949,7 @@ class FormalTrainingSpec:
         return RngKey(
             experiment_id=self.experiment_id,
             phase=self.phase,
+            randomization_root_sha256=self.randomization_root_sha256,
             coupling_group=f"replicate-{self.replicate_id}",
             stream_name="minibatch",
             replicate_id=self.replicate_id,
@@ -646,6 +965,7 @@ class FormalTrainingSpec:
             RngKey(
                 experiment_id=self.experiment_id,
                 phase=self.phase,
+                randomization_root_sha256=self.randomization_root_sha256,
                 coupling_group=f"replicate-{self.replicate_id}",
                 stream_name="worker",
                 replicate_id=self.replicate_id,
@@ -693,6 +1013,15 @@ class FormalTrainingSpec:
                 treatment_id=self.treatment_id,
             ),
             "scenario_bank_sha256": self.scenario_bank_sha256,
+            "seed_roll_payload_sha256": self.seed_roll_payload_sha256,
+            "randomization_root_sha256": self.randomization_root_sha256,
+            "treatment_contracts": [
+                contract.as_dict() for contract in self.treatment_contracts
+            ],
+            "job_outputs": [output.as_dict() for output in self.job_outputs],
+            "replicate_stage": self.replicate_stage,
+            "activation_artifact_path": self.activation_artifact_path,
+            "activation_artifact_sha256": self.activation_artifact_sha256,
             "manifest_binding": self.manifest_binding(),
             "model_init_lineage": self.model_init_lineage().as_dict(),
             "worker_lineages": [

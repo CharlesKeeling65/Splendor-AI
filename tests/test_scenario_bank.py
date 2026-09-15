@@ -535,7 +535,8 @@ def test_consumption_ledger_rejects_terminal_event_before_start(
     }
     terminal["event_sha256"] = sha256_canonical_json(terminal)
     ledger_path.write_text(
-        json.dumps(terminal, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
     )
 
     with pytest.raises(ScenarioBankError, match="finishes before it starts"):

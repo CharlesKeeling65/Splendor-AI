@@ -956,6 +956,15 @@ class PairedEvaluationSpec:
             raise PairedEvaluationError(
                 "paired evaluation needs candidates, opponents, and scenarios"
             )
+        if self.scenario_bank.selection_kind not in {
+            "iid",
+            "stress-balanced",
+            "ci-fixture",
+        }:
+            raise PairedEvaluationError(
+                "paired evaluation accepts only IID, stress, or CI banks; "
+                "natural-deal SRSWOR banks are training-only"
+            )
         for label, policies in (
             ("candidate", self.candidates),
             ("opponent", self.opponents),

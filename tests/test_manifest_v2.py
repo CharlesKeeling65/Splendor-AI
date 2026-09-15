@@ -53,6 +53,25 @@ def test_v2_declaration_is_hashed_and_creation_never_overwrites(tmp_path: Path) 
         _create(path)
 
 
+def test_manifest_leaf_and_parent_symlinks_fail_closed(tmp_path: Path) -> None:
+    real_directory = tmp_path / "real"
+    real_directory.mkdir()
+    real_manifest = real_directory / "manifest.json"
+    _create(real_manifest)
+
+    leaf_alias = tmp_path / "manifest-alias.json"
+    leaf_alias.symlink_to(real_manifest)
+    with pytest.raises(ValueError, match=r"symlink|real regular file"):
+        load_manifest(leaf_alias)
+
+    parent_alias = tmp_path / "parent-alias"
+    parent_alias.symlink_to(real_directory, target_is_directory=True)
+    with pytest.raises(ValueError, match="parent path traverses a symlink"):
+        load_manifest(parent_alias / "manifest.json")
+    with pytest.raises(ValueError, match="parent path traverses a symlink"):
+        _create(parent_alias / "new-manifest.json")
+
+
 def test_v2_rejects_declaration_or_registry_tampering(tmp_path: Path) -> None:
     path = tmp_path / "manifest.json"
     _create(path)
@@ -219,9 +238,7 @@ def test_v2_accepts_only_the_complete_authoritative_task1_split_map(
         "baselines": {"ppo-best": {"sha256": "a" * 64}},
         "repo": REPO,
     }
-    segments = {
-        name: segment.name for name, segment in TASK1_SCENARIO_SPLITS.items()
-    }
+    segments = {name: segment.name for name, segment in TASK1_SCENARIO_SPLITS.items()}
     manifest = create_manifest_v2(
         tmp_path / "task1.json",
         seed_segments=segments,

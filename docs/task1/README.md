@@ -60,3 +60,20 @@ from a separately approved fixed-N run, whose manifest must bind the exact
 pilot artifact before outcomes are read. Only CI/synthetic fixtures were
 executed. The crossed pilot and its final fixed N remain behind the T1.4
 approval gate; no formal or sealed bank was consumed.
+
+## T1.4 seed-roll preflight
+
+[`T1.4_SEED_ROLL.md`](T1.4_SEED_ROLL.md) specifies the one-shot
+`splendor-seed-roll/1` authority, keyed finite-population SRSWOR allocation,
+five pre-reserved replicate blocks, exact seat balance, root-derived model
+initialization, streaming ScenarioV1 bank, and `paired-training-v2` runtime
+bindings. The optimizer accepts only the explicit `task1-formal-5x32000`
+profile; smaller rolls remain visibly tagged CI fixtures. Pilot and reserved
+replicates, per-treatment inputs, and one-shot output paths are manifest-bound.
+The formal gate additionally binds the exact root-derived scenario/seat order;
+confirmatory reserve jobs require a separately frozen activation file tied to
+the completed pilot manifest and its evidence, not a caller-supplied hash.
+This is a training preflight only: no production root has been
+drawn, no formal bank has been materialized, no GPU job has run, and no sealed
+split has been read. Creating the production roll remains an explicit approval
+gate.

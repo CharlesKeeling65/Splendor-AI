@@ -457,6 +457,14 @@ def test_stress_rows_cannot_be_reported_as_unweighted_iid() -> None:
     )
     assert weighted["config"]["weighting"] == "inverse-inclusion"  # type: ignore[index]
 
+    with pytest.raises(StatisticsError, match="selection kind is invalid"):
+        replace(
+            _differences(replicates=(None,))[0],
+            selection_kind="natural-deal-srswor",
+            inclusion_probability=0.16,
+            selection_stratum="replicate-0",
+        )
+
 
 def test_nested_bootstrap_keeps_replicate_then_scenario_hierarchy() -> None:
     with pytest.raises(StatisticsError, match="at least 5 replicates"):

@@ -43,7 +43,7 @@ INITIAL_GEMS_2P: Final = {
     "blue": 4,
     "white": 4,
 }
-SelectionKind = Literal["iid", "stress-balanced", "ci-fixture"]
+SelectionKind = Literal["iid", "natural-deal-srswor", "stress-balanced", "ci-fixture"]
 StrataValue = int | float
 
 
@@ -712,7 +712,12 @@ def validate_scenario(  # noqa: C901,PLR0912,PLR0915 - complete invariant gate
     expected_strata = compute_strata_v1(scenario.dealt, scenario.nobles_in_order)
     if scenario.strata_v1 != expected_strata:
         raise ScenarioValidationError("scenario strata_v1 mismatch")
-    if scenario.selection_kind not in {"iid", "stress-balanced", "ci-fixture"}:
+    if scenario.selection_kind not in {
+        "iid",
+        "natural-deal-srswor",
+        "stress-balanced",
+        "ci-fixture",
+    }:
         raise ScenarioValidationError("scenario selection_kind is invalid")
     if not math.isfinite(scenario.inclusion_probability) or not (
         0.0 < scenario.inclusion_probability <= 1.0
@@ -727,6 +732,18 @@ def validate_scenario(  # noqa: C901,PLR0912,PLR0915 - complete invariant gate
     ):
         raise ScenarioValidationError(
             "unselected scenarios require probability 1 and no selection metadata"
+        )
+    if scenario.selection_kind == "natural-deal-srswor" and (
+        scenario.selection_stratum is None
+        or scenario.selection_design_sha256 is None
+        or len(scenario.selection_design_sha256) != SHA256_HEX_LENGTH
+        or any(
+            character not in "0123456789abcdef"
+            for character in scenario.selection_design_sha256
+        )
+    ):
+        raise ScenarioValidationError(
+            "natural-deal SRSWOR scenarios require stratum and selection-design SHA-256"
         )
     if scenario.selection_kind == "stress-balanced" and not scenario.selection_stratum:
         raise ScenarioValidationError(

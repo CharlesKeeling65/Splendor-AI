@@ -129,6 +129,7 @@ class CheckpointFixtureAgent(Agent):
         super().__init__(_id)
         self.net = deepcopy(module).eval()
         self.reverse = reverse
+        self.fixture_mode: int | None = None
 
     def SelectAction(
         self,
@@ -136,7 +137,7 @@ class CheckpointFixtureAgent(Agent):
         game_state: SplendorState,
         game_rule: SplendorGameRule,
     ) -> ActionType:
-        del game_state, game_rule
+        del game_rule
         strategy = int(self.net.strategy.item())
         if self.reverse:
             strategy = 1 - strategy
@@ -144,7 +145,23 @@ class CheckpointFixtureAgent(Agent):
             return actions[0]
         if strategy == 1:
             return actions[-1]
-        action_index = int(self.net.nonce.item()) % len(actions)
+        if strategy == 3:
+            if self.fixture_mode is None:
+                initial_board_code_total = sum(
+                    sum(ord(character) for character in card.code)
+                    for tier in game_state.board.dealt
+                    for card in tier
+                    if card is not None
+                )
+                self.fixture_mode = initial_board_code_total % 2
+            return actions[-1] if self.fixture_mode else actions[0]
+        board_code_total = sum(
+            sum(ord(character) for character in card.code)
+            for tier in game_state.board.dealt
+            for card in tier
+            if card is not None
+        )
+        action_index = (int(self.net.nonce.item()) + board_code_total) % len(actions)
         return actions[action_index]
 
 
@@ -578,6 +595,14 @@ def test_evaluator_respects_a_scenario_that_starts_with_seat_one(
         scenario_bank=bank,
         episodes_filename="episodes.jsonl",
     )
+    with pytest.raises(PairedEvaluationError, match="training-only"):
+        replace(
+            spec,
+            scenario_bank=replace(
+                bank,
+                selection_kind="natural-deal-srswor",
+            ),
+        )
     rows = tuple(
         play_paired_evaluation_game(spec, candidate, opponent, scenario, seat)
         for seat in (0, 1)
@@ -1009,7 +1034,7 @@ def test_statistics_document_is_manifest_bound_and_never_overwritten(  # noqa: P
         # replicate-level A-O effects cannot collapse merely because all
         # policies happened to draw the same score rate.
         if treatment == "A":
-            strategy = 2
+            strategy = 3
         else:
             strategy = replicate % 2
         candidate = _checkpoint_candidate(
