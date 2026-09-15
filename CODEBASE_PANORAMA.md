@@ -630,13 +630,16 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
 - **tmux/P5000 fail closed**：`task1-pilot` 只接受精确 O/O_bridge×r0/r1/r2、三 spawn workers、
   `.venv-p5000` CUDA/P5000 `(6,1)` 与兼容 `sm_60|sm_61` cubin、固定五成员训练 pool；18h wall、
   32GiB output、40GiB free-space
-  由父子独立 watchdog/lease/process group 执行。声明、launch snapshot、输出 reservation、status/
-  completion 和 manifest 终态均一次性绑定；启动/worker/资源/证据任一失败即终止同组进程并 block
-  原 running manifest。
+  由父子独立 watchdog/lease/process group 执行。声明、launch snapshot、一次性 supervisor stderr、
+  30 秒 durable-running handshake、输出 reservation、status/completion 和 manifest 终态均一次性绑定；
+  启动/worker/资源/证据任一失败即终止同组进程并 block 原 running manifest。
 - **冻结基线已闭合**：validation-A 200 scenarios × 2 seats × 3 opponents 为 740/3/457，stress
   100 × 2 × 3 为 351/1/248，合计 1,800 局、0 failure；内容寻址报告
   `18979a2d...ffb9` 经 ScenarioV1+动作索引幂等重放，两个 manifest 均完成。finite-population
   functional ANOVA 中交互项占 validation-A 78.3880%、stress 79.2581%；详见
   `docs/task1/T1.4_BASELINE_RESULTS.md`，不得与历史 C4-R2 伪重复区间合并。
 - **当前边界**：non-sealed 10-row validation-A selector bank 已另行物化并 source replay 审计；最终
-  pilot manifest 与 GPU/tmux 训练尚未启动。validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
+  pilot 首次 launch declaration 通过 admission 后，tmux 在 supervisor/worker 握手前退出；当场核验
+  无 CUDA process/output/update，并将该 manifest 终态置为 `blocked`。由此新增一次性 early-stderr、
+  status-v2 exact schema 与 tmux-pane→supervisor→matrix PPID/PGID 的 30 秒握手；重试须使用新 manifest
+  与输出路径。GPU 训练仍未实际启动，validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。

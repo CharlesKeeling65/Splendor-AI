@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import select
@@ -67,7 +68,7 @@ from .seed_roll import (
 
 ORCHESTRATION_SCHEMA: Final = "splendor-t14-pilot-orchestration/2"
 COMPLETION_SCHEMA: Final = "splendor-t14-pilot-completion/2"
-STATUS_SCHEMA: Final = "splendor-t14-pilot-status/1"
+STATUS_SCHEMA: Final = "splendor-t14-pilot-status/2"
 PILOT_REPLICATE_IDS: Final = (0, 1, 2)
 PILOT_TREATMENT_IDS: Final = ("O", "O_bridge")
 PILOT_WORKER_COUNT: Final = 3
@@ -98,6 +99,8 @@ OUTPUT_LIMIT_BYTES: Final = 32 * 1024**3
 MIN_FREE_BYTES: Final = 40 * 1024**3
 WATCHDOG_POLL_SECONDS: Final = 5.0
 STATUS_REFRESH_SECONDS: Final = 30.0
+LAUNCH_HANDSHAKE_SECONDS: Final = 30.0
+LAUNCH_HANDSHAKE_POLL_SECONDS: Final = 0.25
 TERMINATE_GRACE_SECONDS: Final = 15.0
 EXPECTED_GPU_CAPABILITY: Final = (6, 1)
 EXPECTED_GPU_COMPATIBLE_ARCHES: Final = ("sm_60", "sm_61")
@@ -106,6 +109,7 @@ STATUS_FILE_NAME: Final = "orchestrator-status.json"
 COMPLETION_FILE_NAME: Final = "completion.json"
 MATRIX_FAILURE_FILE_NAME: Final = "matrix-watchdog-failure.json"
 LAUNCH_DECLARATION_FILE_NAME: Final = "launch-declaration.json"
+SUPERVISOR_LOG_FILE_NAME: Final = "supervisor.log"
 _SESSION_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
 
@@ -1069,6 +1073,7 @@ def _status_payload(  # noqa: PLR0913 - all optional audit fields are explicit
     resources: ResourceSnapshot | None = None,
     detail: str | None = None,
     child_pid: int | None = None,
+    supervisor_pid: int | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema_version": STATUS_SCHEMA,
@@ -1085,6 +1090,7 @@ def _status_payload(  # noqa: PLR0913 - all optional audit fields are explicit
             "min_free_bytes": MIN_FREE_BYTES,
         },
         "child_pid": child_pid,
+        "supervisor_pid": supervisor_pid,
         "detail": detail,
         "updated_unix_seconds": time.time(),
     }
@@ -1093,6 +1099,143 @@ def _status_payload(  # noqa: PLR0913 - all optional audit fields are explicit
     if resources is not None:
         payload["resources"] = asdict(resources)
     payload["status_sha256"] = sha256_canonical_json(payload)
+    return payload
+
+
+def _validate_status_payload(  # noqa: C901,PLR0912 - exact fail-closed schema
+    declaration: PilotDeclaration,
+    raw: object,
+) -> dict[str, object]:
+    """Validate the exact status-v2 identity and state-dependent fields."""
+    if not isinstance(raw, Mapping):
+        raise PilotOrchestrationError("orchestrator status root is invalid")
+    payload = dict(raw)
+    required = {
+        "schema_version",
+        "declaration_path",
+        "declaration_sha256",
+        "experiment_id",
+        "state",
+        "tmux_session",
+        "worker_count",
+        "job_count",
+        "limits",
+        "child_pid",
+        "supervisor_pid",
+        "detail",
+        "updated_unix_seconds",
+        "status_sha256",
+    }
+    allowed = required | {"elapsed_seconds", "resources"}
+    if not required <= set(payload) or not set(payload) <= allowed:
+        raise PilotOrchestrationError("orchestrator status keys are invalid")
+    status_body = dict(payload)
+    status_sha256 = status_body.pop("status_sha256")
+    if (
+        type(status_sha256) is not str
+        or status_sha256 != sha256_canonical_json(status_body)
+    ):
+        raise PilotOrchestrationError("orchestrator status hash is invalid")
+    state = payload["state"]
+    if type(state) is not str or state not in {
+        "launching",
+        "running",
+        "completed",
+        "failed",
+    }:
+        raise PilotOrchestrationError("orchestrator status state is invalid")
+    original_path = str(declaration.path)
+    snapshot_path = str(declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME)
+    expected_paths = (
+        {original_path}
+        if state == "launching"
+        else {snapshot_path}
+        if state in {"running", "completed"}
+        else {original_path, snapshot_path}
+    )
+    expected_limits = {
+        "wall_seconds": WALL_LIMIT_SECONDS,
+        "max_output_bytes": OUTPUT_LIMIT_BYTES,
+        "min_free_bytes": MIN_FREE_BYTES,
+    }
+    limits = payload["limits"]
+    if (
+        type(payload["schema_version"]) is not str
+        or payload["schema_version"] != STATUS_SCHEMA
+        or type(payload["declaration_path"]) is not str
+        or payload["declaration_path"] not in expected_paths
+        or type(payload["declaration_sha256"]) is not str
+        or payload["declaration_sha256"] != declaration.declaration_sha256
+        or type(payload["experiment_id"]) is not str
+        or payload["experiment_id"] != declaration.experiment_id
+        or type(payload["tmux_session"]) is not str
+        or payload["tmux_session"] != declaration.tmux_session
+        or type(payload["worker_count"]) is not int
+        or payload["worker_count"] != PILOT_WORKER_COUNT
+        or type(payload["job_count"]) is not int
+        or payload["job_count"] != PILOT_JOB_COUNT
+        or not isinstance(limits, Mapping)
+        or set(limits) != set(expected_limits)
+        or any(
+            type(limits[field]) is not int
+            or limits[field] != expected_limits[field]
+            for field in expected_limits
+        )
+    ):
+        raise PilotOrchestrationError("orchestrator status identity is invalid")
+    updated = payload["updated_unix_seconds"]
+    if (
+        type(updated) not in {int, float}
+        or not math.isfinite(updated)
+        or updated <= 0
+    ):
+        raise PilotOrchestrationError("orchestrator status timestamp is invalid")
+    for field in ("child_pid", "supervisor_pid"):
+        value = payload[field]
+        if value is not None and (type(value) is not int or value <= 1):
+            raise PilotOrchestrationError(
+                f"orchestrator status {field} is invalid"
+            )
+    elapsed = payload.get("elapsed_seconds")
+    if elapsed is not None and (
+        type(elapsed) not in {int, float}
+        or not math.isfinite(elapsed)
+        or elapsed < 0
+    ):
+        raise PilotOrchestrationError("orchestrator status elapsed time is invalid")
+    resources = payload.get("resources")
+    if resources is not None and (
+        not isinstance(resources, Mapping)
+        or set(resources) != {"output_bytes", "free_bytes"}
+        or any(
+            type(resources[field]) is not int or resources[field] < 0
+            for field in ("output_bytes", "free_bytes")
+        )
+    ):
+        raise PilotOrchestrationError("orchestrator status resources are invalid")
+    detail = payload["detail"]
+    if state in {"launching", "running"} and detail is not None:
+        raise PilotOrchestrationError("nonterminal orchestrator detail must be null")
+    if state in {"completed", "failed"} and (
+        type(detail) is not str or not detail
+    ):
+        raise PilotOrchestrationError("terminal orchestrator detail is invalid")
+    if state == "launching" and (
+        payload["child_pid"] is not None
+        or payload["supervisor_pid"] is not None
+        or "elapsed_seconds" in payload
+        or resources is None
+    ):
+        raise PilotOrchestrationError("launching orchestrator status is invalid")
+    if state in {"running", "completed"} and (
+        type(payload["child_pid"]) is not int
+        or type(payload["supervisor_pid"]) is not int
+        or elapsed is None
+        or resources is None
+    ):
+        raise PilotOrchestrationError(
+            f"{state} orchestrator status lacks live process evidence"
+        )
     return payload
 
 
@@ -1156,13 +1299,91 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _tmux_has_session(session: str) -> bool:
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", f"={session}"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", f"={session}"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise PilotOrchestrationError(
+            f"cannot inspect tmux session {session!r}: {exc}"
+        ) from exc
     return result.returncode == 0
+
+
+def _tmux_pane_pid(session: str) -> int:
+    """Return the sole supervisor pane PID for an exact tmux session."""
+    try:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-s",
+                "-t",
+                f"={session}",
+                "-F",
+                "#{pane_pid}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise PilotOrchestrationError(f"cannot inspect tmux supervisor PID: {exc}") from exc
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 1:
+        raise PilotOrchestrationError(
+            "tmux supervisor session does not contain exactly one pane"
+        )
+    try:
+        pane_pid = int(lines[0])
+    except ValueError as exc:
+        raise PilotOrchestrationError("tmux supervisor pane PID is invalid") from exc
+    if pane_pid <= 1:
+        raise PilotOrchestrationError("tmux supervisor pane PID is invalid")
+    return pane_pid
+
+
+def _kill_owned_tmux_session(session: str) -> str | None:
+    """Kill only the exact session whose successful creation this launch owns."""
+    try:
+        result = subprocess.run(
+            ["tmux", "kill-session", "-t", f"={session}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return f"cannot kill failed tmux supervisor session: {exc}"
+    if result.returncode == 0:
+        return None
+    try:
+        still_alive = _tmux_has_session(session)
+    except PilotOrchestrationError as exc:
+        return f"cannot verify failed tmux supervisor cleanup: {exc}"
+    if still_alive:
+        return (
+            "failed to kill owned tmux supervisor session: "
+            f"{result.stderr.strip()}"
+        )
+    return None
+
+
+def _process_parent_pid(pid: int) -> int:
+    """Read one Linux process parent without invoking a mutable shell tool."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        suffix = raw.rsplit(")", 1)[1].split()
+        parent_pid = int(suffix[1])
+    except (OSError, UnicodeError, IndexError, ValueError) as exc:
+        raise PilotOrchestrationError(
+            f"cannot verify formal matrix process {pid}: {exc}"
+        ) from exc
+    if parent_pid <= 1:
+        raise PilotOrchestrationError("formal matrix parent PID is invalid")
+    return parent_pid
 
 
 def _selection_artifact_names() -> tuple[str, ...]:
@@ -1984,6 +2205,7 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
                 started_monotonic=started,
                 resources=initial_resources,
                 child_pid=process.pid,
+                supervisor_pid=os.getpid(),
             ),
         )
         last_status = started
@@ -2019,6 +2241,7 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
                         started_monotonic=started,
                         resources=resources,
                         child_pid=process.pid,
+                        supervisor_pid=os.getpid(),
                     ),
                 )
                 last_status = time.monotonic()
@@ -2041,6 +2264,7 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
                 resources=final_resources,
                 detail=f"completion_sha256={completion_sha256}",
                 child_pid=process.pid,
+                supervisor_pid=os.getpid(),
             ),
         )
         # This is deliberately the last fallible mutation: all evidence,
@@ -2081,6 +2305,7 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
                 resources=final_resources,
                 detail=failure,
                 child_pid=process.pid if process is not None else None,
+                supervisor_pid=os.getpid(),
             ),
         )
         raise PilotOrchestrationError(failure) from exc
@@ -2119,59 +2344,200 @@ def preflight(declaration_path: Path) -> dict[str, object]:
     }
 
 
+def _reserve_supervisor_log(declaration: PilotDeclaration) -> Path:
+    """Create the one-shot regular file that captures pre-handshake failures."""
+    path = declaration.control_dir / SUPERVISOR_LOG_FILE_NAME
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise PilotOrchestrationError(
+            f"one-shot supervisor log already exists: {path}"
+        ) from exc
+    os.close(descriptor)
+    _fsync_directory(path.parent)
+    return path
+
+
+def _record_launch_handshake_failure(
+    declaration: PilotDeclaration,
+    detail: str,
+) -> None:
+    """Close the lifecycle when tmux never establishes its supervisor."""
+    try:
+        _block_running_manifest(declaration, detail)
+    except PilotOrchestrationError as exc:
+        detail = str(exc)
+    try:
+        resources = capture_resources(declaration.output_root)
+    except Exception as exc:
+        resources = None
+        detail = f"{detail}; additionally failed to capture resources: {exc}"
+    _write_json_atomic(
+        declaration.status_path,
+        _status_payload(
+            declaration,
+            "failed",
+            resources=resources,
+            detail=detail,
+        ),
+    )
+
+
+def _await_supervisor_handshake(  # noqa: C901,PLR0912,PLR0915 - fail closed
+    declaration: PilotDeclaration,
+) -> None:
+    """Require durable supervisor liveness instead of trusting tmux creation."""
+    deadline = time.monotonic() + LAUNCH_HANDSHAKE_SECONDS
+    while True:
+        try:
+            snapshot = status(declaration.path)
+        except PilotOrchestrationError as exc:
+            detail = f"cannot verify the tmux supervisor handshake: {exc}"
+            raise PilotOrchestrationError(detail) from exc
+        persisted = snapshot["persisted"]
+        persisted_mapping = (
+            cast(Mapping[str, object], persisted)
+            if isinstance(persisted, Mapping)
+            else {}
+        )
+        state = persisted_mapping.get("state")
+        if state == "completed":
+            try:
+                launched = load_pilot_declaration(
+                    declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME
+                )
+                if (
+                    launched.declaration_sha256
+                    != declaration.declaration_sha256
+                ):
+                    raise PilotOrchestrationError(
+                        "launch declaration changed before completed handshake"
+                    )
+                manifest = load_manifest(launched.manifest_path)
+            except Exception as exc:
+                raise PilotOrchestrationError(
+                    f"cannot verify completed launch handshake: {exc}"
+                ) from exc
+            manifest_state = manifest.get("status")
+            if manifest_state == "completed":
+                completion_sha256 = _verify_completion_evidence(launched)
+                if persisted_mapping.get("detail") != (
+                    f"completion_sha256={completion_sha256}"
+                ):
+                    raise PilotOrchestrationError(
+                        "completed launch handshake does not match completion evidence"
+                    )
+                return
+            if manifest_state != "running":
+                raise PilotOrchestrationError(
+                    "completed launch handshake has a non-running manifest"
+                )
+        if state == "failed":
+            failed_detail = persisted_mapping.get("detail")
+            detail = (
+                "tmux supervisor failed during launch handshake: "
+                f"{failed_detail}"
+            )
+            raise PilotOrchestrationError(detail)
+        tmux_alive = snapshot["tmux_alive"] is True
+        if state == "running" and tmux_alive:
+            supervisor_pid = cast(int, persisted_mapping["supervisor_pid"])
+            child_pid = cast(int, persisted_mapping["child_pid"])
+            if snapshot.get("tmux_pane_pid") != supervisor_pid:
+                raise PilotOrchestrationError(
+                    "tmux pane PID does not match the durable supervisor identity"
+                )
+            if _process_parent_pid(child_pid) != supervisor_pid:
+                raise PilotOrchestrationError(
+                    "formal matrix is not a direct child of the tmux supervisor"
+                )
+            try:
+                process_group = os.getpgid(child_pid)
+            except OSError as exc:
+                raise PilotOrchestrationError(
+                    f"cannot inspect formal matrix process group: {exc}"
+                ) from exc
+            if process_group != child_pid:
+                raise PilotOrchestrationError(
+                    "formal matrix is not its own supervised process group"
+                )
+            return
+        if not tmux_alive:
+            detail = "tmux supervisor exited before the running handshake"
+            raise PilotOrchestrationError(detail)
+        if time.monotonic() >= deadline:
+            detail = (
+                "tmux supervisor did not reach the running state within "
+                f"{LAUNCH_HANDSHAKE_SECONDS:g} seconds"
+            )
+            raise PilotOrchestrationError(detail)
+        time.sleep(LAUNCH_HANDSHAKE_POLL_SECONDS)
+
+
 def launch(declaration_path: Path) -> None:
     """Preflight and launch exactly one detached tmux supervisor."""
     declaration = load_pilot_declaration(declaration_path)
-    summary = preflight(declaration.path)
     if declaration.status_path.exists() or declaration.completion_path.exists():
         raise PilotOrchestrationError(
             "this orchestration declaration was already launched"
         )
-    if _tmux_has_session(declaration.tmux_session):
-        raise PilotOrchestrationError(
-            f"tmux session {declaration.tmux_session!r} already exists"
-        )
-    if shutil.which("tmux") is None:
-        raise PilotOrchestrationError("tmux executable is unavailable")
-    # Pin the exact preflighted bytes to a distinct one-shot inode before tmux
-    # starts.  The operator-facing declaration path can then be replaced
-    # without redirecting supervisor failure handling to another manifest.
-    raw, current_sha256 = _read_regular_json(declaration.path)
-    if current_sha256 != declaration.declaration_sha256:
-        raise PilotOrchestrationError("declaration changed during launch preflight")
-    launched_declaration = write_pilot_declaration(
-        declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME,
-        raw,
-    )
-    _write_json_exclusive(
-        declaration.status_path,
-        _status_payload(
-            declaration,
-            "launching",
-            resources=ResourceSnapshot(**cast(dict[str, int], summary["resources"])),
-        ),
-    )
-    child = [
-        str(declaration.python_executable),
-        "-m",
-        __name__,
-        "_supervise",
-        str(launched_declaration.path),
-        "--expected-sha256",
-        declaration.declaration_sha256,
-        "--expected-manifest-path",
-        str(declaration.manifest_path),
-        "--expected-control-dir",
-        str(declaration.control_dir),
-        "--expected-output-root",
-        str(declaration.output_root),
-        "--expected-experiment-id",
-        declaration.experiment_id,
-        "--expected-tmux-session",
-        declaration.tmux_session,
-    ]
-    shell_command = "exec env PYTHONHASHSEED=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 " + shlex.join(child)
+    tmux_started = False
     try:
+        summary = preflight(declaration.path)
+        if _tmux_has_session(declaration.tmux_session):
+            raise PilotOrchestrationError(
+                f"tmux session {declaration.tmux_session!r} already exists"
+            )
+        if shutil.which("tmux") is None:
+            raise PilotOrchestrationError("tmux executable is unavailable")
+        # Every mutation below is inside this fail-closed region.  Pin the
+        # exact preflighted bytes before tmux starts so replacing the
+        # operator-facing declaration cannot redirect lifecycle handling.
+        raw, current_sha256 = _read_regular_json(declaration.path)
+        if current_sha256 != declaration.declaration_sha256:
+            raise PilotOrchestrationError(
+                "declaration changed during launch preflight"
+            )
+        supervisor_log = _reserve_supervisor_log(declaration)
+        launched_declaration = write_pilot_declaration(
+            declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME,
+            raw,
+        )
+        _write_json_exclusive(
+            declaration.status_path,
+            _status_payload(
+                declaration,
+                "launching",
+                resources=ResourceSnapshot(
+                    **cast(dict[str, int], summary["resources"])
+                ),
+            ),
+        )
+        child = [
+            str(declaration.python_executable),
+            "-m",
+            __name__,
+            "_supervise",
+            str(launched_declaration.path),
+            "--expected-sha256",
+            declaration.declaration_sha256,
+            "--expected-manifest-path",
+            str(declaration.manifest_path),
+            "--expected-control-dir",
+            str(declaration.control_dir),
+            "--expected-output-root",
+            str(declaration.output_root),
+            "--expected-experiment-id",
+            declaration.experiment_id,
+            "--expected-tmux-session",
+            declaration.tmux_session,
+        ]
+        shell_command = (
+            "exec env PYTHONHASHSEED=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 "
+            + shlex.join(child)
+            + f" >> {shlex.quote(str(supervisor_log))} 2>&1"
+        )
         result = subprocess.run(
             [
                 "tmux",
@@ -2185,28 +2551,32 @@ def launch(declaration_path: Path) -> None:
             capture_output=True,
             text=True,
         )
-    except OSError as exc:
-        detail = f"tmux launch failed: {exc}"
-        try:
-            _block_running_manifest(declaration, detail)
-        except PilotOrchestrationError as block_exc:
-            detail = str(block_exc)
-        _write_json_atomic(
-            declaration.status_path,
-            _status_payload(declaration, "failed", detail=detail),
+        if result.returncode != 0:
+            raise PilotOrchestrationError(
+                f"tmux launch failed: {result.stderr.strip()}"
+            )
+        tmux_started = True
+        _await_supervisor_handshake(declaration)
+    except BaseException as exc:
+        detail = (
+            str(exc)
+            if isinstance(exc, PilotOrchestrationError)
+            else f"pilot launch failed with {type(exc).__name__}: {exc}"
         )
+        if tmux_started:
+            cleanup_failure = _kill_owned_tmux_session(
+                declaration.tmux_session
+            )
+            if cleanup_failure is not None:
+                detail = f"{detail}; {cleanup_failure}"
+        try:
+            _record_launch_handshake_failure(declaration, detail)
+        except BaseException as close_exc:
+            detail = (
+                f"{detail}; additionally failed to close launch lifecycle: "
+                f"{type(close_exc).__name__}: {close_exc}"
+            )
         raise PilotOrchestrationError(detail) from exc
-    if result.returncode != 0:
-        detail = f"tmux launch failed: {result.stderr.strip()}"
-        try:
-            _block_running_manifest(declaration, detail)
-        except PilotOrchestrationError as exc:
-            detail = str(exc)
-        _write_json_atomic(
-            declaration.status_path,
-            _status_payload(declaration, "failed", detail=detail),
-        )
-        raise PilotOrchestrationError(detail)
 
 
 def status(declaration_path: Path) -> dict[str, object]:
@@ -2221,20 +2591,16 @@ def status(declaration_path: Path) -> dict[str, object]:
             )
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise PilotOrchestrationError(f"cannot read orchestrator status: {exc}") from exc
-        if not isinstance(persisted, Mapping):
-            raise PilotOrchestrationError("orchestrator status root is invalid")
-        status_body = dict(persisted)
-        status_sha256 = status_body.pop("status_sha256", None)
-        if (
-            status_body.get("declaration_sha256") != declaration.declaration_sha256
-            or type(status_sha256) is not str
-            or status_sha256 != sha256_canonical_json(status_body)
-        ):
-            raise PilotOrchestrationError("orchestrator status hash is invalid")
+        persisted = _validate_status_payload(declaration, persisted)
+    tmux_alive = _tmux_has_session(declaration.tmux_session)
+    tmux_pane_pid = (
+        _tmux_pane_pid(declaration.tmux_session) if tmux_alive else None
+    )
     return {
         "declaration_sha256": declaration.declaration_sha256,
         "tmux_session": declaration.tmux_session,
-        "tmux_alive": _tmux_has_session(declaration.tmux_session),
+        "tmux_alive": tmux_alive,
+        "tmux_pane_pid": tmux_pane_pid,
         "persisted": persisted,
     }
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -622,6 +623,12 @@ def test_launch_creates_detached_tmux_supervisor_without_training(
     )
     monkeypatch.setattr(module, "_tmux_has_session", lambda _session: False)
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tmux")
+    handshakes: list[Path] = []
+    monkeypatch.setattr(
+        module,
+        "_await_supervisor_handshake",
+        lambda value: handshakes.append(value.path),
+    )
     calls: list[list[str]] = []
 
     def fake_run(
@@ -644,10 +651,326 @@ def test_launch_creates_detached_tmux_supervisor_without_training(
     assert "PYTHONHASHSEED=0" in command[-1]
     assert "CUBLAS_WORKSPACE_CONFIG=:4096:8" in command[-1]
     assert str(declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME) in command[-1]
+    shell_tokens = shlex.split(command[-1])
+    python = str(declaration.python_executable)
+    assert shell_tokens.count(python) == 1
+    python_index = shell_tokens.index(python)
+    assert shell_tokens[python_index : python_index + 4] == [
+        python,
+        "-m",
+        module.__name__,
+        "_supervise",
+    ]
+    assert str(declaration.control_dir / module.SUPERVISOR_LOG_FILE_NAME) in (
+        shell_tokens
+    )
+    assert handshakes == [declaration.path]
     persisted = json.loads(declaration.status_path.read_text(encoding="utf-8"))
     assert persisted["state"] == "launching"
     with pytest.raises(PilotOrchestrationError, match="already launched"):
         module.launch(path)
+
+
+def test_launch_blocks_when_tmux_dies_before_supervisor_handshake(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda _path: {
+            "resources": {"output_bytes": 0, "free_bytes": MIN_FREE_BYTES}
+        },
+    )
+    liveness = iter((False, False))
+    monkeypatch.setattr(module, "_tmux_has_session", lambda _session: next(liveness))
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tmux")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    blocked: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_block_running_manifest",
+        lambda _declaration, detail: blocked.append(detail),
+    )
+    monkeypatch.setattr(
+        module,
+        "capture_resources",
+        lambda _root: ResourceSnapshot(0, MIN_FREE_BYTES),
+    )
+
+    with pytest.raises(PilotOrchestrationError, match="before the running handshake"):
+        module.launch(path)
+
+    assert blocked == ["tmux supervisor exited before the running handshake"]
+    persisted = json.loads(declaration.status_path.read_text(encoding="utf-8"))
+    assert persisted["state"] == "failed"
+    assert "before the running handshake" in cast(str, persisted["detail"])
+
+
+def test_failed_supervisor_handshake_retries_manifest_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda _path: {
+            "resources": {"output_bytes": 0, "free_bytes": MIN_FREE_BYTES}
+        },
+    )
+    monkeypatch.setattr(module, "_tmux_has_session", lambda _session: False)
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tmux")
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module,
+        "_await_supervisor_handshake",
+        lambda _declaration: (_ for _ in ()).throw(
+            PilotOrchestrationError("child failed early")
+        ),
+    )
+    blocked: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_block_running_manifest",
+        lambda _declaration, detail: blocked.append(detail),
+    )
+    monkeypatch.setattr(
+        module,
+        "capture_resources",
+        lambda _root: ResourceSnapshot(0, MIN_FREE_BYTES),
+    )
+
+    with pytest.raises(PilotOrchestrationError, match="child failed early"):
+        module.launch(path)
+
+    assert blocked == ["child failed early"]
+    assert calls[-1] == [
+        "tmux",
+        "kill-session",
+        "-t",
+        f"={declaration.tmux_session}",
+    ]
+    persisted = json.loads(declaration.status_path.read_text(encoding="utf-8"))
+    assert persisted["state"] == "failed"
+
+
+@pytest.mark.parametrize("entry_kind", ["regular", "symlink", "fifo"])
+def test_preexisting_supervisor_log_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entry_kind: str,
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    log_path = declaration.control_dir / module.SUPERVISOR_LOG_FILE_NAME
+    victim = declaration.control_dir / "victim.txt"
+    victim.write_text("untouched", encoding="utf-8")
+    if entry_kind == "regular":
+        log_path.write_text("occupied", encoding="utf-8")
+    elif entry_kind == "symlink":
+        log_path.symlink_to(victim)
+    else:
+        os.mkfifo(log_path)
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda _path: {
+            "resources": {"output_bytes": 0, "free_bytes": MIN_FREE_BYTES}
+        },
+    )
+    monkeypatch.setattr(module, "_tmux_has_session", lambda _session: False)
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tmux")
+    blocked: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_block_running_manifest",
+        lambda _declaration, detail: blocked.append(detail),
+    )
+    monkeypatch.setattr(
+        module,
+        "capture_resources",
+        lambda _root: ResourceSnapshot(0, MIN_FREE_BYTES),
+    )
+
+    with pytest.raises(PilotOrchestrationError, match="supervisor log already exists"):
+        module.launch(path)
+
+    assert len(blocked) == 1
+    assert victim.read_text(encoding="utf-8") == "untouched"
+    persisted = json.loads(declaration.status_path.read_text(encoding="utf-8"))
+    assert persisted["state"] == "failed"
+
+
+def test_status_rejects_self_hashed_truncated_running_record(
+    tmp_path: Path,
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    body: dict[str, object] = {
+        "declaration_sha256": declaration.declaration_sha256,
+        "state": "running",
+    }
+    body["status_sha256"] = module.sha256_canonical_json(body)
+    _rewrite(declaration.status_path, body)
+
+    with pytest.raises(PilotOrchestrationError, match="status keys"):
+        module.status(path)
+
+
+def test_status_accepts_exact_full_running_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, payload = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    launched = write_pilot_declaration(
+        declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME,
+        payload,
+    )
+    record = module._status_payload(  # noqa: SLF001
+        launched,
+        "running",
+        started_monotonic=0.0,
+        resources=ResourceSnapshot(0, MIN_FREE_BYTES),
+        child_pid=1235,
+        supervisor_pid=1234,
+    )
+    _rewrite(declaration.status_path, record)
+    monkeypatch.setattr(module, "_tmux_has_session", lambda _session: True)
+    monkeypatch.setattr(module, "_tmux_pane_pid", lambda _session: 1234)
+
+    snapshot = module.status(path)
+
+    assert snapshot["persisted"] == record
+    assert snapshot["tmux_alive"] is True
+    assert snapshot["tmux_pane_pid"] == 1234
+
+
+def test_status_rejects_unhashable_self_hashed_declaration_path(
+    tmp_path: Path,
+) -> None:
+    path, payload = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    launched = write_pilot_declaration(
+        declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME,
+        payload,
+    )
+    record = module._status_payload(  # noqa: SLF001
+        launched,
+        "running",
+        started_monotonic=0.0,
+        resources=ResourceSnapshot(0, MIN_FREE_BYTES),
+        child_pid=1235,
+        supervisor_pid=1234,
+    )
+    record["declaration_path"] = []
+    record.pop("status_sha256")
+    record["status_sha256"] = module.sha256_canonical_json(record)
+    _rewrite(declaration.status_path, record)
+
+    with pytest.raises(PilotOrchestrationError, match="status identity"):
+        module.status(path)
+
+
+def test_running_handshake_binds_tmux_pane_to_supervisor_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, _ = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    monkeypatch.setattr(
+        module,
+        "status",
+        lambda _path: {
+            "persisted": {
+                "state": "running",
+                "supervisor_pid": 1234,
+                "child_pid": 1235,
+            },
+            "tmux_alive": True,
+            "tmux_pane_pid": 5678,
+        },
+    )
+
+    with pytest.raises(PilotOrchestrationError, match="pane PID"):
+        module._await_supervisor_handshake(declaration)  # noqa: SLF001
+
+
+def test_completed_handshake_requires_manifest_and_completion_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, payload = _payload(tmp_path)
+    declaration = load_pilot_declaration(path)
+    write_pilot_declaration(
+        declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME,
+        payload,
+    )
+    monkeypatch.setattr(
+        module,
+        "status",
+        lambda _path: {
+            "persisted": {
+                "state": "completed",
+                "detail": f"completion_sha256={'a' * 64}",
+                "supervisor_pid": 1234,
+                "child_pid": 1235,
+            },
+            "tmux_alive": False,
+            "tmux_pane_pid": None,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "load_manifest",
+        lambda _path: {"status": "running"},
+    )
+
+    with pytest.raises(PilotOrchestrationError, match="before the running handshake"):
+        module._await_supervisor_handshake(declaration)  # noqa: SLF001
+
+
+def test_tmux_pane_inspection_covers_the_entire_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "4321\n", "")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module._tmux_pane_pid("pilot-session") == 4321  # noqa: SLF001
+    assert calls == [
+        [
+            "tmux",
+            "list-panes",
+            "-s",
+            "-t",
+            "=pilot-session",
+            "-F",
+            "#{pane_pid}",
+        ]
+    ]
 
 
 def test_launch_exec_failure_blocks_manifest_and_persists_terminal_status(
@@ -704,6 +1027,7 @@ def test_launch_snapshot_keeps_supervisor_bound_to_preflighted_manifest(
         "run",
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
     )
+    monkeypatch.setattr(module, "_await_supervisor_handshake", lambda _value: None)
     module.launch(path)
     launch_path = original.control_dir / LAUNCH_DECLARATION_FILE_NAME
     launched = load_pilot_declaration(launch_path)
