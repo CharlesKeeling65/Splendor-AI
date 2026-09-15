@@ -6,8 +6,8 @@
 > 浏览器层七件套含真实 DOM 实测回填 + play-web 部署 harness），**P4 经 ADR 裁决暂缓**，
 > **P5 已完成**（CI/Makefile/文档），**P6 已完成**（TCP JSONL 远程推理、DQN/前馈
 > imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
-> **T1.0–T1.2 已完成**（基线冻结、RNG 分流/配对 schedule、ScenarioV1/内容寻址 bank/
-> sealed gate）；T1.3 起的统计、pilot 与训练仍受分阶段批准门约束。训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
+> **T1.0–T1.3 已完成**（基线冻结、RNG 分流/配对 schedule、ScenarioV1/内容寻址 bank/
+> sealed gate、配对评测/聚类统计/固定 N 协议）；T1.4 起的 pilot 与训练仍受分阶段批准门约束。训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
 ## 项目概述

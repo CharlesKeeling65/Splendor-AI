@@ -46,4 +46,17 @@ cross-runner deal parity begin in T1.2.
 schema, registry hashes, seven disjoint split ranges, opening-only strata,
 content-addressed bank format, sealed consumption gate, and Game/raw/PPO
 parity contract. Only CI fixtures were produced; the formal sealed bank remains
-unmaterialized until the T1.3 power analysis and T1.4 approval gate.
+unmaterialized until the T1.4 crossed pilot and fixed-N approval gate.
+
+## T1.3 paired evaluation and statistics
+
+[`T1.3_PAIRED_STATISTICS.md`](T1.3_PAIRED_STATISTICS.md) records the strict
+candidate × opponent × ScenarioV1 × two-seat evaluator, append-only episode
+schema, failure-preserving denominator, joint scenario-cluster and nested
+replicate→scenario bootstrap, separate scenario/model-replicate power designs,
+checkpoint-to-live-policy attestation, and manifest-bound immutable
+`statistics.json` contract. Power artifacts distinguish prospective pilot data
+from a separately approved fixed-N run, whose manifest must bind the exact
+pilot artifact before outcomes are read. Only CI/synthetic fixtures were
+executed. The crossed pilot and its final fixed N remain behind the T1.4
+approval gate; no formal or sealed bank was consumed.

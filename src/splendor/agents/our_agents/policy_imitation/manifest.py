@@ -210,7 +210,7 @@ def _validate_seed_plan_v2(  # noqa: C901,PLR0912 - all split roles fail closed
         raise ValueError("manifest v2 2p protocol requires seats [0, 1]")
 
 
-def _validate_declaration_v2(  # noqa: C901,PLR0912 - declaration fields fail closed
+def _validate_declaration_v2(  # noqa: C901,PLR0912,PLR0915 - fail closed
     declaration: Mapping[str, Any],
 ) -> None:
     required = (
@@ -305,6 +305,40 @@ def _validate_declaration_v2(  # noqa: C901,PLR0912 - declaration fields fail cl
             )
         ):
             raise ValueError("formal training scenario-bank SHA-256 is invalid")
+    raw_statistics = declaration.get("statistical_protocol")
+    statistical_protocol = None
+    if raw_statistics is not None:
+        from .statistics import (  # noqa: PLC0415 - avoid manifest import cycle
+            StatisticsError,
+            validate_analysis_plan_binding,
+            validate_statistical_protocol_binding,
+        )
+
+        try:
+            statistical_protocol = validate_statistical_protocol_binding(raw_statistics)
+        except StatisticsError as exc:
+            raise ValueError(
+                f"manifest statistical protocol is invalid: {exc}"
+            ) from exc
+    raw_evaluation = declaration.get("paired_evaluation")
+    if raw_evaluation is not None:
+        from .paired_evaluation import (  # noqa: PLC0415 - avoid import cycle
+            PairedEvaluationError,
+            validate_paired_evaluation_binding,
+        )
+
+        if raw_statistics is None:
+            raise ValueError("formal paired evaluation requires a statistical_protocol")
+        try:
+            validate_paired_evaluation_binding(raw_evaluation)
+            assert statistical_protocol is not None
+            validate_analysis_plan_binding(raw_evaluation, statistical_protocol)
+        except PairedEvaluationError as exc:
+            raise ValueError(f"manifest paired evaluation is invalid: {exc}") from exc
+        except StatisticsError as exc:
+            raise ValueError(
+                f"manifest evaluation/statistics binding is invalid: {exc}"
+            ) from exc
 
 
 def _validate_provenance_v2(provenance: Mapping[str, Any]) -> None:
@@ -466,6 +500,8 @@ def create_manifest_v2(  # noqa: PLR0913 - protocol fields are explicit
     artifact_contract: Mapping[str, Any],
     baselines: Mapping[str, Any],
     formal_training: Mapping[str, Any] | None = None,
+    paired_evaluation: Mapping[str, Any] | None = None,
+    statistical_protocol: Mapping[str, Any] | None = None,
     requested_device: str = "cpu",
     repo: Path | None = None,
     notes: Sequence[str] = (),
@@ -494,6 +530,10 @@ def create_manifest_v2(  # noqa: PLR0913 - protocol fields are explicit
     }
     if formal_training is not None:
         declaration["formal_training"] = dict(formal_training)
+    if paired_evaluation is not None:
+        declaration["paired_evaluation"] = dict(paired_evaluation)
+    if statistical_protocol is not None:
+        declaration["statistical_protocol"] = dict(statistical_protocol)
     created_at = _now()
     provenance: dict[str, Any] = {
         "created_at": created_at,

@@ -558,7 +558,7 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   loopback/夹具测试不访问真实网页或外网。真实房间、profile、seat guard 和胜率曲线仍是
   单独人工验收，不在 CI 中执行。
 
-### 7.12 Task-1 T1.0–T1.2 科学实验协议（2026-09-15）
+### 7.12 Task-1 T1.0–T1.3 科学实验协议（2026-09-15）
 
 - **T1.0 基线冻结**：复核官方 `ppo-best` 及父数据/checkpoint/opponent hash，将 C4-R2
   的 50 source seeds、150 行伪重复分母与旧 Wilson 解释边界归档；manifest v2 实施
@@ -570,4 +570,10 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   开局快照通过 `scenario_id == canonical_state_sha256` 寻址；Game/raw evaluation/formal PPO
   初态 observation/mask/hash 奇偶一致。七个互斥 seed split、IID/可审计分层压力抽样、
   canonical JSONL(+zstd) 只读 bank、流式 subset loader 与密封消费 hash-chain ledger 已通过
-  两轮独立对抗测试。本阶段未生成/读取正式 sealed bank，未启动训练。
+  两轮独立对抗测试。
+- **T1.3 配对评测/统计**：新增 candidate×opponent×ScenarioV1×双座位固定矩阵、事件键 CRN、
+  checkpoint-to-live-policy 双席 attestation、完整动作 payload/终态回放审计、append-only episode
+  ledger；失败/缺失令整批 invalid。统计先合并双座位，再做联合 scenario-cluster 或
+  replicate→scenario nested bootstrap；`d_deploy` 与 `d_method` 独立做 prospective power，固定 N
+  只能继承 manifest 预绑定的 pilot artifact，不得以 final outcome 重估。实现经六轮独立对抗复审；
+  本阶段未运行 pilot、未生成/读取正式 sealed bank、未启动训练。

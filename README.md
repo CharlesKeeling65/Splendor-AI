@@ -47,6 +47,7 @@ make parity  # 特征/掩码奇偶质量门（改引擎掩码/features/浏览器
 - **训练实操指导手册**：[docs/TRAINING_GUIDE.md](./docs/TRAINING_GUIDE.md)（课程安排/参数全解/监控/验收）。
 - **DQN 五阶段实验**：[实施与复现](./docs/DQN_SEARCH_EXPERIMENTS.md) · [2026-09-07 训练结果](./docs/DQN_EXPERIMENT_RESULTS_20260907.md)（含未获提升的消融，不自动替换部署模型）。
 - **DQN 第二轮**：[EMA 与退火引导结果](./docs/DQN_ROUND2_RESULTS_20260907.md)（12 次训练、多对手评测及同分选模纠错）。
+- **Task-1 2p 科学实验协议**：[实施台账](./docs/task1/README.md)（T1.0–T1.3：基线冻结、事件键 RNG、ScenarioV1 bank、配对评测与 cluster/nested bootstrap；pilot/训练仍需批准）。
 - **浏览器部署与可视化手册**：[docs/WEB_DEPLOYMENT_GUIDE.md](./docs/WEB_DEPLOYMENT_GUIDE.md)（人机对战/挂机/双开自博弈/旁观/回流）。
 - **远程推理部署手册**：[docs/REMOTE_DEPLOYMENT_GUIDE.md](./docs/REMOTE_DEPLOYMENT_GUIDE.md)（inference-server / play-web-remote / play-dashboard；DQN、前馈 imitation-PPO、座位 guard 与胜率代理）。
 - 网页规则实测记录（E1-E6 + 规则差异 ADR）：[docs/web_experiments.md](./docs/web_experiments.md)。

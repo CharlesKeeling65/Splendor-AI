@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
 > 复核版本：2026-09-15。
-> 状态：实施中；T1.0–T1.2 已完成并通过独立验收，T1.3 待实施。本文中的训练阶段仍须各自通过批准门。
+> 状态：实施中；T1.0–T1.3 已完成并通过独立验收，T1.4 等待 pilot/训练批准。本文中的训练阶段仍须各自通过批准门。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -271,27 +271,27 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
 
 ### T1.3 配对评测、统计与 power analysis
 
-- [ ] treatment/control 与 official/`ppo-best` 均对同一 scenario、同一 opponent、两个目标座位运行；
+- [x] treatment/control 与 official/`ppo-best` 均对同一 scenario、同一 opponent、两个目标座位运行；
   随机对手使用相同事件键随机变元。
-- [ ] 每局记录 checkpoint/代码 hash、scenario、seat、opponent snapshot、全部 RNG lineage、WDL、raw/calScore、
+- [x] 每局记录 checkpoint/代码 hash、scenario、seat、opponent snapshot、全部 RNG lineage、WDL、raw/calScore、
   回合数、动作类型、卡/贵族、延迟、失败原因和 action-trace hash。
-- [ ] 唯一键至少为 `(candidate_hash, opponent_hash, scenario_id, seat, replicate_id)`；重复键拒绝写入。
-- [ ] 失败局保留在 scheduled denominator，同时 formal batch 因任何失败而整体标记 invalid；修复后只能按
+- [x] 唯一键至少为 `(candidate_hash, opponent_hash, scenario_id, seat, replicate_id)`；重复键拒绝写入。
+- [x] 失败局保留在 scheduled denominator，同时 formal batch 因任何失败而整体标记 invalid；修复后只能按
   原 schedule 续跑/补齐，不能换 seed。不得像 legacy league 那样静默排除错误局。
-- [ ] checkpoint 级差值：先在 scenario 内合并双座次；bootstrap 时同一抽样索引联合重采样该 scenario
+- [x] checkpoint 级差值：先在 scenario 内合并双座次；bootstrap 时同一抽样索引联合重采样该 scenario
   的所有候选和 opponents，保持 CRN/多终点相关结构，不能为每个表格单元各自抽样。
-- [ ] treatment 级方法差值只比较同一 `replicate_id` 下的 treatment 与 `O`。逐 replicate 报告，并给
+- [x] treatment 级方法差值只比较同一 `replicate_id` 下的 treatment 与 `O`。逐 replicate 报告，并给
   均值、标准差、最差 replicate；建议同时给 opponent-stratified IQM、performance profile 和
   probability of improvement。只有 ≥5 replicates 时才给标注清楚的 replicate→scenario 层级
   bootstrap；3 replicates 不做精确显著性声称，5 replicates 的区间也必须注明小样本限制。
-- [ ] Wilson 仅可作为独立单局的附加描述；双座次、重复或 CRN 数据的正式决策不用 Wilson。
-- [ ] 分别为 `d_method` 的 model-replicate 数与 `d_deploy` 的 scenario 数做 power analysis；不能只扩大
+- [x] Wilson 仅可作为独立单局的附加描述；双座次、重复或 CRN 数据的正式决策不用 Wilson。
+- [x] 分别为 `d_method` 的 model-replicate 数与 `d_deploy` 的 scenario 数做 power analysis；不能只扩大
   scenario 数来补偿训练副本不足。以 pilot 的 paired difference 标准差 `s_d`、最小重要效应 `delta`、
   family-wise `alpha=0.05` 和 power ≥0.8 计算样本量；正态近似
   `n ≈ ((z_(1-alpha*) + z_(1-beta)) * s_d / delta)^2` 只作初值，再用模拟/重采样校验。
-- [ ] final test 使用固定 N，禁止查看普通 95% CI 后 sequential stopping。筛选也使用预先固定的 50-deal block；
+- [x] final test 使用固定 N，禁止查看普通 95% CI 后 sequential stopping。筛选也使用预先固定的 50-deal block；
   若未来采用 group-sequential/always-valid 方法，必须另写统计规格和 alpha spending 单测。
-- [ ] 确认性、非劣化、探索性 hypothesis family 在 manifest 分开；所有权重、方向、tie 规则、CI 算法、
+- [x] 确认性、非劣化、探索性 hypothesis family 在 manifest 分开；所有权重、方向、tie 规则、CI 算法、
   bootstrap seed/次数和缺失值处理在运行前冻结。
 
 **退出门槛**：用合成数据验证聚类 bootstrap——机械复制同一 `(scenario, seat)` 不会缩窄区间；任意表格可从
