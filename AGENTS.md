@@ -2,7 +2,7 @@
 
 > 本文件面向在本仓库工作的 AI 编码 agent。内容基于 2026-09-03 的全量源码调研，所有事实均已逐一验证。
 > 项目升级计划见 [plan/](./plan/README.md)——**动代码前先读对应阶段文档**。
-> 升级进度（dev 分支，2026-09-15）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
+> 升级进度（dev 分支，2026-09-17）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
 > 浏览器层七件套含真实 DOM 实测回填 + play-web 部署 harness），**P4 经 ADR 裁决暂缓**，
 > **P5 已完成**（CI/Makefile/文档），**P6 已完成**（TCP JSONL 远程推理、DQN/前馈
 > imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
@@ -11,7 +11,10 @@
 > 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，非 sealed 96k pilot bank
 > 及 validation-A200/stress100 基线 banks 已物化审计，safe PBRS、正式 checkpoint selection 与
 > P5000/tmux 编排门已实现；1,800 局新协议冻结基线及 fixed-model 方差分解已完成，10-row selector
-> bank 已审计。下一步启动正式 CUDA/P5000 pilot；validation-B、sealed 与 reserve 仍受后续批准门约束。
+> bank 已审计。首个真实 CUDA/P5000 r3 pilot 已运行但由旧 18h wall gate 在半矩阵处 fail-closed；
+> partial 仅作诊断。累计 result/checkpoint I/O 已改为 zstd hash-chain journal + milestone retention，
+> 只读 monitor 与 v3 36h envelope 已就绪；下一步用全新 manifest/output 完整重跑六 job。
+> validation-B、sealed 与 reserve 仍受后续批准门约束。
 > 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
@@ -43,6 +46,7 @@ inference-server # 远程加载 DQN/前馈 imitation-PPO checkpoint（TCP JSONL�
 play-web-remote # 本地浏览器控制，远程动作/胜率推理
 play-dashboard # 读取远程对局 JSONL 事件流的胜率仪表盘
 play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进程输出走法建议+牌堆直方图（P7）
+task1-pilot-monitor # 只读查看 T1.4 六 job、tmux 与 wall/output/free-space headroom
 # 快捷入口：make test / make test-remote / make parity / make train-dqn / make play-web
 ```
 
@@ -86,7 +90,7 @@ play-advisor # 只读对局辅助面板：人在 ego-browser 窗口打牌，进�
 
 `tests/` 已随阶段同步建立，全量离线（CI 不碰网络）：`.venv/bin/python -m pytest tests/`（或 `make test`）。
 
-测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）；Task-1 另由 `test_rng_protocol`/`test_scenario_bank`/`test_paired_evaluation`/`test_paired_statistics`/`test_seed_roll`/`test_episodic_potential`/`test_task1_t14_baseline`/`test_formal_validation`/`test_pilot_orchestrator` 覆盖 RNG、bank、评测统计、一次性 seed-roll、safe PBRS、T1.4 基线、正式选模与 tmux/资源/生命周期训练门。
+测试矩阵（plan/phase-5 §3.1）：`test_action_index_cache`（P0 缓存等价/双射）、`test_card_registry`（P0 90 卡/10 贵族）、`test_env_protocol`（P0 协议）、`test_replay_buffer`/`test_dqn_network`/`test_dqn_update`/`test_reward_wrapper`/`test_dqn_smoke`（P1）、`test_feature_parity`（**P2 核心质量门：obs+掩码双奇偶 ≥1000 状态逐位相等**）、`test_browser_adapter`（P2 夹具流水线）、`test_mask_parity_monitor`（P2 归因）、`test_play_web`（P3 harness/回流）、`test_remote_policies`/`test_remote_protocol`/`test_winrate_estimator`/`test_play_remote_options`/`test_remote_dashboard`（P6 loader、rollout、JSONL、CLI 与 dashboard）；Task-1 另由 `test_rng_protocol`/`test_scenario_bank`/`test_paired_evaluation`/`test_paired_statistics`/`test_seed_roll`/`test_episodic_potential`/`test_task1_t14_baseline`/`test_formal_validation`/`test_formal_update_journal`/`test_pilot_orchestrator`/`test_pilot_monitor` 覆盖 RNG、bank、评测统计、一次性 seed-roll、safe PBRS、T1.4 基线、正式选模、追加证据、tmux/资源/生命周期训练门与只读进度观测。
 CI（GitHub Actions）：ruff + mypy（新代码路径）+ pytest，Python 3.12/3.13 矩阵。
 lint 工具链只从 `.[dev]`（= `requirements/development.txt`）来，CI **不得**再 `uv pip install ruff` 覆盖 pin
 （无 pin 的 ruff 曾在无代码变更时因新增默认规则把整个仓库的 lint 门刷红）。

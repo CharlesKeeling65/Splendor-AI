@@ -313,10 +313,19 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
   `O/safe-potential-v1` 与 `O_bridge/terminal-biased-potential-v1`，冻结 41 次
   validation-A checkpoint 评测和整数胜局/最早 update 选模，严格绑定 initializer、完整 PPO
   config、训练/validation 对手 source-config、ScenarioV1 bank、checkpoint model state 与逐局重放证据；
-  `task1-pilot` 另以 P5000/sm61、三 worker、18h/32GiB/40GiB、父子 lease、进程组和 manifest
-  生命周期 fail closed。经明确授权已物化并全量 source→ScenarioV1 复核 pilot 96,000-row
+  `task1-pilot` 另以 P5000/sm61、三 worker、版本化 wall gate（历史 v2=18h；新 retry v3=36h）、
+  32GiB/40GiB、父子 lease、进程组和 manifest 生命周期 fail closed；正式 update 证据使用
+  fsync 的逐帧 zstd hash-chain journal，checkpoint 仅保留 live history 与 validation milestones，
+  terminal supervisor 会把子 job 显式闭合为 `interrupted/not-started`。经明确授权已物化并全量
+  source→ScenarioV1 复核 pilot 96,000-row
   `train-schedule`、checkpoint selection 用 validation-A first-10，以及基线用 validation-A
   200-row / stress 100-row 非 sealed banks；未读取 validation-B/sealed，未启用 reserve `(3,4)`。
+- [x] 首个真实 CUDA/P5000 r3 formal attempt 经 durable handshake 启动三 job，但在 18h v2 wall gate
+  时分别停于 `1432/1416/1386` updates，后三 job 尚未开始；manifest 已 fail-closed 为 `blocked`，
+  20.69GB partial evidence 保留且只作诊断。根因是旧路径每 update 重写累计至约 2.5GB/job 的
+  `result.json` 并保留全部 checkpoint，而非 CUDA/非法动作/磁盘 gate。性能修正、压缩 journal、
+  retention、phase telemetry、只读 monitor 与 v3 36h envelope 已实现并对抗测试；下一次必须使用
+  全新 manifest/output，不能续跑或把 r3 partial 当作 crossed-pilot 结果。
 - [x] 在新 IID/压力 bank 上复测冻结 `ppo-best`：validation-A 1,200 局为 740/3/457、
   stress 600 局为 351/1/248，均 0 failure；这是新协议描述性基线，不能与 C4-R2 的伪重复区间
   拼接。内容寻址报告与恢复审计见

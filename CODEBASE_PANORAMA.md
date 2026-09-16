@@ -628,8 +628,8 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   取最早 update。完成证据会独立重跑策略、回放动作、核对 41 个 checkpoint/model-state/config/
   initializer/opponent/code/bank hash，`best.pth` 必须与所选 checkpoint 字节一致。
 - **tmux/P5000 fail closed**：`task1-pilot` 只接受精确 O/O_bridge×r0/r1/r2、三 spawn workers、
-  `.venv-p5000` CUDA/P5000 `(6,1)` 与兼容 `sm_60|sm_61` cubin、固定五成员训练 pool；18h wall、
-  32GiB output、40GiB free-space
+  `.venv-p5000` CUDA/P5000 `(6,1)` 与兼容 `sm_60|sm_61` cubin、固定五成员训练 pool；历史
+  orchestration-v2 固定 18h，新 retry 的 v3 固定 36h，二者均执行 32GiB output、40GiB free-space
   由父子独立 watchdog/lease/process group 执行。声明、launch snapshot、一次性 supervisor stderr、
   30 秒 durable-running handshake、输出 reservation、status/completion 和 manifest 终态均一次性绑定；
   启动/worker/资源/证据任一失败即终止同组进程并 block 原 running manifest。
@@ -638,11 +638,18 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   `18979a2d...ffb9` 经 ScenarioV1+动作索引幂等重放，两个 manifest 均完成。finite-population
   functional ANOVA 中交互项占 validation-A 78.3880%、stress 79.2581%；详见
   `docs/task1/T1.4_BASELINE_RESULTS.md`，不得与历史 C4-R2 伪重复区间合并。
-- **当前边界**：non-sealed 10-row validation-A selector bank 已另行物化并 source replay 审计；最终
+- **当前边界**：non-sealed 10-row validation-A selector bank 已另行物化并 source replay 审计；最初
   pilot 首次 launch declaration 通过 admission 后在握手前退出；由此新增一次性 early-stderr、status-v2
   exact schema 与 tmux-pane→supervisor→matrix PPID/PGID 的 30 秒握手。首个 hardened retry 的日志进一步
   定位到 `python -m` 入口把 runtime `__name__ == "__main__"` 错传给两级子进程；现已改用 canonical module
   常量并加入口回归。第二个 retry 被越界的隔离测试进程物化为 CPU runtime provenance，host activation
-  在 tmux 前由 runtime 等值门拒绝。三个 manifest 均 `blocked`，且均核验为无 CUDA process/output/update；
-  后续尝试须用新 manifest 与输出路径，且 production prepare/activate/launch 仅可由 host 主流程执行。
-  GPU 训练仍未实际启动，validation-B、sealed-test 与 reserve `(3,4)` 仍未触及。
+  在 tmux 前由 runtime 等值门拒绝。前三个 manifest 均 `blocked` 且无 optimizer output。
+  r3 随后在 host P5000 上通过 durable running/process-tree/CUDA 验证，前三个 job 分别完成
+  1432/1416/1386 updates 后由 v2 的 18h wall gate 终止，后三个未开始；20.69GB partial evidence
+  保留但不构成 crossed-pilot 结果。现场证据定位到累计 `result.json` 每 update 全量重写（partial
+  已约 2.4–2.5GB/job）与全 checkpoint retention。formal-v2 现改为 canonical zstd-frame hash-chain
+  journal、bounded result/status、live-history+41 selector milestone retention、分阶段耗时和 child
+  `interrupted/not-started` 终态回填；`task1-pilot-monitor` 只读汇总 update/tmux/资源 headroom。
+  新 orchestration-v3 将 wall envelope 冻结为 36h，旧 v2 仍按 18h 可审计。后续重跑须用新
+  manifest/output，且 production prepare/activate/launch 仅可由 host 主流程执行；validation-B、
+  sealed-test 与 reserve `(3,4)` 仍未触及。

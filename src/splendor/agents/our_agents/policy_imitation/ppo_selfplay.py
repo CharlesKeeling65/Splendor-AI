@@ -6,6 +6,7 @@ import os
 import random
 import shutil
 import stat
+import subprocess
 import tempfile
 import time
 from collections import Counter
@@ -93,6 +94,10 @@ InitializationMode = Literal["bc", "scratch"]
 ADVANTAGE_STD_EPSILON = 1e-8
 EXPLAINED_VARIANCE_EPSILON = 1e-12
 FORMAL_OUTPUT_RESERVATION_NAME = "formal-output-reservation.json"
+FORMAL_UPDATE_JOURNAL_NAME = "updates.jsonl.zst"
+FORMAL_UPDATE_JOURNAL_SCHEMA = "splendor-formal-ppo-update-journal/1"
+FORMAL_RESULT_SCHEMA = "splendor-formal-ppo-result/2"
+FORMAL_STATUS_SCHEMA = "splendor-formal-ppo-status/2"
 
 
 def _validate_value_mode(value_mode: str) -> ValueMode:
@@ -1922,15 +1927,45 @@ def _pool_draws_from_metrics(metrics: Mapping[str, Any]) -> list[str]:
     return []
 
 
-def _checkpoint_pool_distribution(  # noqa: C901 - provenance branches stay explicit
+def _checkpoint_pool_distribution(  # noqa: C901, PLR0912, PLR0915
     opponent_pool: Sequence[OpponentPoolEntry],
     metrics: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return the exact latest CDF plus aggregate draw provenance."""
     draws = _pool_draws_from_metrics(metrics)
     counts = Counter(draws)
-    if not opponent_pool:
+    aggregate_usage = metrics.get("aggregate_opponent_pool_usage")
+    if aggregate_usage is not None:
+        if not isinstance(aggregate_usage, Mapping) or set(aggregate_usage) != {
+            "actual_counts",
+            "draws",
+        }:
+            raise ValueError("aggregate opponent-pool usage schema is invalid")
+        raw_counts = aggregate_usage.get("actual_counts")
+        raw_draws = aggregate_usage.get("draws")
+        if (
+            not isinstance(raw_counts, Mapping)
+            or any(
+                type(name) is not str
+                or not name
+                or type(count) is not int
+                or count < 0
+                for name, count in raw_counts.items()
+            )
+            or type(raw_draws) is not int
+            or raw_draws < 0
+            or sum(cast(int, count) for count in raw_counts.values()) != raw_draws
+        ):
+            raise ValueError("aggregate opponent-pool usage counts are invalid")
         if draws:
+            raise ValueError(
+                "checkpoint metrics cannot mix raw and aggregate opponent draws"
+            )
+        counts = Counter(
+            {cast(str, name): cast(int, count) for name, count in raw_counts.items()}
+        )
+    if not opponent_pool:
+        if counts:
             raise ValueError("checkpoint metrics contain draws from an empty pool")
         empty_distribution = {
             "version": "weighted-pool-v1/name-ascending",
@@ -1948,6 +1983,32 @@ def _checkpoint_pool_distribution(  # noqa: C901 - provenance branches stay expl
             "draws": 0,
         }
     snapshot = WeightedPoolSnapshot.from_entries(opponent_pool)
+    snapshot_names = {item.name for item in snapshot.items}
+    dynamic_updates = [
+        int(suffix)
+        for name in snapshot_names
+        for prefix in ("current-update-", "history-update-")
+        if name.startswith(prefix)
+        for suffix in (name.removeprefix(prefix),)
+        if suffix.isdigit()
+    ]
+    latest_dynamic_update = max(dynamic_updates, default=0)
+    unknown_count_names = {
+        name
+        for name in counts
+        if name not in snapshot_names
+        and not any(
+            name.startswith(prefix)
+            and name.removeprefix(prefix).isdigit()
+            and 0 < int(name.removeprefix(prefix)) <= latest_dynamic_update
+            for prefix in ("current-update-", "history-update-")
+        )
+    }
+    if unknown_count_names:
+        raise ValueError(
+            "checkpoint opponent usage contains names outside its declared pool: "
+            f"{sorted(unknown_count_names)}"
+        )
     latest_distribution: Mapping[str, Any] | None = None
     direct_pool = metrics.get("opponent_pool")
     if isinstance(direct_pool, Mapping):
@@ -1975,14 +2036,14 @@ def _checkpoint_pool_distribution(  # noqa: C901 - provenance branches stay expl
         distribution["count_scope"] = "latest-checkpoint-update"
     else:
         matching_draws = [
-            draw for draw in draws if draw in {item.name for item in snapshot.items}
+            draw for draw in draws if draw in snapshot_names
         ]
         distribution = snapshot.as_dict(matching_draws)
         distribution["count_scope"] = "matching-metrics-records"
     usage = {
         "count_scope": "all-training-records-in-checkpoint-metrics",
         "actual_counts": dict(sorted(counts.items())),
-        "draws": len(draws),
+        "draws": int(sum(counts.values())),
     }
     return distribution, usage
 
@@ -2219,6 +2280,352 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _compact_json_bytes(payload: Mapping[str, Any]) -> bytes:
+    """Serialize one audit record deterministically without pretty-print bloat."""
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+
+
+def _require_zstd_executable() -> str:
+    """Return the pinned host compressor dependency used by formal journals."""
+    executable = shutil.which("zstd")
+    if executable is None:
+        raise RuntimeError("formal PPO update journals require the zstd executable")
+    return executable
+
+
+def _compress_formal_journal_frame(executable: str, payload: bytes) -> bytes:
+    """Compress one independently recoverable update frame at the fast level."""
+    result = subprocess.run(
+        [
+            executable,
+            "--quiet",
+            "--compress",
+            "--stdout",
+            "--threads=1",
+            "-1",
+        ],
+        input=payload,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"formal PPO journal compression failed: {message}")
+    if not result.stdout:
+        raise RuntimeError("formal PPO journal compression produced no bytes")
+    return result.stdout
+
+
+@dataclass
+class _FormalUpdateJournal:
+    """Append-only, hash-chained formal update log.
+
+    The former implementation rewrote the complete multi-gigabyte ``result.json``
+    after every optimizer update.  This journal keeps the same complete evidence
+    as concatenated, independently decompressible zstd frames, making persistence
+    O(total evidence) instead of O(updates * evidence).  The inode captured at
+    creation prevents a path replacement from redirecting later appends.
+    """
+
+    path: Path
+    device: int
+    inode: int
+    zstd_executable: str
+    entries: int = 0
+    last_entry_sha256: str | None = None
+
+    def _open_bound(self, flags: int) -> tuple[int, os.stat_result]:
+        """Open the journal without following links and verify its inode."""
+        descriptor = os.open(self.path, flags | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_dev != self.device
+                or metadata.st_ino != self.inode
+            ):
+                raise RuntimeError("formal PPO update journal identity changed")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor, metadata
+
+    @classmethod
+    def create(cls, path: Path) -> "_FormalUpdateJournal":
+        if not path.name.endswith(".jsonl.zst"):
+            raise ValueError("formal PPO update journal must end in .jsonl.zst")
+        zstd_executable = _require_zstd_executable()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):  # pragma: no cover - OS guard
+                raise RuntimeError("formal PPO update journal is not a regular file")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(path.parent)
+        return cls(
+            path=path,
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            zstd_executable=zstd_executable,
+        )
+
+    def append(self, record: Mapping[str, Any]) -> float:
+        """Durably append exactly one sequential update and return write seconds."""
+        update = record.get("update")
+        if type(update) is not int or update != self.entries:
+            raise RuntimeError(
+                "formal PPO update journal requires updates 0..N in exact order"
+            )
+        body: dict[str, Any] = {
+            "schema_version": FORMAL_UPDATE_JOURNAL_SCHEMA,
+            "index": self.entries,
+            "update": update,
+            "previous_entry_sha256": self.last_entry_sha256,
+            "record": dict(record),
+        }
+        entry_sha256 = hashlib.sha256(_compact_json_bytes(body)).hexdigest()
+        entry = {**body, "entry_sha256": entry_sha256}
+        started = time.perf_counter()
+        encoded = _compress_formal_journal_frame(
+            self.zstd_executable,
+            _compact_json_bytes(entry) + b"\n",
+        )
+        descriptor, _ = self._open_bound(os.O_WRONLY | os.O_APPEND)
+        try:
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:  # pragma: no cover - POSIX guard
+                    raise OSError("short write to formal PPO update journal")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        self.entries += 1
+        self.last_entry_sha256 = entry_sha256
+        return time.perf_counter() - started
+
+    def metadata(self, *, completed: bool) -> dict[str, Any]:
+        """Return a compact binding; hash the whole artifact only at completion."""
+        descriptor, metadata = self._open_bound(os.O_RDONLY)
+        artifact_sha256: str | None = None
+        try:
+            if completed:
+                digest = hashlib.sha256()
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    digest.update(chunk)
+                artifact_sha256 = digest.hexdigest()
+        finally:
+            os.close(descriptor)
+        return {
+            "schema_version": FORMAL_UPDATE_JOURNAL_SCHEMA,
+            "path": str(self.path),
+            "entries": self.entries,
+            "first_update": 0 if self.entries else None,
+            "last_update": self.entries - 1 if self.entries else None,
+            "last_entry_sha256": self.last_entry_sha256,
+            "artifact_sha256": artifact_sha256,
+            "size_bytes": metadata.st_size,
+        }
+
+
+def validate_formal_update_journal(  # noqa: C901, PLR0912, PLR0913, PLR0915
+    path: Path,
+    formal_spec: FormalTrainingSpec,
+    *,
+    expected_updates: int,
+    games_per_update: int,
+    expected_device: int | None = None,
+    expected_inode: int | None = None,
+    expected_opponent_usage: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stream-validate a completed v2 journal without loading it into memory."""
+    if expected_updates < 0 or games_per_update < 1:
+        raise ValueError("formal PPO journal expectations are invalid")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("formal PPO update journal is not a regular file")
+        if (
+            (expected_device is not None and metadata.st_dev != expected_device)
+            or (expected_inode is not None and metadata.st_ino != expected_inode)
+        ):
+            raise ValueError("formal PPO update journal identity changed")
+        artifact_digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            artifact_digest.update(chunk)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        executable = _require_zstd_executable()
+        process = subprocess.Popen(
+            [executable, "--quiet", "--decompress", "--stdout"],
+            stdin=descriptor,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    os.close(descriptor)
+    assert process.stdout is not None
+    assert process.stderr is not None
+    previous_sha256: str | None = None
+    entries = 0
+    opponent_counts: Counter[str] = Counter()
+    try:
+        for raw_line in process.stdout:
+            if not raw_line.endswith(b"\n"):
+                raise ValueError("formal PPO update journal has a truncated line")
+            try:
+                raw = json.loads(raw_line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("formal PPO update journal contains invalid JSON") from exc
+            try:
+                canonical_line = _compact_json_bytes(raw) + b"\n"
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "formal PPO update journal contains non-canonical values"
+                ) from exc
+            if raw_line != canonical_line:
+                raise ValueError(
+                    "formal PPO update journal entry is not canonical JSONL"
+                )
+            if not isinstance(raw, Mapping) or set(raw) != {
+                "schema_version",
+                "index",
+                "update",
+                "previous_entry_sha256",
+                "record",
+                "entry_sha256",
+            }:
+                raise ValueError("formal PPO update journal entry schema is invalid")
+            body = dict(raw)
+            entry_sha256 = body.pop("entry_sha256")
+            if (
+                raw.get("schema_version") != FORMAL_UPDATE_JOURNAL_SCHEMA
+                or type(raw.get("index")) is not int
+                or raw.get("index") != entries
+                or type(raw.get("update")) is not int
+                or raw.get("update") != entries
+                or raw.get("previous_entry_sha256") != previous_sha256
+                or type(entry_sha256) is not str
+                or entry_sha256
+                != hashlib.sha256(_compact_json_bytes(body)).hexdigest()
+            ):
+                raise ValueError("formal PPO update journal chain is invalid")
+            record = raw.get("record")
+            if (
+                not isinstance(record, Mapping)
+                or type(record.get("update")) is not int
+                or record.get("update") != entries
+            ):
+                raise ValueError("formal PPO update journal record coordinate is invalid")
+            if entries == 0:
+                if (
+                    record.get("status") != "initial"
+                    or record.get("formal_protocol") != formal_spec.as_dict()
+                    or record.get("training_records") != []
+                    or record.get("training_games") != 0
+                    or record.get("training_failed_games") != 0
+                ):
+                    raise ValueError("formal PPO update journal lacks its initial record")
+            else:
+                training_records = record.get("training_records")
+                if (
+                    record.get("status") != "completed"
+                    or record.get("training_games") != games_per_update
+                    or record.get("training_failed_games") != 0
+                    or not isinstance(training_records, list)
+                    or len(training_records) != games_per_update
+                ):
+                    raise ValueError("formal PPO completed update record is invalid")
+                for game_index, game in enumerate(training_records):
+                    if not isinstance(game, Mapping):
+                        raise ValueError(
+                            "formal PPO journal training record is not replay-addressable"
+                        )
+                    opponent = game.get("opponent")
+                    outcome = game.get("outcome")
+                    score = game.get("score")
+                    rival_score = game.get("rival_score")
+                    if (
+                        game.get("status") != "completed"
+                        or type(game.get("update")) is not int
+                        or game.get("update") != entries
+                        or type(game.get("game_index")) is not int
+                        or game.get("game_index") != game_index
+                        or game.get("experiment_id") != formal_spec.experiment_id
+                        or game.get("phase") != formal_spec.phase
+                        or type(game.get("replicate_id")) is not int
+                        or game.get("replicate_id") != formal_spec.replicate_id
+                        or game.get("treatment_id") != formal_spec.treatment_id
+                        or type(opponent) is not str
+                        or not opponent
+                        or type(outcome) is not int
+                        or outcome not in {-1, 0, 1}
+                        or type(score) not in {int, float}
+                        or not np.isfinite(cast(int | float, score))
+                        or type(rival_score) not in {int, float}
+                        or not np.isfinite(cast(int | float, rival_score))
+                    ):
+                        raise ValueError(
+                            "formal PPO journal training record is not replay-addressable"
+                        )
+                    opponent_counts[cast(str, opponent)] += 1
+            previous_sha256 = cast(str, entry_sha256)
+            entries += 1
+    except BaseException:
+        process.stdout.close()
+        process.kill()
+        process.wait()
+        process.stderr.close()
+        raise
+    else:
+        process.stdout.close()
+        error = process.stderr.read()
+        return_code = process.wait()
+        process.stderr.close()
+        if return_code != 0:
+            message = error.decode("utf-8", errors="replace").strip()
+            raise ValueError(f"formal PPO update journal decompression failed: {message}")
+    if entries != expected_updates + 1:
+        raise ValueError(
+            "formal PPO update journal does not contain update 0 through N"
+        )
+    observed_usage = {
+        "actual_counts": dict(sorted(opponent_counts.items())),
+        "draws": int(sum(opponent_counts.values())),
+    }
+    if expected_opponent_usage is not None and (
+        set(expected_opponent_usage) != {"actual_counts", "draws"}
+        or dict(expected_opponent_usage) != observed_usage
+    ):
+        raise ValueError(
+            "formal PPO update journal opponent usage does not match its result"
+        )
+    return {
+        "schema_version": FORMAL_UPDATE_JOURNAL_SCHEMA,
+        "path": str(path),
+        "entries": entries,
+        "first_update": 0,
+        "last_update": expected_updates,
+        "last_entry_sha256": previous_sha256,
+        "artifact_sha256": artifact_digest.hexdigest(),
+        "size_bytes": metadata.st_size,
+    }
 
 
 def _validation_score(validation: dict[str, Any]) -> tuple[int, int]:
@@ -2715,6 +3122,66 @@ def _copy_checkpoint_exact(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _prune_formal_update_checkpoints(
+    output_dir: Path,
+    *,
+    keep_updates: set[int],
+    expected_device: int | None = None,
+    expected_inode: int | None = None,
+) -> tuple[int, ...]:
+    """Delete only obsolete ``update-N.pth`` files from one reserved job.
+
+    Formal validation checkpoints remain immutable.  The caller additionally
+    retains the live history window needed to build opponents for the next
+    update.  All other per-update snapshots are transient execution state, not
+    completion evidence.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
+        os,
+        "O_NOFOLLOW",
+        0,
+    )
+    descriptor = os.open(output_dir, flags)
+    removed: list[int] = []
+    try:
+        directory_metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(directory_metadata.st_mode)
+            or (
+                expected_device is not None
+                and directory_metadata.st_dev != expected_device
+            )
+            or (
+                expected_inode is not None
+                and directory_metadata.st_ino != expected_inode
+            )
+        ):
+            raise RuntimeError("formal PPO output directory identity changed")
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.startswith("update-") or not name.endswith(".pth"):
+                    continue
+                raw_update = name.removeprefix("update-").removesuffix(".pth")
+                if not raw_update.isdigit():
+                    continue
+                update = int(raw_update)
+                if update in keep_updates:
+                    continue
+                metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise RuntimeError(
+                        "formal PPO checkpoint pruning found a special file or hard link"
+                    )
+                os.unlink(name, dir_fd=descriptor)
+                removed.append(update)
+        if removed:
+            os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return tuple(sorted(removed))
+
+
 def select_formal_validation_record(
     records: Sequence[Mapping[str, Any]],
 ) -> Mapping[str, Any]:
@@ -2997,8 +3464,8 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     """Train PPO from BC and select only by fixed validation opponents.
 
     ``status.json`` and a partial ``result.json`` are refreshed after every
-    completed update.  The final result keeps the complete update-0-through-N
-    log, including validation and pool provenance.
+    completed update.  Rolled formal runs keep their complete update-0-through-N
+    evidence in a durable append-only journal; legacy runs retain inline logs.
     """
     formal_rows = None
     formal_runtime: dict[str, Any] | None = None
@@ -3240,6 +3707,11 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     status_path = output_dir / "status.json"
     result_path = output_dir / "result.json"
     logs: list[dict[str, Any]] = []
+    update_journal: _FormalUpdateJournal | None = None
+    opponent_draw_counts: Counter[str] = Counter()
+    aggregate_phase_seconds: dict[str, float] = {}
+    last_committed_record: dict[str, Any] | None = None
+    last_progress_phase_seconds: dict[str, float] = {}
     history: list[OpponentPoolEntry] = []
     last_effective_entries: list[OpponentPoolEntry] = list(opponent_pool)
     best_score: tuple[int, int] | None = None
@@ -3252,6 +3724,17 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
     formal_validation_enabled = (
         formal_spec is not None and formal_spec.seed_roll_payload_sha256 is not None
     )
+    formal_output_identity: tuple[int, int] | None = None
+    if formal_validation_enabled:
+        _require_real_output_directory(output_dir)
+        formal_output_metadata = os.lstat(output_dir)
+        formal_output_identity = (
+            formal_output_metadata.st_dev,
+            formal_output_metadata.st_ino,
+        )
+        update_journal = _FormalUpdateJournal.create(
+            output_dir / FORMAL_UPDATE_JOURNAL_NAME
+        )
     formal_row_by_coordinate = (
         {(row.update, row.game_index): row for row in formal_rows}
         if formal_rows is not None
@@ -3263,13 +3746,15 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         *,
         error: str | None = None,
     ) -> dict[str, Any]:
-        """Build both partial and final result artifacts from one source."""
+        """Build legacy full results or compact journal-bound v2 results."""
         payload: dict[str, Any] = {
             "status": status,
             "best": str(best_path),
             "final": str(output_dir / "final.pth"),
             "best_update": best_update,
-            "best_validation_score": best_score,
+            "best_validation_score": (
+                list(best_score) if best_score is not None else None
+            ),
             "config": asdict(config),
             "source_bc": str(initial_bc),
             "normalizer_source": str(initial_bc),
@@ -3305,12 +3790,66 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                 if formal_validation_enabled
                 else None
             ),
-            "logs": logs,
             "elapsed_seconds": time.perf_counter() - run_started,
         }
+        if update_journal is None:
+            payload["logs"] = logs
+        else:
+            payload["schema_version"] = FORMAL_RESULT_SCHEMA
+            payload["formal_update_journal"] = update_journal.metadata(
+                completed=status == "completed"
+            )
+            payload["aggregate_opponent_pool_usage"] = {
+                "actual_counts": dict(sorted(opponent_draw_counts.items())),
+                "draws": int(sum(opponent_draw_counts.values())),
+            }
+            payload["aggregate_phase_seconds"] = dict(
+                sorted(aggregate_phase_seconds.items())
+            )
         if error is not None:
             payload["error"] = error
         return payload
+
+    def commit_log(record: dict[str, Any]) -> float:
+        """Commit one update once and maintain compact aggregate provenance."""
+        nonlocal last_committed_record, last_progress_phase_seconds
+        training_records = record.get("training_records")
+        if isinstance(training_records, list):
+            opponent_draw_counts.update(
+                str(item["opponent"])
+                for item in training_records
+                if isinstance(item, Mapping) and item.get("opponent") is not None
+            )
+        if update_journal is not None:
+            raw_phases = record.get("phase_seconds")
+            if isinstance(raw_phases, Mapping):
+                for name, seconds in raw_phases.items():
+                    phase_name = str(name)
+                    aggregate_phase_seconds[phase_name] = (
+                        aggregate_phase_seconds.get(phase_name, 0.0)
+                        + float(seconds)
+                    )
+            journal_seconds = update_journal.append(record)
+            aggregate_phase_seconds["journal"] = (
+                aggregate_phase_seconds.get("journal", 0.0) + journal_seconds
+            )
+            last_progress_phase_seconds = {
+                **(
+                    {
+                        str(name): float(seconds)
+                        for name, seconds in raw_phases.items()
+                    }
+                    if isinstance(raw_phases, Mapping)
+                    else {}
+                ),
+                "journal": journal_seconds,
+            }
+        else:
+            logs.append(record)
+            journal_seconds = 0.0
+            last_progress_phase_seconds = {}
+        last_committed_record = record
+        return journal_seconds
 
     def write_selection_evidence(status: str) -> None:
         """Persist a complete, hash-addressed proof of the current selector."""
@@ -3356,22 +3895,27 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         update: int,
         *,
         update_seconds: float = 0.0,
+        phase_seconds: Mapping[str, float] | None = None,
         error: str | None = None,
     ) -> None:
-        """Persist current status and the complete log accumulated so far."""
-        _write_json(
-            status_path,
-            {
-                "status": status,
-                "update": update,
-                "updates": config.updates,
-                "best_update": best_update,
-                "best_validation_score": best_score,
-                "update_seconds": update_seconds,
-                "elapsed_seconds": time.perf_counter() - run_started,
-                "error": error,
-            },
-        )
+        """Persist bounded status plus either legacy logs or a journal binding."""
+        status_payload: dict[str, Any] = {
+            "status": status,
+            "update": update,
+            "updates": config.updates,
+            "best_update": best_update,
+            "best_validation_score": (
+                list(best_score) if best_score is not None else None
+            ),
+            "update_seconds": update_seconds,
+            "elapsed_seconds": time.perf_counter() - run_started,
+            "error": error,
+        }
+        if update_journal is not None:
+            status_payload["schema_version"] = FORMAL_STATUS_SCHEMA
+            status_payload["phase_seconds"] = dict(phase_seconds or {})
+            status_payload["journal_entries"] = update_journal.entries
+        _write_json(status_path, status_payload)
         _write_json(result_path, result_payload(status, error=error))
 
     initial_started = time.perf_counter()
@@ -3404,8 +3948,8 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         "formal_protocol": formal_protocol,
         "elapsed_seconds": time.perf_counter() - initial_started,
     }
-    logs.append(initial_record)
     initial_path = output_dir / "initial.pth"
+    initial_checkpoint_started = time.perf_counter()
     save_ppo_checkpoint(
         model,
         initial_path,
@@ -3417,11 +3961,16 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         formal_protocol=formal_protocol,
         formal_treatment_contract=checkpoint_treatment_contract,
     )
+    initial_checkpoint_seconds = time.perf_counter() - initial_checkpoint_started
+    initial_validation_seconds = 0.0
+    initial_validation_evidence_seconds = 0.0
+    initial_selection_seconds = 0.0
     if formal_validation_enabled:
         assert formal_spec is not None
         assert formal_spec.validation is not None
         assert formal_validation_scenario_bank is not None
         assert formal_validation_opponent_specs is not None
+        formal_validation_started = time.perf_counter()
         try:
             initial_validation = evaluate_formal_validation_checkpoint(
                 initial_path,
@@ -3436,8 +3985,31 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             message = f"formal validation update 0 failed: {type(exc).__name__}: {exc}"
             initial_record["status"] = "validation-failed"
             initial_record["error"] = message
-            write_progress("failed", 0, error=message)
+            initial_validation_seconds = (
+                time.perf_counter() - formal_validation_started
+            )
+            initial_record["phase_seconds"] = {
+                "checkpoint": initial_checkpoint_seconds,
+                "validation": initial_validation_seconds,
+                "validation_evidence": 0.0,
+                "selection": 0.0,
+            }
+            initial_journal_seconds = commit_log(initial_record)
+            write_progress(
+                "failed",
+                0,
+                update_seconds=time.perf_counter() - initial_started,
+                phase_seconds={
+                    "checkpoint": initial_checkpoint_seconds,
+                    "validation": initial_validation_seconds,
+                    "validation_evidence": 0.0,
+                    "selection": 0.0,
+                    "journal": initial_journal_seconds,
+                },
+                error=message,
+            )
             raise RuntimeError(message) from exc
+        initial_validation_seconds = time.perf_counter() - formal_validation_started
         initial_record["validation"] = initial_validation
         best_score = (
             int(initial_validation["total_integer_wins"]),
@@ -3453,9 +4025,15 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                 "scheduled_games": initial_validation["scheduled_games"],
             }
         )
+        initial_selection_started = time.perf_counter()
+        initial_validation_evidence_started = time.perf_counter()
         _write_json(output_dir / "validation-update-0.json", initial_validation)
+        initial_validation_evidence_seconds = (
+            time.perf_counter() - initial_validation_evidence_started
+        )
         _copy_checkpoint_exact(initial_path, best_path)
         write_selection_evidence("running")
+        initial_selection_seconds = time.perf_counter() - initial_selection_started
     else:
         save_ppo_checkpoint(
             model,
@@ -3468,7 +4046,23 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             formal_protocol=formal_protocol,
             formal_treatment_contract=checkpoint_treatment_contract,
         )
-    write_progress("running", 0, update_seconds=initial_record["elapsed_seconds"])
+    initial_record["status"] = "initial"
+    initial_record["phase_seconds"] = {
+        "checkpoint": initial_checkpoint_seconds,
+        "validation": initial_validation_seconds,
+        "validation_evidence": initial_validation_evidence_seconds,
+        "selection": initial_selection_seconds,
+    }
+    initial_journal_seconds = commit_log(initial_record)
+    write_progress(
+        "running",
+        0,
+        update_seconds=time.perf_counter() - initial_started,
+        phase_seconds={
+            **initial_record["phase_seconds"],
+            "journal": initial_journal_seconds,
+        },
+    )
 
     for update in range(1, config.updates + 1):
         update_started = time.perf_counter()
@@ -3608,15 +4202,29 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                 "elapsed_seconds": time.perf_counter() - update_started,
                 "error": failure_message,
             }
-            logs.append(failed_record)
+            failed_record["phase_seconds"] = {
+                "rollout": rollout_seconds,
+                "optimizer": 0.0,
+                "checkpoint": 0.0,
+                "validation": 0.0,
+                "validation_evidence": 0.0,
+                "selection": 0.0,
+                "pruning": 0.0,
+            }
+            journal_seconds = commit_log(failed_record)
             write_progress(
                 "failed",
                 update,
-                update_seconds=failed_record["elapsed_seconds"],
+                update_seconds=time.perf_counter() - update_started,
+                phase_seconds={
+                    **failed_record["phase_seconds"],
+                    "journal": journal_seconds,
+                },
                 error=failure_message,
             )
             raise RuntimeError(failure_message)
 
+        optimizer_started = time.perf_counter()
         warmup_metrics: dict[str, float | int] | None = None
         if update == 1 and config.critic_warmup_epochs:
             warmup_metrics = warmup_critic(model, transitions, config)
@@ -3638,13 +4246,17 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                 minibatch_key=formal_spec.minibatch_key(update),
                 reference_model=reference_model,
             )
+        optimizer_seconds = time.perf_counter() - optimizer_started
         validation: dict[str, Any] | None = None
+        validation_seconds = 0.0
+        validation_evidence_seconds = 0.0
         should_evaluate = validation_enabled and (
             update % config.eval_every == 0 or update == config.updates
         )
         if should_evaluate:
             from .evaluation import evaluate_matrix  # noqa: PLC0415
 
+            validation_started = time.perf_counter()
             candidate = build_policy_candidate(
                 model,
                 name="ppo-current",
@@ -3654,6 +4266,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             validation = evaluate_matrix(
                 [candidate], validation_opponents, validation_seeds or ()
             )[candidate.name]
+            validation_seconds = time.perf_counter() - validation_started
         update_record: dict[str, Any] = {
             "update": update,
             "status": "completed",
@@ -3671,8 +4284,8 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             "rollout_seconds": rollout_seconds,
             "elapsed_seconds": time.perf_counter() - update_started,
         }
-        logs.append(update_record)
         update_path = output_dir / f"update-{update}.pth"
+        checkpoint_started = time.perf_counter()
         save_ppo_checkpoint(
             model,
             update_path,
@@ -3684,12 +4297,15 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             formal_protocol=formal_protocol,
             formal_treatment_contract=checkpoint_treatment_contract,
         )
+        checkpoint_seconds = time.perf_counter() - checkpoint_started
         if formal_validation_enabled:
             assert formal_spec is not None
             assert formal_spec.validation is not None
+            assert formal_output_identity is not None
             assert formal_validation_scenario_bank is not None
             assert formal_validation_opponent_specs is not None
             if update in formal_spec.validation.eval_updates:
+                validation_started = time.perf_counter()
                 try:
                     validation = evaluate_formal_validation_checkpoint(
                         update_path,
@@ -3707,14 +4323,31 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                     )
                     update_record["status"] = "validation-failed"
                     update_record["error"] = message
+                    validation_seconds = time.perf_counter() - validation_started
+                    update_record["phase_seconds"] = {
+                        "rollout": rollout_seconds,
+                        "optimizer": optimizer_seconds,
+                        "checkpoint": checkpoint_seconds,
+                        "validation": validation_seconds,
+                        "validation_evidence": 0.0,
+                        "selection": 0.0,
+                        "pruning": 0.0,
+                    }
+                    journal_seconds = commit_log(update_record)
                     write_progress(
                         "failed",
                         update,
-                        update_seconds=update_record["elapsed_seconds"],
+                        update_seconds=time.perf_counter() - update_started,
+                        phase_seconds={
+                            **update_record["phase_seconds"],
+                            "journal": journal_seconds,
+                        },
                         error=message,
                     )
                     raise RuntimeError(message) from exc
+                validation_seconds = time.perf_counter() - validation_started
                 update_record["validation"] = validation
+                validation_evidence_started = time.perf_counter()
                 _write_json(
                     output_dir / f"validation-update-{update}.json",
                     validation,
@@ -3729,6 +4362,10 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                         "scheduled_games": validation["scheduled_games"],
                     }
                 )
+                validation_evidence_seconds = (
+                    time.perf_counter() - validation_evidence_started
+                )
+        selection_started = time.perf_counter()
         if validation is not None:
             score = (
                 (
@@ -3758,6 +4395,7 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
                         formal_treatment_contract=checkpoint_treatment_contract,
                     )
             write_selection_evidence("running")
+        selection_seconds = time.perf_counter() - selection_started
         history.append(
             OpponentPoolEntry(
                 name=f"history-update-{update}",
@@ -3773,13 +4411,60 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             history = history[-config.history_limit :]
         else:
             history = []
+        pruning_started = time.perf_counter()
+        if formal_validation_enabled:
+            assert formal_spec is not None
+            assert formal_spec.validation is not None
+            assert formal_output_identity is not None
+            live_history_updates = {
+                int(entry.name.removeprefix("history-update-")) for entry in history
+            }
+            keep_updates = {
+                candidate_update
+                for candidate_update in formal_spec.validation.eval_updates
+                if 0 < candidate_update <= update
+            } | live_history_updates
+            _prune_formal_update_checkpoints(
+                output_dir,
+                keep_updates=keep_updates,
+                expected_device=formal_output_identity[0],
+                expected_inode=formal_output_identity[1],
+            )
+        pruning_seconds = time.perf_counter() - pruning_started
+        update_record["phase_seconds"] = {
+            "rollout": rollout_seconds,
+            "optimizer": optimizer_seconds,
+            "checkpoint": checkpoint_seconds,
+            "validation": validation_seconds,
+            "validation_evidence": validation_evidence_seconds,
+            "selection": selection_seconds,
+            "pruning": pruning_seconds,
+        }
+        journal_seconds = commit_log(update_record)
         write_progress(
             "running",
             update,
-            update_seconds=update_record["elapsed_seconds"],
+            update_seconds=time.perf_counter() - update_started,
+            phase_seconds={
+                **update_record["phase_seconds"],
+                "journal": journal_seconds,
+            },
         )
 
     final_path = output_dir / "final.pth"
+    final_metrics: dict[str, Any]
+    if update_journal is None:
+        final_metrics = {"logs": logs}
+    else:
+        if last_committed_record is None:
+            raise RuntimeError("formal PPO completed without a committed update log")
+        final_metrics = {
+            "opponent_pool": last_committed_record.get("opponent_pool"),
+            "aggregate_opponent_pool_usage": {
+                "actual_counts": dict(sorted(opponent_draw_counts.items())),
+                "draws": int(sum(opponent_draw_counts.values())),
+            },
+        }
     save_ppo_checkpoint(
         model,
         final_path,
@@ -3787,13 +4472,14 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
         config=config,
         source_bc=str(initial_bc),
         opponent_pool=last_effective_entries,
-        metrics={"logs": logs},
+        metrics=final_metrics,
         formal_protocol=formal_protocol,
         formal_treatment_contract=checkpoint_treatment_contract,
     )
     if formal_validation_enabled:
         assert formal_spec is not None
         assert formal_spec.validation is not None
+        assert formal_output_identity is not None
         completed_validation_updates = tuple(
             cast(int, record["update"]) for record in formal_validation_records
         )
@@ -3801,22 +4487,78 @@ def train_ppo_selfplay(  # noqa: C901, PLR0912, PLR0913, PLR0915 - lifecycle is 
             message = "formal validation did not complete every declared checkpoint"
             write_progress("failed", config.updates, error=message)
             raise RuntimeError(message)
+        _prune_formal_update_checkpoints(
+            output_dir,
+            keep_updates={
+                update
+                for update in formal_spec.validation.eval_updates
+                if update > 0
+            },
+            expected_device=formal_output_identity[0],
+            expected_inode=formal_output_identity[1],
+        )
+    journal_metadata: dict[str, Any] | None = None
+    if update_journal is not None:
+        assert formal_spec is not None
+        try:
+            journal_metadata = validate_formal_update_journal(
+                update_journal.path,
+                formal_spec,
+                expected_updates=config.updates,
+                games_per_update=config.games_per_update,
+                expected_device=update_journal.device,
+                expected_inode=update_journal.inode,
+                expected_opponent_usage={
+                    "actual_counts": dict(sorted(opponent_draw_counts.items())),
+                    "draws": int(sum(opponent_draw_counts.values())),
+                },
+            )
+        except Exception as exc:
+            message = (
+                "formal PPO update journal failed completion audit: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            write_progress("failed", config.updates, error=message)
+            raise RuntimeError(message) from exc
     write_selection_evidence("completed")
-    result = result_payload("completed")
-    _write_json(
-        status_path,
-        {
-            "status": "completed",
-            "update": config.updates,
-            "updates": config.updates,
-            "best_update": best_update,
-            "best_validation_score": best_score,
-            "update_seconds": logs[-1].get("elapsed_seconds", 0.0),
-            "elapsed_seconds": time.perf_counter() - run_started,
-            "error": None,
-        },
-    )
+    try:
+        result = result_payload("completed")
+        if (
+            journal_metadata is not None
+            and result.get("formal_update_journal") != journal_metadata
+        ):
+            raise RuntimeError("formal PPO result journal binding is inconsistent")
+    except Exception as exc:
+        message = (
+            "formal PPO result failed completion binding: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        write_selection_evidence("failed")
+        write_progress("failed", config.updates, error=message)
+        raise RuntimeError(message) from exc
+    final_phase_seconds = dict(last_progress_phase_seconds)
+    status_payload: dict[str, Any] = {
+        "status": "completed",
+        "update": config.updates,
+        "updates": config.updates,
+        "best_update": best_update,
+        "best_validation_score": (
+            list(best_score) if best_score is not None else None
+        ),
+        "update_seconds": float(sum(final_phase_seconds.values())),
+        "elapsed_seconds": time.perf_counter() - run_started,
+        "error": None,
+    }
+    if update_journal is not None:
+        status_payload.update(
+            {
+                "schema_version": FORMAL_STATUS_SCHEMA,
+                "phase_seconds": final_phase_seconds,
+                "journal_entries": update_journal.entries,
+            }
+        )
     _write_json(result_path, result)
+    _write_json(status_path, status_payload)
     return result
 
 

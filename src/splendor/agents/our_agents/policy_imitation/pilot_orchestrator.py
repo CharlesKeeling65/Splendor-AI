@@ -69,7 +69,8 @@ from .seed_roll import (
 MODULE_NAME: Final = (
     "splendor.agents.our_agents.policy_imitation.pilot_orchestrator"
 )
-ORCHESTRATION_SCHEMA: Final = "splendor-t14-pilot-orchestration/2"
+LEGACY_ORCHESTRATION_SCHEMA: Final = "splendor-t14-pilot-orchestration/2"
+ORCHESTRATION_SCHEMA: Final = "splendor-t14-pilot-orchestration/3"
 COMPLETION_SCHEMA: Final = "splendor-t14-pilot-completion/2"
 STATUS_SCHEMA: Final = "splendor-t14-pilot-status/2"
 PILOT_REPLICATE_IDS: Final = (0, 1, 2)
@@ -97,7 +98,8 @@ PILOT_INITIAL_BC_RELATIVE_PATH: Final = Path(
 PILOT_INITIAL_BC_SHA256: Final = (
     "e64b722f34a8eed390ae03bdd5adf2f03be9ec6238db556b86180adff1e6f867"
 )
-WALL_LIMIT_SECONDS: Final = 18 * 60 * 60
+LEGACY_WALL_LIMIT_SECONDS: Final = 18 * 60 * 60
+WALL_LIMIT_SECONDS: Final = 36 * 60 * 60
 OUTPUT_LIMIT_BYTES: Final = 32 * 1024**3
 MIN_FREE_BYTES: Final = 40 * 1024**3
 WATCHDOG_POLL_SECONDS: Final = 5.0
@@ -172,6 +174,7 @@ class PilotDeclaration:
     output_root: Path
     control_dir: Path
     tmux_session: str
+    wall_limit_seconds: int
     treatments: tuple[TreatmentLaunch, ...]
 
     @property
@@ -431,7 +434,11 @@ def load_pilot_declaration(  # noqa: C901,PLR0912,PLR0915 - strict schema gate
         },
         label="orchestration declaration",
     )
-    if raw["schema_version"] != ORCHESTRATION_SCHEMA:
+    schema_version = raw["schema_version"]
+    if type(schema_version) is not str or schema_version not in {
+        LEGACY_ORCHESTRATION_SCHEMA,
+        ORCHESTRATION_SCHEMA,
+    }:
         raise PilotOrchestrationError("orchestration schema mismatch")
     if raw["phase"] != "T1.4":
         raise PilotOrchestrationError("pilot orchestration phase must be exactly T1.4")
@@ -458,8 +465,13 @@ def load_pilot_declaration(  # noqa: C901,PLR0912,PLR0915 - strict schema gate
         {"wall_seconds", "max_output_bytes", "min_free_bytes"},
         label="limits",
     )
+    expected_wall_seconds = (
+        LEGACY_WALL_LIMIT_SECONDS
+        if schema_version == LEGACY_ORCHESTRATION_SCHEMA
+        else WALL_LIMIT_SECONDS
+    )
     expected_limits = {
-        "wall_seconds": WALL_LIMIT_SECONDS,
+        "wall_seconds": expected_wall_seconds,
         "max_output_bytes": OUTPUT_LIMIT_BYTES,
         "min_free_bytes": MIN_FREE_BYTES,
     }
@@ -468,7 +480,7 @@ def load_pilot_declaration(  # noqa: C901,PLR0912,PLR0915 - strict schema gate
         or dict(limits) != expected_limits
     ):
         raise PilotOrchestrationError(
-            "pilot limits must be exactly 18h wall, 32GiB output, and 40GiB free"
+            "pilot limits do not match their orchestration schema"
         )
     treatments_raw = raw["treatments"]
     if not isinstance(treatments_raw, list) or len(treatments_raw) != len(
@@ -548,6 +560,7 @@ def load_pilot_declaration(  # noqa: C901,PLR0912,PLR0915 - strict schema gate
         output_root=_canonical_path(raw["output_root"], label="output_root"),
         control_dir=_canonical_path(raw["control_dir"], label="control_dir"),
         tmux_session=tmux_session,
+        wall_limit_seconds=expected_wall_seconds,
         treatments=tuple(treatments),
     )
     if declaration.control_dir != declaration.path.parent:
@@ -997,9 +1010,16 @@ def _existing_ancestor(path: Path) -> Path:
     return candidate
 
 
-def _tree_size_bytes(path: Path) -> int:  # noqa: C901 - concurrent tree audit
+def _tree_size_bytes(  # noqa: C901,PLR0912 - concurrent tree audit
+    path: Path,
+    *,
+    expected_device: int | None = None,
+    expected_inode: int | None = None,
+) -> int:
     if not os.path.lexists(path):
-        return 0
+        raise PilotOrchestrationError(
+            f"formal output root disappeared during resource audit: {path}"
+        )
     total = 0
     stack = [path]
     while stack:
@@ -1020,6 +1040,11 @@ def _tree_size_bytes(path: Path) -> int:  # noqa: C901 - concurrent tree audit
             raise PilotOrchestrationError(
                 f"cannot inspect formal output path {current}: {exc}"
             ) from exc
+        if current == path and (
+            (expected_device is not None and metadata.st_dev != expected_device)
+            or (expected_inode is not None and metadata.st_ino != expected_inode)
+        ):
+            raise PilotOrchestrationError("formal output root identity changed")
         if stat.S_ISLNK(metadata.st_mode):
             raise PilotOrchestrationError(
                 f"formal output tree contains a symlink: {current}"
@@ -1043,17 +1068,93 @@ def _tree_size_bytes(path: Path) -> int:  # noqa: C901 - concurrent tree audit
             raise PilotOrchestrationError(
                 f"cannot scan formal output directory {current}: {exc}"
             ) from exc
+    try:
+        final_metadata = os.lstat(path)
+    except OSError as exc:
+        raise PilotOrchestrationError(
+            f"formal output root disappeared during resource audit: {path}: {exc}"
+        ) from exc
+    if (
+        (expected_device is not None and final_metadata.st_dev != expected_device)
+        or (expected_inode is not None and final_metadata.st_ino != expected_inode)
+    ):
+        raise PilotOrchestrationError("formal output root identity changed")
     return total
 
 
-def capture_resources(output_root: Path) -> ResourceSnapshot:
-    """Measure logical output bytes and available bytes on its filesystem."""
+def capture_resources(
+    output_root: Path,
+    *,
+    allow_missing_output_root: bool = False,
+    expected_device: int | None = None,
+    expected_inode: int | None = None,
+) -> ResourceSnapshot:
+    """Measure output resources, optionally before the one-shot root exists."""
     ancestor = _existing_ancestor(output_root)
     usage = shutil.disk_usage(ancestor)
+    if allow_missing_output_root and not os.path.lexists(output_root):
+        return ResourceSnapshot(output_bytes=0, free_bytes=usage.free)
     return ResourceSnapshot(
-        output_bytes=_tree_size_bytes(output_root),
+        output_bytes=_tree_size_bytes(
+            output_root,
+            expected_device=expected_device,
+            expected_inode=expected_inode,
+        ),
         free_bytes=usage.free,
     )
+
+
+def _reserve_output_root(path: Path) -> tuple[int, int]:
+    """Create/verify the empty real root and return its immutable identity."""
+    try:
+        parent_metadata = os.lstat(path.parent)
+    except OSError as exc:
+        raise PilotOrchestrationError(
+            f"cannot inspect formal output root parent {path.parent}: {exc}"
+        ) from exc
+    if (
+        stat.S_ISLNK(parent_metadata.st_mode)
+        or not stat.S_ISDIR(parent_metadata.st_mode)
+        or path.parent.resolve(strict=True) != path.parent
+    ):
+        raise PilotOrchestrationError(
+            "formal output root parent must be a real directory"
+        )
+    if os.path.lexists(path):
+        metadata = os.lstat(path)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or path.resolve(strict=True) != path
+        ):
+            raise PilotOrchestrationError(
+                "formal output root must be a real directory"
+            )
+    else:
+        try:
+            path.mkdir(mode=0o700)
+        except OSError as exc:
+            raise PilotOrchestrationError(
+                f"cannot reserve formal output root {path}: {exc}"
+            ) from exc
+        _fsync_directory(path.parent)
+    metadata = os.lstat(path)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or path.resolve(strict=True) != path
+    ):
+        raise PilotOrchestrationError("formal output root must be a real directory")
+    try:
+        if any(path.iterdir()):
+            raise PilotOrchestrationError(
+                "formal output root must be empty before its first launch"
+            )
+    except OSError as exc:
+        raise PilotOrchestrationError(
+            f"cannot inspect formal output root {path}: {exc}"
+        ) from exc
+    return metadata.st_dev, metadata.st_ino
 
 
 def require_resource_limits(snapshot: ResourceSnapshot) -> None:
@@ -1088,7 +1189,7 @@ def _status_payload(  # noqa: PLR0913 - all optional audit fields are explicit
         "worker_count": PILOT_WORKER_COUNT,
         "job_count": PILOT_JOB_COUNT,
         "limits": {
-            "wall_seconds": WALL_LIMIT_SECONDS,
+            "wall_seconds": declaration.wall_limit_seconds,
             "max_output_bytes": OUTPUT_LIMIT_BYTES,
             "min_free_bytes": MIN_FREE_BYTES,
         },
@@ -1157,7 +1258,7 @@ def _validate_status_payload(  # noqa: C901,PLR0912 - exact fail-closed schema
         else {original_path, snapshot_path}
     )
     expected_limits = {
-        "wall_seconds": WALL_LIMIT_SECONDS,
+        "wall_seconds": declaration.wall_limit_seconds,
         "max_output_bytes": OUTPUT_LIMIT_BYTES,
         "min_free_bytes": MIN_FREE_BYTES,
     }
@@ -1603,7 +1704,109 @@ def _require_completed_selection(  # noqa: C901,PLR0912,PLR0915 - full selector 
         )
 
 
-def _completion_evidence(  # noqa: C901 - full completion attestation
+def _require_formal_result_journal(
+    job: FormalPPOTrainingJob,
+    result: Mapping[str, Any],
+    disk_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Require a compact formal result to bind its complete update journal."""
+    if (
+        result.get("schema_version") != ppo_selfplay_module.FORMAL_RESULT_SCHEMA
+        or disk_result.get("schema_version")
+        != ppo_selfplay_module.FORMAL_RESULT_SCHEMA
+    ):
+        raise PilotOrchestrationError("completed formal result schema is invalid")
+    opponent_usage = disk_result.get("aggregate_opponent_pool_usage")
+    if (
+        not isinstance(opponent_usage, Mapping)
+        or result.get("aggregate_opponent_pool_usage") != opponent_usage
+    ):
+        raise PilotOrchestrationError(
+            "completed formal result opponent usage is invalid"
+        )
+    journal_path = job.output_dir / ppo_selfplay_module.FORMAL_UPDATE_JOURNAL_NAME
+    try:
+        journal_metadata = ppo_selfplay_module.validate_formal_update_journal(
+            journal_path,
+            job.formal_spec,
+            expected_updates=job.config.updates,
+            games_per_update=job.config.games_per_update,
+            expected_opponent_usage=opponent_usage,
+        )
+    except Exception as exc:
+        raise PilotOrchestrationError(
+            f"completed formal update journal is invalid: {exc}"
+        ) from exc
+    if (
+        result.get("formal_update_journal") != journal_metadata
+        or disk_result.get("formal_update_journal") != journal_metadata
+    ):
+        raise PilotOrchestrationError(
+            "completed formal result does not bind its update journal"
+        )
+    return journal_metadata
+
+
+def _require_formal_completed_status(
+    status: Mapping[str, Any],
+    result: Mapping[str, Any],
+    journal_metadata: Mapping[str, Any],
+) -> None:
+    """Require the exact v2 status shape emitted by a completed formal job."""
+    expected_phase_names = {
+        "rollout",
+        "optimizer",
+        "checkpoint",
+        "validation",
+        "validation_evidence",
+        "selection",
+        "pruning",
+        "journal",
+    }
+    if set(status) != {
+        "schema_version",
+        "status",
+        "update",
+        "updates",
+        "best_update",
+        "best_validation_score",
+        "update_seconds",
+        "elapsed_seconds",
+        "error",
+        "phase_seconds",
+        "journal_entries",
+    }:
+        raise PilotOrchestrationError("completed formal status schema is invalid")
+    phase_seconds = status.get("phase_seconds")
+    if (
+        status.get("schema_version") != ppo_selfplay_module.FORMAL_STATUS_SCHEMA
+        or status.get("status") != "completed"
+        or status.get("update") != PILOT_UPDATES
+        or status.get("updates") != PILOT_UPDATES
+        or status.get("best_update") != result.get("best_update")
+        or sha256_canonical_json(status.get("best_validation_score"))
+        != sha256_canonical_json(result.get("best_validation_score"))
+        or status.get("error") is not None
+        or status.get("journal_entries") != journal_metadata.get("entries")
+        or not isinstance(phase_seconds, Mapping)
+        or set(phase_seconds) != expected_phase_names
+        or any(
+            type(value) not in {int, float}
+            or not math.isfinite(float(cast(int | float, value)))
+            or float(cast(int | float, value)) < 0
+            for value in phase_seconds.values()
+        )
+        or type(status.get("update_seconds")) not in {int, float}
+        or not math.isfinite(float(cast(int | float, status["update_seconds"])))
+        or float(cast(int | float, status["update_seconds"])) < 0
+        or type(status.get("elapsed_seconds")) not in {int, float}
+        or not math.isfinite(float(cast(int | float, status["elapsed_seconds"])))
+        or float(cast(int | float, status["elapsed_seconds"])) < 0
+    ):
+        raise PilotOrchestrationError("completed formal status is inconsistent")
+
+
+def _completion_evidence(  # noqa: C901,PLR0912 - full completion attestation
     prepared: PreparedPilot,
     results: Sequence[dict[str, Any]],
 ) -> dict[str, object]:
@@ -1635,10 +1838,37 @@ def _completion_evidence(  # noqa: C901 - full completion attestation
             raise PilotOrchestrationError(
                 f"completed job {coordinate} result/status is unreadable: {exc}"
             ) from exc
+        if isinstance(disk_result, Mapping) and set(disk_result) != {
+            "schema_version",
+            "status",
+            "best",
+            "final",
+            "best_update",
+            "best_validation_score",
+            "config",
+            "source_bc",
+            "normalizer_source",
+            "source_manifest",
+            "training_seeds",
+            "formal_protocol",
+            "formal_runtime",
+            "formal_scenario_bank",
+            "validation_seeds",
+            "formal_checkpoint_selection",
+            "elapsed_seconds",
+            "formal_update_journal",
+            "aggregate_opponent_pool_usage",
+            "aggregate_phase_seconds",
+        }:
+            raise PilotOrchestrationError(
+                f"completed job {coordinate} formal result schema is invalid"
+            )
         if (
             not isinstance(disk_result, Mapping)
             or sha256_canonical_json(disk_result)
             != sha256_canonical_json(result)
+            or disk_result.get("schema_version")
+            != ppo_selfplay_module.FORMAL_RESULT_SCHEMA
             or disk_result.get("status") != "completed"
             or disk_result.get("formal_protocol") != job.formal_spec.as_dict()
             or sha256_canonical_json(disk_result.get("config"))
@@ -1648,31 +1878,17 @@ def _completion_evidence(  # noqa: C901 - full completion attestation
             raise PilotOrchestrationError(
                 f"completed job {coordinate} on-disk result was relabelled"
             )
-        if not isinstance(disk_status, Mapping) or set(disk_status) != {
-            "status",
-            "update",
-            "updates",
-            "best_update",
-            "best_validation_score",
-            "update_seconds",
-            "elapsed_seconds",
-            "error",
-        }:
+        journal_metadata = _require_formal_result_journal(job, result, disk_result)
+        if not isinstance(disk_status, Mapping):
             raise PilotOrchestrationError(
                 f"completed job {coordinate} status schema is invalid"
             )
-        if (
-            disk_status.get("status") != "completed"
-            or disk_status.get("update") != PILOT_UPDATES
-            or disk_status.get("updates") != PILOT_UPDATES
-            or disk_status.get("best_update") != result.get("best_update")
-            or disk_status.get("best_validation_score")
-            != result.get("best_validation_score")
-            or disk_status.get("error") is not None
-        ):
+        try:
+            _require_formal_completed_status(disk_status, result, journal_metadata)
+        except PilotOrchestrationError as exc:
             raise PilotOrchestrationError(
-                f"completed job {coordinate} status is inconsistent"
-            )
+                f"completed job {coordinate} status is invalid: {exc}"
+            ) from exc
         try:
             ppo_selfplay_module.validate_formal_ppo_checkpoint_binding(
                 job.output_dir / "final.pth",
@@ -1711,6 +1927,7 @@ def _completion_evidence(  # noqa: C901 - full completion attestation
             "final.pth",
             "result.json",
             "status.json",
+            ppo_selfplay_module.FORMAL_UPDATE_JOURNAL_NAME,
             *_selection_artifact_names(),
             *_selection_checkpoint_names(),
         ):
@@ -1720,6 +1937,11 @@ def _completion_evidence(  # noqa: C901 - full completion attestation
                     f"completed job {coordinate} is missing {name}"
                 )
             files[name] = sha256_file(path)
+        journal_name = ppo_selfplay_module.FORMAL_UPDATE_JOURNAL_NAME
+        if files[journal_name] != journal_metadata.get("artifact_sha256"):
+            raise PilotOrchestrationError(
+                f"completed job {coordinate} journal changed during attestation"
+            )
         jobs.append(
             {
                 "replicate_id": coordinate[0],
@@ -1834,6 +2056,7 @@ def _verify_completion_evidence(  # noqa: C901,PLR0912,PLR0915 - attestation gat
         "final.pth",
         "result.json",
         "status.json",
+        ppo_selfplay_module.FORMAL_UPDATE_JOURNAL_NAME,
         *_selection_artifact_names(),
         *_selection_checkpoint_names(),
     }
@@ -1957,12 +2180,14 @@ def _abort_matrix_from_watchdog(
         os.killpg(os.getpgrp(), signal.SIGTERM)
 
 
-def _matrix_watchdog(
+def _matrix_watchdog(  # noqa: PLR0913 - independent lease/resource bindings
     declaration: PilotDeclaration,
     supervisor_pid: int,
     supervisor_fd: int,
     stop: threading.Event,
     started: float,
+    output_root_device: int,
+    output_root_inode: int,
 ) -> None:
     """Enforce a parent lease and duplicate wall/disk gates inside the child."""
     while not stop.is_set():
@@ -1982,12 +2207,20 @@ def _matrix_watchdog(
                     declaration, "tmux supervisor lease closed"
                 )
                 return
-            if time.monotonic() - started > WALL_LIMIT_SECONDS:
+            if time.monotonic() - started > declaration.wall_limit_seconds:
                 _abort_matrix_from_watchdog(
-                    declaration, "18-hour child wall-clock limit exceeded"
+                    declaration,
+                    f"{declaration.wall_limit_seconds // 3600}-hour child "
+                    "wall-clock limit exceeded",
                 )
                 return
-            require_resource_limits(capture_resources(declaration.output_root))
+            require_resource_limits(
+                capture_resources(
+                    declaration.output_root,
+                    expected_device=output_root_device,
+                    expected_inode=output_root_inode,
+                )
+            )
         except BaseException as exc:
             _abort_matrix_from_watchdog(
                 declaration,
@@ -1996,14 +2229,23 @@ def _matrix_watchdog(
             return
 
 
-def run_matrix(
+def run_matrix(  # noqa: PLR0913 - internal CLI identity is explicit
     declaration_path: Path,
     expected_sha256: str,
     *,
     supervisor_pid: int,
     supervisor_fd: int,
+    output_root_device: int,
+    output_root_inode: int,
 ) -> None:
     """Internal supervised child: reserve, train, and attest outputs."""
+    if (
+        type(output_root_device) is not int
+        or output_root_device < 0
+        or type(output_root_inode) is not int
+        or output_root_inode <= 0
+    ):
+        raise PilotOrchestrationError("formal output root identity is invalid")
     _require_supervisor_lease(supervisor_pid, supervisor_fd)
     declaration = load_pilot_declaration(declaration_path)
     if declaration.declaration_sha256 != expected_sha256:
@@ -2012,14 +2254,26 @@ def run_matrix(
     stop = threading.Event()
     watchdog = threading.Thread(
         target=_matrix_watchdog,
-        args=(declaration, supervisor_pid, supervisor_fd, stop, started),
+        args=(
+            declaration,
+            supervisor_pid,
+            supervisor_fd,
+            stop,
+            started,
+            output_root_device,
+            output_root_inode,
+        ),
         name="task1-matrix-watchdog",
         daemon=True,
     )
     watchdog.start()
     try:
         prepared = prepare_pilot(declaration)
-        resources = capture_resources(declaration.output_root)
+        resources = capture_resources(
+            declaration.output_root,
+            expected_device=output_root_device,
+            expected_inode=output_root_inode,
+        )
         require_resource_limits(resources)
         results = run_formal_ppo_training_jobs(
             prepared.jobs,
@@ -2050,13 +2304,192 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
-def _failed_job_status(declaration: PilotDeclaration) -> str | None:
-    for status_path in sorted(declaration.output_root.glob("*/status.json")):
+def _reserved_job_output_paths(declaration: PilotDeclaration) -> tuple[Path, ...]:
+    """Return only the six output paths frozen by the running manifest.
+
+    Worker status discovery must never glob arbitrary children of ``output_root``:
+    a stray directory (or a symlink) is not evidence about this pilot.  Failure
+    handling uses this same manifest-bound list, even when the full declaration
+    snapshot can no longer be loaded.
+    """
+    try:
+        manifest = load_manifest(declaration.manifest_path)
+        outputs = _manifest_job_outputs(manifest, declaration)
+    except Exception:
+        return ()
+    return tuple(Path(output.output_dir) for output in outputs)
+
+
+def _read_existing_job_status(path: Path) -> dict[str, object] | None:
+    """Read one regular child status without following a symlink."""
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return dict(raw) if isinstance(raw, Mapping) else None
+
+
+def _write_existing_job_status(path: Path, payload: Mapping[str, object]) -> None:
+    """Atomically write a status only beneath an already-existing real dir."""
+    try:
+        parent_metadata = os.lstat(path.parent)
+    except OSError as exc:
+        raise PilotOrchestrationError(
+            f"cannot inspect reserved job directory {path.parent}: {exc}"
+        ) from exc
+    if (
+        stat.S_ISLNK(parent_metadata.st_mode)
+        or not stat.S_ISDIR(parent_metadata.st_mode)
+        or path.parent.resolve(strict=True) != path.parent
+    ):
+        raise PilotOrchestrationError(
+            f"reserved job directory is not a real directory: {path.parent}"
+        )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    data = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        _fsync_directory(path.parent)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _job_not_started_status(detail: str) -> dict[str, object]:
+    """Build the v2 terminal record for a reserved but never-started job."""
+    return {
+        "schema_version": ppo_selfplay_module.FORMAL_STATUS_SCHEMA,
+        "status": "not-started",
+        "update": 0,
+        "updates": PILOT_UPDATES,
+        "best_update": 0,
+        "best_validation_score": None,
+        "update_seconds": 0.0,
+        "elapsed_seconds": 0.0,
+        "error": detail,
+        "phase_seconds": {},
+        "journal_entries": 0,
+    }
+
+
+def _stamp_reserved_job_statuses(  # noqa: C901,PLR0912,PLR0915 - failure closure
+    declaration: PilotDeclaration,
+    detail: str,
+) -> str | None:
+    """Close reserved child jobs after a supervisor failure.
+
+    Only manifest-declared, already-existing, real output directories are
+    touched.  Completed/failed records are immutable; running records retain
+    all progress fields and gain an ``interrupted`` terminal state.  A reserved
+    directory with no child status is explicitly marked ``not-started``.
+    """
+    paths = _reserved_job_output_paths(declaration)
+    if len(paths) != PILOT_JOB_COUNT:
+        # The declaration may fail before its running manifest is available
+        # (for example, during launch admission).  There is then no safe
+        # manifest-bound target to mutate.
+        return None
+    issues: list[str] = []
+    for output_dir in paths:
         try:
-            raw = json.loads(status_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            metadata = os.lstat(output_dir)
+        except FileNotFoundError:
+            # A job that was never reserved has no directory to close.  Do not
+            # create one during failure handling.
             continue
-        if isinstance(raw, Mapping) and raw.get("status") == "failed":
+        except OSError as exc:
+            issues.append(f"{output_dir}: {exc}")
+            continue
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or output_dir.resolve(strict=True) != output_dir
+        ):
+            issues.append(f"{output_dir}: output directory is not a real directory")
+            continue
+        marker = output_dir / ppo_selfplay_module.FORMAL_OUTPUT_RESERVATION_NAME
+        try:
+            marker_metadata = os.lstat(marker)
+        except OSError as exc:
+            issues.append(f"{marker}: reservation marker is unavailable ({exc})")
+            continue
+        if stat.S_ISLNK(marker_metadata.st_mode) or not stat.S_ISREG(
+            marker_metadata.st_mode
+        ):
+            issues.append(f"{marker}: reservation marker is not a regular file")
+            continue
+        status_path = output_dir / "status.json"
+        current = _read_existing_job_status(status_path)
+        if os.path.lexists(status_path) and current is None:
+            issues.append(f"{status_path}: existing child status is unreadable")
+            continue
+        if current is not None:
+            state = current.get("status")
+            if state in {"completed", "failed", "interrupted", "not-started"}:
+                continue
+            if state == "running":
+                current["status"] = "interrupted"
+                current["error"] = detail
+                try:
+                    _write_existing_job_status(status_path, current)
+                except PilotOrchestrationError as exc:
+                    issues.append(str(exc))
+                continue
+            if state == "queued":
+                current["status"] = "not-started"
+                current["error"] = detail
+                try:
+                    _write_existing_job_status(status_path, current)
+                except PilotOrchestrationError as exc:
+                    issues.append(str(exc))
+                continue
+            # Unknown or malformed progress is left intact.  Overwriting it
+            # would destroy evidence that cannot be validated as progress.
+            issues.append(f"{status_path}: unknown child status")
+            continue
+        try:
+            _write_existing_job_status(status_path, _job_not_started_status(detail))
+        except PilotOrchestrationError as exc:
+            issues.append(str(exc))
+    if issues:
+        return "child status closure incomplete: " + "; ".join(issues)
+    return None
+
+
+def _failed_job_status(declaration: PilotDeclaration) -> str | None:
+    for output_dir in _reserved_job_output_paths(declaration):
+        status_path = output_dir / "status.json"
+        raw = _read_existing_job_status(status_path)
+        if raw is not None and raw.get("status") == "failed":
             return str(status_path)
     return None
 
@@ -2116,6 +2549,9 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
     expected_output_root: Path,
     expected_experiment_id: str,
     expected_tmux_session: str,
+    expected_wall_limit_seconds: int,
+    expected_output_root_device: int,
+    expected_output_root_inode: int,
 ) -> None:
     """Internal tmux parent enforcing wall/disk/process fail-closed gates."""
     source = _canonical_path(str(declaration_path), label="launched declaration path")
@@ -2137,6 +2573,18 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
         raise PilotOrchestrationError("expected tmux session is invalid")
     if _SHA256_PATTERN.fullmatch(expected_sha256) is None:
         raise PilotOrchestrationError("expected declaration SHA-256 is invalid")
+    if type(expected_wall_limit_seconds) is not int or (
+        expected_wall_limit_seconds
+        not in {LEGACY_WALL_LIMIT_SECONDS, WALL_LIMIT_SECONDS}
+    ):
+        raise PilotOrchestrationError("expected wall-clock limit is invalid")
+    if (
+        type(expected_output_root_device) is not int
+        or expected_output_root_device < 0
+        or type(expected_output_root_inode) is not int
+        or expected_output_root_inode <= 0
+    ):
+        raise PilotOrchestrationError("expected output root identity is invalid")
     # This minimal identity is constructed entirely from launch-bound argv, so
     # even a missing or malformed snapshot can still close the original
     # manifest and status lifecycle.
@@ -2153,6 +2601,7 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
         output_root=output_root,
         control_dir=control_dir,
         tmux_session=expected_tmux_session,
+        wall_limit_seconds=expected_wall_limit_seconds,
         treatments=(),
     )
     declaration: PilotDeclaration | None = None
@@ -2174,10 +2623,15 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
             or declaration.output_root != output_root
             or declaration.experiment_id != expected_experiment_id
             or declaration.tmux_session != expected_tmux_session
+            or declaration.wall_limit_seconds != expected_wall_limit_seconds
         ):
             raise PilotOrchestrationError("declaration changed after tmux launch")
         require_production_runtime(declaration)
-        initial_resources = capture_resources(declaration.output_root)
+        initial_resources = capture_resources(
+            declaration.output_root,
+            expected_device=expected_output_root_device,
+            expected_inode=expected_output_root_inode,
+        )
         require_resource_limits(initial_resources)
         lease_read_fd, lease_write_fd = os.pipe()
         command = [
@@ -2192,6 +2646,10 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
             str(os.getpid()),
             "--supervisor-fd",
             str(lease_read_fd),
+            "--output-root-device",
+            str(expected_output_root_device),
+            "--output-root-inode",
+            str(expected_output_root_inode),
         ]
         process = subprocess.Popen(
             command,
@@ -2215,10 +2673,17 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
         failure: str | None = None
         while True:
             return_code = process.poll()
-            resources = capture_resources(declaration.output_root)
+            resources = capture_resources(
+                declaration.output_root,
+                expected_device=expected_output_root_device,
+                expected_inode=expected_output_root_inode,
+            )
             elapsed = time.monotonic() - started
-            if elapsed > WALL_LIMIT_SECONDS:
-                failure = "18-hour wall-clock limit exceeded"
+            if elapsed > declaration.wall_limit_seconds:
+                failure = (
+                    f"{declaration.wall_limit_seconds // 3600}-hour "
+                    "wall-clock limit exceeded"
+                )
                 break
             try:
                 require_resource_limits(resources)
@@ -2256,7 +2721,11 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
                 "matrix exited zero without immutable completion evidence"
             )
         completion_sha256 = _verify_completion_evidence(declaration)
-        final_resources = capture_resources(declaration.output_root)
+        final_resources = capture_resources(
+            declaration.output_root,
+            expected_device=expected_output_root_device,
+            expected_inode=expected_output_root_inode,
+        )
         require_resource_limits(final_resources)
         _write_json_atomic(
             declaration.status_path,
@@ -2288,11 +2757,24 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
         if process is not None:
             _terminate_process_group(process)
         try:
+            status_closure_issue = _stamp_reserved_job_statuses(
+                declaration or lifecycle_declaration,
+                failure,
+            )
+            if status_closure_issue is not None:
+                failure = f"{failure}; {status_closure_issue}"
+        except Exception as status_exc:
+            failure = f"{failure}; additionally failed to close child statuses: {status_exc}"
+        try:
             _block_running_manifest(lifecycle_declaration, failure)
         except PilotOrchestrationError as block_exc:
             failure = str(block_exc)
         try:
-            final_resources = capture_resources(lifecycle_declaration.output_root)
+            final_resources = capture_resources(
+                lifecycle_declaration.output_root,
+                expected_device=expected_output_root_device,
+                expected_inode=expected_output_root_inode,
+            )
         except Exception as resource_exc:
             final_resources = None
             failure = (
@@ -2323,11 +2805,20 @@ def supervise(  # noqa: C901,PLR0912,PLR0913,PLR0915 - lifecycle is explicit
 def preflight(declaration_path: Path) -> dict[str, object]:
     """Run read-only production admission checks and return an audit summary."""
     declaration = load_pilot_declaration(declaration_path)
+    if shutil.which("zstd") is None:
+        raise PilotOrchestrationError("zstd executable is unavailable")
     prepared = prepare_pilot(declaration)
-    resources = capture_resources(declaration.output_root)
+    resources = capture_resources(
+        declaration.output_root,
+        allow_missing_output_root=True,
+    )
     require_resource_limits(resources)
     return {
-        "schema_version": ORCHESTRATION_SCHEMA,
+        "schema_version": (
+            LEGACY_ORCHESTRATION_SCHEMA
+            if declaration.wall_limit_seconds == LEGACY_WALL_LIMIT_SECONDS
+            else ORCHESTRATION_SCHEMA
+        ),
         "status": "ready",
         "declaration_sha256": declaration.declaration_sha256,
         "experiment_id": declaration.experiment_id,
@@ -2502,6 +2993,9 @@ def launch(declaration_path: Path) -> None:
             raise PilotOrchestrationError(
                 "declaration changed during launch preflight"
             )
+        output_root_device, output_root_inode = _reserve_output_root(
+            declaration.output_root
+        )
         supervisor_log = _reserve_supervisor_log(declaration)
         launched_declaration = write_pilot_declaration(
             declaration.control_dir / LAUNCH_DECLARATION_FILE_NAME,
@@ -2535,6 +3029,12 @@ def launch(declaration_path: Path) -> None:
             declaration.experiment_id,
             "--expected-tmux-session",
             declaration.tmux_session,
+            "--expected-wall-limit-seconds",
+            str(declaration.wall_limit_seconds),
+            "--expected-output-root-device",
+            str(output_root_device),
+            "--expected-output-root-inode",
+            str(output_root_inode),
         ]
         shell_command = (
             "exec env PYTHONHASHSEED=0 CUBLAS_WORKSPACE_CONFIG=:4096:8 "
@@ -2637,9 +3137,20 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--expected-output-root", required=True, type=Path)
             command.add_argument("--expected-experiment-id", required=True)
             command.add_argument("--expected-tmux-session", required=True)
+            command.add_argument(
+                "--expected-wall-limit-seconds", required=True, type=int
+            )
+            command.add_argument(
+                "--expected-output-root-device", required=True, type=int
+            )
+            command.add_argument(
+                "--expected-output-root-inode", required=True, type=int
+            )
         else:
             command.add_argument("--supervisor-pid", required=True, type=int)
             command.add_argument("--supervisor-fd", required=True, type=int)
+            command.add_argument("--output-root-device", required=True, type=int)
+            command.add_argument("--output-root-inode", required=True, type=int)
     return parser
 
 
@@ -2680,6 +3191,9 @@ def main() -> None:
                 expected_output_root=args.expected_output_root,
                 expected_experiment_id=args.expected_experiment_id,
                 expected_tmux_session=args.expected_tmux_session,
+                expected_wall_limit_seconds=args.expected_wall_limit_seconds,
+                expected_output_root_device=args.expected_output_root_device,
+                expected_output_root_inode=args.expected_output_root_inode,
             )
         elif args.command == "_run-matrix":
             if _SHA256_PATTERN.fullmatch(args.expected_sha256) is None:
@@ -2689,6 +3203,8 @@ def main() -> None:
                 args.expected_sha256,
                 supervisor_pid=args.supervisor_pid,
                 supervisor_fd=args.supervisor_fd,
+                output_root_device=args.output_root_device,
+                output_root_inode=args.output_root_inode,
             )
     except PilotOrchestrationError as exc:
         parser = argparse.ArgumentParser(prog="task1-pilot")
