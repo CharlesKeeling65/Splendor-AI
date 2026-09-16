@@ -95,9 +95,21 @@ class EgoBrowserDriver:
             )
         result_line = output[marker_index + len(_RESULT_MARKER):].splitlines()[0]
         decoded = json.loads(result_line)
-        if isinstance(decoded, dict) and decoded.get("__error__"):
-            raise ValueError(str(decoded["__error__"]))
-        return decoded.get("value") if isinstance(decoded, dict) else decoded
+        # Two error nests, both must surface:
+        #   1) Node-side catch in _emit: {__error__: "..."} at the top level;
+        #   2) page-side helpers return {__error__: "..."} as the eval *value*,
+        #      so it arrives as {value: {__error__: "..."}}. Checking only the
+        #      top level silently swallowed every missed click (开始游戏 etc.)
+        #      and made "13 start clicks" a no-op for 60s (live 2026-09-14).
+        if isinstance(decoded, dict):
+            top_error = decoded.get("__error__")
+            if top_error:
+                raise ValueError(str(top_error))
+            value = decoded.get("value")
+            if isinstance(value, dict) and value.get("__error__"):
+                raise ValueError(str(value["__error__"]))
+            return value
+        return decoded
 
     @staticmethod
     def _emit(value_js: str) -> str:
@@ -230,8 +242,10 @@ class EgoBrowserDriver:
   const cards = [...scope.querySelectorAll('.ccbs-card')];
   const card = cards[cardIndex];
   if (!card) return {{ __error__: 'card index ' + cardIndex + ' of ' + cards.length }};
+  // 2026-09-14: buy overlay text is "购买?" (trailing ?); reserve stays "预定".
+  const wanted = new Set([label, label + "?"]);
   const button = [...card.querySelectorAll('button')]
-    .find(el => (el.textContent || '').trim() === label);
+    .find(el => wanted.has((el.textContent || '').trim()));
   if (!button) return {{ __error__: 'no ' + label + ' button in card ' + cardIndex }};
   button.click();
   return {{ ok: true }};

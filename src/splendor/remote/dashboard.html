@@ -170,7 +170,8 @@
     grid-template-columns: minmax(0, 1fr) minmax(268px, 300px);
     grid-template-areas:
       "chart rail"
-      "decision log";
+      "decision decision"
+      "archive log";
     gap: 14px;
     padding: 14px 20px 20px;
     align-items: start;
@@ -180,6 +181,7 @@
   #chart-panel { grid-area: chart; }
   #rail { grid-area: rail; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
   #decision-panel { grid-area: decision; }
+  #archive-panel { grid-area: archive; }
   #log-panel { grid-area: log; }
 
   .panel {
@@ -360,6 +362,56 @@
   }
 
   /* ── decision panel ─────────────────────────────────── */
+  .seat-decisions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .seat-card {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-2);
+    padding: 10px 12px;
+    min-width: 0;
+  }
+  .seat-card .seat-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    font: 11px/1 var(--mono);
+  }
+  .seat-card .seat-title {
+    font-weight: 600;
+    color: var(--ink);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .seat-card .last-act {
+    font-size: 12px;
+    color: var(--haze);
+    margin: 0 0 8px;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+  .seat-card .last-act strong { color: var(--ink); font-weight: 500; }
+  .archive-list { display: flex; flex-direction: column; gap: 8px; }
+  .archive-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    font: 11px/1.4 var(--mono);
+  }
+  .archive-row .title { color: var(--ink); font-weight: 500; }
+  .archive-row .muted { color: var(--faint); }
   .pipeline {
     display: flex;
     flex-wrap: wrap;
@@ -548,7 +600,7 @@
   @media (max-width: 980px) {
     main {
       grid-template-columns: 1fr;
-      grid-template-areas: "chart" "rail" "decision" "log";
+      grid-template-areas: "chart" "rail" "decision" "archive" "log";
       padding: 12px;
     }
     .chart-wrap { height: 280px; }
@@ -616,19 +668,34 @@
   </aside>
 
   <section class="panel" id="decision-panel">
-    <div class="panel-head"><h2 id="decision-title">决策检视 · 动作分数排序</h2></div>
-    <div class="pipeline" id="pipeline"><span class="chip">等待 remote_act…</span></div>
-    <div class="board-chips" id="board-chips"></div>
-    <p class="chosen-line" id="chosen-line" hidden></p>
-    <table class="ranking" id="ranking-table" hidden>
-      <thead><tr><th>#</th><th>动作</th><th id="ranking-score-label" style="text-align:right">动作分数</th><th></th></tr></thead>
-      <tbody id="ranking-body"></tbody>
-    </table>
-    <div class="rank-empty" id="rank-empty">等待 remote_act 事件…</div>
+    <div class="panel-head">
+      <h2 id="decision-title">决策检视 · 按座位</h2>
+      <span class="sub" id="decision-sub"></span>
+    </div>
+    <div id="seat-decisions" class="seat-decisions">
+      <div class="table-empty">等待 remote_act / seat_rank 事件…</div>
+    </div>
     <details class="defs">
-      <summary>怎么核对传输与执行？</summary>
-      <p>排序来自推理服务器对当前合法掩码的 top-k 动作分数；标签会注明它是 Q 还是策略 logit；「选用」= 远程回传并交给浏览器执行器的那一步。
-      对照 <code>remote_act</code> 与紧随其后的 <code>browser_act</code>（同一 seq / action）即可核对传输动作与页面执行是否一致。</p>
+      <summary>怎么读按座位决策？</summary>
+      <p><strong>推理服务器</strong>：本机 bot 的远程决策 top-k（Q 或策略 logit），「已执行 / 未执行」对照 browser_act 回执。</p>
+      <p><strong>胜率模拟</strong>：对手座位没有推理回执——用胜率代理模型在<strong>对手行动前</strong>的局面从该座位视角重算合法动作并打分，
+      得到「模型会怎么走」的 top-k；与面板差分推断的实际出招做<strong>类型级</strong>一致性（取宝石/购买/预定/放弃）。
+      面板差分拿不到精确动作索引，故只能比类型，不是逐步 1:1 对局复盘。</p>
+    </details>
+  </section>
+
+  <section class="panel" id="archive-panel">
+    <div class="panel-head">
+      <h2>对局归档 · 全座位行为</h2>
+      <span class="sub" id="archive-sub"></span>
+    </div>
+    <div id="archive-list" class="archive-list">
+      <div class="table-empty">等待 game_end / 中断日志…</div>
+    </div>
+    <details class="defs">
+      <summary>完整局 vs 中断</summary>
+      <p><strong>完整局</strong>：出现 <code>game_end</code>（自然终局或步数打满后如实结算）。<strong>中断</strong>：执行器失败、超时或崩溃——事件流里有 warn 且无完整 game_end。
+      结构化归档另写在 <code>logs/botN/archive-NNN.json</code>（含每步各座位动作与模拟对照）。</p>
     </details>
   </section>
 
@@ -739,6 +806,110 @@ function buildModel(events) {
       ) || null
     : null;
 
+  // Per-seat decision snapshots: latest seat_rank (own=server, rival=predicted)
+  // plus the own-seat remote/browser integrity chips.
+  const bySeat = {};
+  const seatRanks = win.filter((e) => e.type === "seat_rank");
+  for (const e of seatRanks) {
+    const seat = Number(e.seat);
+    if (!bySeat[seat]) {
+      bySeat[seat] = {
+        seat,
+        source: null,
+        modelId: null,
+        scoreKind: null,
+        observedDesc: null,
+        observedKind: null,
+        top: [],
+        match: null,
+        seq: null,
+        board: null,
+        exec: null,
+      };
+    }
+    bySeat[seat].source = e.source || bySeat[seat].source;
+    bySeat[seat].modelId = e.model_id || bySeat[seat].modelId;
+    bySeat[seat].scoreKind = e.score_kind || bySeat[seat].scoreKind;
+    bySeat[seat].observedDesc = e.observed_desc || bySeat[seat].observedDesc;
+    bySeat[seat].observedKind = e.observed_kind || bySeat[seat].observedKind;
+    bySeat[seat].top = e.top || [];
+    bySeat[seat].match = e.match != null ? e.match : bySeat[seat].match;
+    bySeat[seat].seq = e.seq;
+    bySeat[seat].board = e.board || bySeat[seat].board;
+  }
+  // Fill own seat from remote_act when seat_rank is missing (older streams).
+  if (latestAct) {
+    const seat = Number(lastStart ? lastStart.my_seat : 1) || 1;
+    if (!bySeat[seat]) {
+      bySeat[seat] = {
+        seat,
+        source: "server",
+        modelId: provenanceFrom(events, latestAct, lastStart).actingModelId,
+        scoreKind: latestAct.score_kind || "q",
+        observedDesc: latestAct.desc,
+        observedKind: null,
+        top: latestAct.top || [],
+        match: true,
+        seq: latestAct.seq,
+        board: latestAct.board || null,
+        exec: null,
+      };
+    }
+  }
+  // Attach browser receipt for own seats.
+  for (const seatInfo of Object.values(bySeat)) {
+    if (seatInfo.source !== "server" || seatInfo.seq == null) continue;
+    const br = [...win].reverse().find(
+      (e) => e.type === "browser_act" && e.seq === seatInfo.seq,
+    );
+    seatInfo.exec = br
+      ? { seq: br.seq, action: br.action, executed: br.executed !== false }
+      : null;
+    if (br && seatInfo.match !== false) {
+      // own: match means executed with the same action index
+      seatInfo.match = br.action != null && br.executed !== false;
+    }
+  }
+
+  // Game lifecycle for archive: complete if game_end exists; interrupted if a
+  // warn appears without a successful end, or last remote has no browser.
+  const lastEnd = [...win].reverse().find((e) => e.type === "game_end") || null;
+  const failWarn = [...win].reverse().find(
+    (e) => e.type === "log" && e.level === "warn" && /failed|Timeout|Error/i.test(e.message || ""),
+  ) || null;
+  let complete = !!lastEnd && lastEnd.complete !== false;
+  let interrupted = !complete;
+  let archiveReason = null;
+  if (lastEnd && lastEnd.complete === false) {
+    complete = false;
+    interrupted = true;
+    archiveReason = lastEnd.abort_reason || "game_end.complete=false";
+  } else if (!lastEnd && failWarn) {
+    complete = false;
+    interrupted = true;
+    archiveReason = failWarn.message || "warn without game_end";
+  } else if (!lastEnd && latestAct && !latestBrowser) {
+    // mid-step: still running - neither complete nor interrupted yet
+    complete = false;
+    interrupted = false;
+    archiveReason = "in_progress";
+  }
+
+  const moveCount = seatRanks.length + acts.length;
+  const archiveEntry = {
+    game: lastStart ? lastStart.game : null,
+    bot: lastStart ? lastStart.bot : null,
+    complete,
+    interrupted,
+    reason: archiveReason,
+    result: lastEnd ? lastEnd.result : null,
+    scores: lastEnd ? lastEnd.scores : null,
+    seats: lastStart ? lastStart.seats : null,
+    mySeat: lastStart ? lastStart.my_seat : null,
+    steps: acts.length,
+    rankEvents: seatRanks.length,
+  };
+
   // cumulative stats over the whole stream
   const perSeat = {};
   const seatOf = {};
@@ -771,7 +942,6 @@ function buildModel(events) {
       lastWarn = { level: "warn", text: e.message || "" };
     }
   }
-  const lastEnd = [...win].reverse().find((e) => e.type === "game_end") || null;
   // game_end.anomalies is the same counter summed across the game - prefer
   // that authoritative total once the game has finished, instead of adding
   // it on top of the per-event counts.
@@ -781,8 +951,43 @@ function buildModel(events) {
 
   const provenance = provenanceFrom(win, latestAct, lastStart);
 
+  // Archive history across the whole stream (all games in the file).
+  const archives = [];
+  const seenGames = new Set();
+  for (const e of events) {
+    if (e.type === "game_start") {
+      seenGames.add(`${e.bot}:${e.game}`);
+    }
+  }
+  for (const key of seenGames) {
+    const [botS, gameS] = key.split(":");
+    const bot = Number(botS);
+    const game = Number(gameS);
+    const gwin = events.filter((e) => e.bot === bot && e.game === game);
+    const gEnd = [...gwin].reverse().find((e) => e.type === "game_end") || null;
+    const gWarn = [...gwin].reverse().find(
+      (e) => e.type === "log" && e.level === "warn" && /failed|Timeout|Error/i.test(e.message || ""),
+    ) || null;
+    const gStart = gwin.find((e) => e.type === "game_start") || null;
+    const gComplete = !!gEnd && gEnd.complete !== false;
+    archives.push({
+      bot,
+      game,
+      complete: gComplete,
+      interrupted: !gComplete,
+      result: gEnd ? gEnd.result : null,
+      scores: gEnd ? gEnd.scores : null,
+      mySeat: gStart ? gStart.my_seat : null,
+      seats: gStart ? gStart.seats : null,
+      reason: gComplete ? null : (gEnd && gEnd.abort_reason) || (gWarn && gWarn.message) || (gEnd ? null : "in_progress"),
+      steps: gwin.filter((e) => e.type === "remote_act").length,
+    });
+  }
+  archives.sort((a, b) => (b.game - a.game) || (b.bot - a.bot));
+
   return {
     win, actions, seatCount, lastStart, latestAct, latestBrowser,
+    bySeat, archives, archiveEntry,
     perSeat, discards, parityWarns, lastWarn, lastEnd,
     ...provenance,
     step: latestAct ? latestAct.seq : (win.length ? (win[win.length - 1].seq || null) : null),
@@ -1207,93 +1412,136 @@ function renderStats(model) {
   statsBody.innerHTML = rows.join("");
 }
 
-/* ── decision panel ─────────────────────────────────────── */
-const pipelineEl = document.getElementById("pipeline");
-const boardChipsEl = document.getElementById("board-chips");
-const chosenLineEl = document.getElementById("chosen-line");
-const rankingTable = document.getElementById("ranking-table");
-const rankingBody = document.getElementById("ranking-body");
-const rankEmpty = document.getElementById("rank-empty");
+/* ── decision panel (per seat) ───────────────────────────── */
+const seatDecisionsEl = document.getElementById("seat-decisions");
+const archiveListEl = document.getElementById("archive-list");
+const decisionSubEl = document.getElementById("decision-sub");
+const archiveSubEl = document.getElementById("archive-sub");
 
-function renderDecision(model) {
-  const act = model.latestAct;
-  const decisionTitle = document.getElementById("decision-title");
-  const scoreLabelEl = document.getElementById("ranking-score-label");
-  if (!act) {
-    decisionTitle.textContent = "决策检视 · 动作分数排序";
-    scoreLabelEl.textContent = "动作分数";
-    pipelineEl.innerHTML = '<span class="chip">等待 remote_act…</span>';
-    boardChipsEl.innerHTML = "";
-    chosenLineEl.hidden = true;
-    rankingTable.hidden = true;
-    rankEmpty.hidden = false;
-    return;
+function rankingTableHtml(top, scoreLabel, chosenAction, matchTop1) {
+  if (!top || !top.length) {
+    return `<div class="rank-empty">无 top-k 排序</div>`;
   }
-  rankEmpty.hidden = true;
-  const scoreKind = act.score_kind || model.scoreKind || "q";
-  const scoreLabel = scoreKindLabel(scoreKind);
-  decisionTitle.textContent = `决策检视 · ${scoreLabel}排序`;
-  scoreLabelEl.textContent = scoreLabel;
-
-  // pipeline: remote → browser integrity
-  const browser = model.latestBrowser;
-  const match = browser && browser.action === act.action;
-  const execChip = browser
-    ? (match
-        ? `<span class="chip ok">浏览器已执行 #${browser.seq}</span>`
-        : `<span class="chip alarm">执行不一致 #${browser.seq} ≠ ${act.action}</span>`)
-    : `<span class="chip">等待浏览器回执…</span>`;
-  pipelineEl.innerHTML =
-    `<span class="chip gold">远程决策 #${act.seq}</span>` +
-    `<span class="chip">动作 ${act.action}</span>` +
-    `<span class="chip">${scoreLabel} · ${escapeHtml(model.actingModelId || "未知模型")}</span>` +
-    `<span class="chip">胜率代理 · ${escapeHtml(model.winrateModelId || "未知模型")}</span>` +
-    execChip;
-
-  // board chips
-  const board = act.board || {};
-  const scores = Object.entries(board.scores || {})
-    .map(([s, v]) => {
-      const color = seatColor(Number(s));
-      return `<span class="board-chip"><span class="seat-swatch" style="background:${color}"></span>座<strong>${s}</strong>&nbsp;${v}</span>`;
-    })
-    .join("");
-  const myGems = board.my_gems || {};
-  const supply = board.supply || {};
-  boardChipsEl.innerHTML =
-    scores +
-    `<span class="board-chip">供给 ${gemPills(supply, 5)}</span>` +
-    `<span class="board-chip">我持 ${gemPills(myGems, 7)}</span>` +
-    `<span class="board-chip">合法 <strong>${act.legal_count ?? "—"}</strong></span>` +
-    (board.status ? `<span class="board-chip">${board.status}</span>` : "");
-
-  chosenLineEl.hidden = false;
-  chosenLineEl.innerHTML = `选用 <span class="act">[${act.action}] ${escapeHtml(act.desc || "")}</span>`;
-
-  // ranking table with action-score bars
-  const top = (act.top || []).slice(0, 10);
-  if (!top.length) {
-    rankingTable.hidden = true;
-    rankEmpty.hidden = false;
-    rankEmpty.textContent = "本条 remote_act 无 top-k 排序（服务器未返回动作分数列表）";
-    return;
-  }
-  rankingTable.hidden = false;
-  const rankingScores = top.map(scoreOf);
-  const scoreMin = Math.min(...rankingScores);
-  const scoreMax = Math.max(...rankingScores);
-  const span = Math.max(scoreMax - scoreMin, 1e-6);
-  rankingBody.innerHTML = top.map((item, i) => {
+  const scores = top.map(scoreOf);
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const span = Math.max(max - min, 1e-6);
+  const rows = top.slice(0, 8).map((item, i) => {
     const score = scoreOf(item);
-    const barW = Math.max(4, Math.round(((score - scoreMin) / span) * 100));
-    const chosen = item.idx === act.action;
+    const barW = Math.max(4, Math.round(((score - min) / span) * 100));
+    const chosen = chosenAction != null && item.idx === chosenAction;
+    const top1 = i === 0 && matchTop1;
     return (
-      `<tr class="${chosen ? "chosen" : ""}">` +
+      `<tr class="${chosen || top1 ? "chosen" : ""}">` +
       `<td class="idx"><span>${i + 1}</span></td>` +
       `<td class="desc"><span class="bar" style="width:${barW}%"></span><span>${escapeHtml(item.desc || "")}</span></td>` +
       `<td class="score"><span>${score.toFixed(3)}</span></td>` +
-      `<td class="mark"><span>${chosen ? "✓" : ""}</span></td>` +
+      `<td class="mark"><span>${chosen ? "✓" : (top1 ? "★" : "")}</span></td>` +
       `</tr>`
+    );
+  }).join("");
+  return (
+    `<table class="ranking">` +
+    `<thead><tr><th>#</th><th>动作</th><th style="text-align:right">${escapeHtml(scoreLabel)}</th><th></th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>`
+  );
+}
+
+function execChipHtml(info) {
+  if (info.source !== "server") {
+    const m = info.match;
+    const badge = m === true
+      ? `<span class="chip ok">与模拟 top-1 类型一致</span>`
+      : m === false
+        ? `<span class="chip alarm">与模拟 top-1 类型不一致</span>`
+        : `<span class="chip">模拟不可用</span>`;
+    return badge;
+  }
+  if (!info.exec) return `<span class="chip">等待浏览器回执…</span>`;
+  if (info.exec.executed === false) {
+    return `<span class="chip alarm">浏览器未执行 #${info.exec.seq}</span>`;
+  }
+  return `<span class="chip ok">浏览器已执行 #${info.exec.seq}</span>`;
+}
+
+function renderDecision(model) {
+  const seats = Object.keys(model.bySeat || {})
+    .map(Number)
+    .sort((a, b) => a - b);
+  decisionSubEl.textContent = seats.length
+    ? `${seats.length} 座 · 本局 seq ${model.step ?? "—"}`
+    : "";
+  if (!seats.length) {
+    seatDecisionsEl.innerHTML = '<div class="table-empty">等待 remote_act / seat_rank 事件…</div>';
+    return;
+  }
+  seatDecisionsEl.innerHTML = seats.map((seat) => {
+    const info = model.bySeat[seat];
+    const color = seatColor(seat);
+    const scoreLabel = scoreKindLabel(info.scoreKind || "q");
+    const isMine = model.lastStart && Number(model.lastStart.my_seat) === seat;
+    const sourceChip = info.source === "server"
+      ? `<span class="chip gold">推理服务器</span>`
+      : `<span class="chip">胜率模拟</span>`;
+    const kindChip = info.observedKind
+      ? `<span class="chip">${escapeHtml(info.observedKind)}</span>`
+      : "";
+    const board = info.board || {};
+    const scoresLine = Object.entries(board.scores || {})
+      .map(([s, v]) => `座${s}:${v}`).join(" ");
+    // For own seat, mark the chosen action in the table; for rival, mark top-1 (★).
+    const chosenAction = info.source === "server" && info.exec
+      ? info.exec.action
+      : (info.top && info.top[0] ? info.top[0].idx : null);
+    return (
+      `<div class="seat-card" data-seat="${seat}">` +
+        `<div class="seat-head">` +
+          `<span class="seat-title"><span class="seat-swatch" style="background:${color}"></span>座${seat}${isMine ? "（我）" : ""}</span>` +
+          sourceChip +
+          (info.modelId ? `<span class="chip">${escapeHtml(info.modelId)}</span>` : "") +
+          kindChip +
+          execChipHtml(info) +
+          (info.seq != null ? `<span class="chip">#${info.seq}</span>` : "") +
+        `</div>` +
+        `<p class="last-act">实际出招 <strong>${escapeHtml(info.observedDesc || "—")}</strong>` +
+          (scoresLine ? `<br/><span class="muted">${escapeHtml(scoresLine)}</span>` : "") +
+        `</p>` +
+        rankingTableHtml(info.top, scoreLabel, chosenAction, info.source !== "server") +
+      `</div>`
+    );
+  }).join("");
+}
+
+function renderArchive(model) {
+  const list = model.archives || [];
+  const cur = model.archiveEntry;
+  archiveSubEl.textContent = cur
+    ? (cur.complete ? "当前完整局" : cur.interrupted ? "当前中断" : "进行中")
+    : "";
+  if (!list.length) {
+    archiveListEl.innerHTML = '<div class="table-empty">等待 game_end / 中断日志…</div>';
+    return;
+  }
+  archiveListEl.innerHTML = list.map((a) => {
+    const flag = a.complete
+      ? `<span class="chip ok">完整局</span>`
+      : a.interrupted
+        ? `<span class="chip alarm">中断</span>`
+        : `<span class="chip">进行中</span>`;
+    const result = a.result
+      ? `<span class="chip">${escapeHtml(a.result)}</span>`
+      : "";
+    const scores = a.scores
+      ? Object.entries(a.scores).map(([s, v]) => `座${s}:${v}`).join(" ")
+      : "—";
+    return (
+      `<div class="archive-row">` +
+        `<span class="title">bot${a.bot} · 局${a.game}</span>` +
+        flag + result +
+        `<span class="muted">${escapeHtml(scores)}</span>` +
+        `<span class="muted">${a.steps ?? 0} 步</span>` +
+        (a.reason ? `<span class="muted">${escapeHtml(String(a.reason).slice(0, 80))}</span>` : "") +
+      `</div>`
     );
   }).join("");
 }
@@ -1328,6 +1576,7 @@ function tagOf(e) {
     case "game_end": return { t: "终", c: "end" };
     case "remote_act": return { t: "远程", c: "remote" };
     case "browser_act": return { t: "执行", c: "browser" };
+    case "seat_rank": return { t: "排序", c: "remote" };
     case "discard": return { t: "弃", c: "discard" };
     case "parity": return { t: "奇偶", c: "parity" };
     case "action": return { t: "动作", c: "" };
@@ -1506,6 +1755,7 @@ async function tick() {
     renderGauges(model);
     renderStats(model);
     renderDecision(model);
+    renderArchive(model);
     renderLog(model);
   } catch (err) {
     renderHeader(null, false);

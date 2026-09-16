@@ -8,6 +8,7 @@ create -> publish -> seat -> start chain, plus the multi-game invariant that
 a run stays inside the one room it created.
 """
 
+import json
 import os
 import shutil
 import time
@@ -328,6 +329,10 @@ def test_start_until_running_retries_until_the_table_is_live(
     """
     The room page gives no feedback when 开始游戏 is refused, so the owner
     has to keep pressing until a turn-status sentence appears.
+
+    Liveness is checked *before* each click (2026-09-14): a live table never
+    gets another 开始游戏 press, so the third successful probe returns with
+    only two clicks logged.
     """
     driver = _RoomDriver()
     driver.register_page(ROOM_URL, ROOM_PAGE)
@@ -351,7 +356,34 @@ def test_start_until_running_retries_until_the_table_is_live(
 
     _start_until_running(env, events)
 
-    assert driver.click_log.count(("label:开始游戏", 0)) == 3
+    # check -> click -> check -> click -> check(live) -> return
+    assert driver.click_log.count(("label:开始游戏", 0)) == 2
+
+
+def test_start_until_running_skips_click_when_already_in_game(
+    events_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already at 等待你操作? Zero 开始游戏 presses - just return (2026-09-14)."""
+    driver = _RoomDriver()
+    driver.register_page(ROOM_URL, ROOM_PAGE)
+    session = SessionManager(driver, room_url=ROOM_URL)
+    env = BrowserSplendorEnv(driver, session, feature_version="v1")
+    driver.navigate(ROOM_URL)
+    events = EventWriter(events_dir, 0)
+    monkeypatch.setattr("splendor.play_remote._game_running", lambda _s: True)
+    monkeypatch.setattr("splendor.play_remote.START_RETRY_SECONDS", 0.0)
+
+    _start_until_running(env, events)
+
+    assert driver.click_log.count(("label:开始游戏", 0)) == 0
+    logs = [
+        json.loads(line)
+        for line in (events_dir / "bot0.jsonl").read_text().splitlines()
+    ]
+    assert any(
+        e.get("type") == "log" and "already in game" in e.get("message", "")
+        for e in logs
+    )
 
 
 def test_start_until_running_gives_up_loudly(
