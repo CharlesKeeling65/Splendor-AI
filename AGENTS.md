@@ -2,7 +2,7 @@
 
 > 本文件面向在本仓库工作的 AI 编码 agent。内容基于 2026-09-03 的全量源码调研，所有事实均已逐一验证。
 > 项目升级计划见 [plan/](./plan/README.md)——**动代码前先读对应阶段文档**。
-> 升级进度（dev 分支，2026-09-17）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
+> 升级进度（dev 分支，2026-09-19）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
 > 浏览器层七件套含真实 DOM 实测回填 + play-web 部署 harness），**P4 经 ADR 裁决暂缓**，
 > **P5 已完成**（CI/Makefile/文档），**P6 已完成**（TCP JSONL 远程推理、DQN/前馈
 > imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
@@ -11,10 +11,11 @@
 > 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，非 sealed 96k pilot bank
 > 及 validation-A200/stress100 基线 banks 已物化审计，safe PBRS、正式 checkpoint selection 与
 > P5000/tmux 编排门已实现；1,800 局新协议冻结基线及 fixed-model 方差分解已完成，10-row selector
-> bank 已审计。首个真实 CUDA/P5000 r3 pilot 已运行但由旧 18h wall gate 在半矩阵处 fail-closed；
-> partial 仅作诊断。累计 result/checkpoint I/O 已改为 zstd hash-chain journal + milestone retention，
-> 只读 monitor 与 v3 36h envelope 已就绪；下一步用全新 manifest/output 完整重跑六 job。
-> validation-B、sealed 与 reserve 仍受后续批准门约束。
+> bank 已审计。CUDA/P5000 retry-4 已完成 `O/O_bridge × r0/r1/r2` 六 job、各 2,000 updates；v2
+> completion receipt 绑定的 534 个文件（3.741GB）已全量复核。诊断分析显示 selected `O-O_bridge`
+> 为 +2.78pp、固定 update-2000 为 +0.56pp，但 3 replicates、best-of-41 selector 复用、per-job
+> evaluation contract 与缺失 heuristic-rush endpoint 仍阻断正式 power/N 冻结；下一步先生成并审批
+> joint non-sealed pilot-evaluation manifest。validation-B、sealed 与 reserve 仍受后续批准门约束。
 > 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 

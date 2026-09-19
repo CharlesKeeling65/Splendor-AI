@@ -1,0 +1,907 @@
+{
+  "analysis_date": "2026-09-19",
+  "analysis_sha256": "7aab17619269a92552517696f5f8efdb21cf1e210147f26a13765da16ed76647",
+  "checkpoint_views": {
+    "final": [
+      {
+        "checkpoint_sha256": "acfd5b330c0fb817e787992b670d59d01ab3d03319b039c07aa44743ad9742aa",
+        "draws": 1,
+        "ga": 0.65,
+        "heuristic": 0.675,
+        "losses": 22,
+        "minimax": 0.55,
+        "replicate_id": 0,
+        "score_rate": 0.625,
+        "treatment_id": "O",
+        "update": 2000,
+        "wins": 37
+      },
+      {
+        "checkpoint_sha256": "4de40410dd991dfbfdfc1f354bab5cf38460b797367b658d385cd5d5c1aa0da1",
+        "draws": 1,
+        "ga": 0.55,
+        "heuristic": 0.7,
+        "losses": 20,
+        "minimax": 0.725,
+        "replicate_id": 0,
+        "score_rate": 0.6583333333333333,
+        "treatment_id": "O_bridge",
+        "update": 2000,
+        "wins": 39
+      },
+      {
+        "checkpoint_sha256": "efd9a12b80bee2254e780231d8034c17f0bb6014c7e10f4cc46c84a89463e8e7",
+        "draws": 0,
+        "ga": 0.8,
+        "heuristic": 0.45,
+        "losses": 22,
+        "minimax": 0.65,
+        "replicate_id": 1,
+        "score_rate": 0.6333333333333333,
+        "treatment_id": "O",
+        "update": 2000,
+        "wins": 38
+      },
+      {
+        "checkpoint_sha256": "400ca0875f2bbb930d3a8b499d2a0ce505155b5c5b208e75e5781d1b95faa21b",
+        "draws": 0,
+        "ga": 0.7,
+        "heuristic": 0.75,
+        "losses": 20,
+        "minimax": 0.55,
+        "replicate_id": 1,
+        "score_rate": 0.6666666666666666,
+        "treatment_id": "O_bridge",
+        "update": 2000,
+        "wins": 40
+      },
+      {
+        "checkpoint_sha256": "29ab2aba128c65378dea13cb26901f2c4925ec608d179d3ead0cf7cc7c566225",
+        "draws": 0,
+        "ga": 0.65,
+        "heuristic": 0.55,
+        "losses": 25,
+        "minimax": 0.55,
+        "replicate_id": 2,
+        "score_rate": 0.5833333333333334,
+        "treatment_id": "O",
+        "update": 2000,
+        "wins": 35
+      },
+      {
+        "checkpoint_sha256": "b62179cb47d36f15b46024085de8eda2730597f30ce3ceb85b5976edb7cf845c",
+        "draws": 0,
+        "ga": 0.4,
+        "heuristic": 0.45,
+        "losses": 30,
+        "minimax": 0.65,
+        "replicate_id": 2,
+        "score_rate": 0.5,
+        "treatment_id": "O_bridge",
+        "update": 2000,
+        "wins": 30
+      }
+    ],
+    "selected": [
+      {
+        "checkpoint_sha256": "43995dab57aabe1398cef5cc8c1e822e235ca41c66e41b6560271a3cd4ab45ce",
+        "draws": 0,
+        "ga": 0.7,
+        "heuristic": 0.65,
+        "losses": 18,
+        "minimax": 0.75,
+        "replicate_id": 0,
+        "score_rate": 0.7,
+        "treatment_id": "O",
+        "update": 1650,
+        "wins": 42
+      },
+      {
+        "checkpoint_sha256": "2b6f5fef353a35e0d4da2486cf5d5388e421c93b14bf681da1bfaec4ca27331d",
+        "draws": 0,
+        "ga": 0.7,
+        "heuristic": 0.7,
+        "losses": 18,
+        "minimax": 0.7,
+        "replicate_id": 0,
+        "score_rate": 0.7,
+        "treatment_id": "O_bridge",
+        "update": 1950,
+        "wins": 42
+      },
+      {
+        "checkpoint_sha256": "d6c32d039febd0c397838b485779bff7cd8df69c35adb34fd3ee495c410785e6",
+        "draws": 0,
+        "ga": 0.7,
+        "heuristic": 0.75,
+        "losses": 15,
+        "minimax": 0.8,
+        "replicate_id": 1,
+        "score_rate": 0.75,
+        "treatment_id": "O",
+        "update": 1850,
+        "wins": 45
+      },
+      {
+        "checkpoint_sha256": "6d05e778bcec97f19d4aa387e753074412b6316d7624c8a6096381b37028d0a5",
+        "draws": 0,
+        "ga": 0.6,
+        "heuristic": 0.7,
+        "losses": 19,
+        "minimax": 0.75,
+        "replicate_id": 1,
+        "score_rate": 0.6833333333333333,
+        "treatment_id": "O_bridge",
+        "update": 1950,
+        "wins": 41
+      },
+      {
+        "checkpoint_sha256": "2e2e2c91d34ef9c6a4683e5c8db86350b88f7dace2d5f079cc9a2f88d3a62da5",
+        "draws": 0,
+        "ga": 0.85,
+        "heuristic": 0.65,
+        "losses": 17,
+        "minimax": 0.65,
+        "replicate_id": 2,
+        "score_rate": 0.7166666666666667,
+        "treatment_id": "O",
+        "update": 1900,
+        "wins": 43
+      },
+      {
+        "checkpoint_sha256": "8210677f9d6db5f25c1ffde046d0e31c5dca68836ee1f1d96d15bddde6b1b9a2",
+        "draws": 0,
+        "ga": 0.75,
+        "heuristic": 0.6,
+        "losses": 18,
+        "minimax": 0.75,
+        "replicate_id": 2,
+        "score_rate": 0.7,
+        "treatment_id": "O_bridge",
+        "update": 1600,
+        "wins": 42
+      }
+    ]
+  },
+  "decision": {
+    "next_required_step": "joint-manifest-bound-nonsealed-pilot-evaluation",
+    "required_endpoint_addition": "heuristic-rush",
+    "reserve_replicates_activated": false,
+    "safe_pbrs_performance_claim": "not-established",
+    "sealed_consumed": false,
+    "t14_statistical_exit_gate": "not-satisfied",
+    "training_status": "complete",
+    "validation_b_consumed": false
+  },
+  "design": {
+    "checkpoints_per_job": 41,
+    "formal_cross_arm_gate": "rejected",
+    "formal_cross_arm_gate_error": "episode rows mix evaluation contracts",
+    "missing_target_endpoint": "heuristic-rush",
+    "nested_inference_minimum_replicates": 5,
+    "opponents": [
+      "ga",
+      "heuristic",
+      "minimax"
+    ],
+    "replicates": 3,
+    "seats": [
+      0,
+      1
+    ],
+    "selector_scenarios": 10,
+    "treatments": [
+      "O",
+      "O_bridge"
+    ]
+  },
+  "diagnostic_method_effects": {
+    "final": {
+      "between_replicate_sample_sd": 0.06735753140545633,
+      "endpoint_means": {
+        "ga": 0.15,
+        "heuristic": -0.075,
+        "minimax": -0.05833333333333333
+      },
+      "mean_difference": 0.005555555555555559,
+      "replicate_by_opponent": {
+        "r0:ga": 0.1,
+        "r0:heuristic": -0.025,
+        "r0:minimax": -0.175,
+        "r1:ga": 0.1,
+        "r1:heuristic": -0.3,
+        "r1:minimax": 0.1,
+        "r2:ga": 0.25,
+        "r2:heuristic": 0.1,
+        "r2:minimax": -0.1
+      },
+      "replicate_means": {
+        "r0": -0.033333333333333326,
+        "r1": -0.033333333333333326,
+        "r2": 0.08333333333333333
+      },
+      "worst_replicate": -0.033333333333333326
+    },
+    "selected": {
+      "between_replicate_sample_sd": 0.034694433324435545,
+      "endpoint_means": {
+        "ga": 0.06666666666666667,
+        "heuristic": 0.016666666666666666,
+        "minimax": 0.0
+      },
+      "mean_difference": 0.027777777777777776,
+      "replicate_by_opponent": {
+        "r0:ga": 0.0,
+        "r0:heuristic": -0.05,
+        "r0:minimax": 0.05,
+        "r1:ga": 0.1,
+        "r1:heuristic": 0.05,
+        "r1:minimax": 0.05,
+        "r2:ga": 0.1,
+        "r2:heuristic": 0.05,
+        "r2:minimax": -0.1
+      },
+      "replicate_means": {
+        "r0": 0.0,
+        "r1": 0.06666666666666667,
+        "r2": 0.016666666666666666
+      },
+      "worst_replicate": 0.0
+    }
+  },
+  "environment": {
+    "matplotlib": "3.11.2",
+    "numpy": "1.26.4",
+    "python": "3.13.2"
+  },
+  "integrity": {
+    "jobs": 6,
+    "manifest_terminal_state": "completed",
+    "receipt_bound_bytes_verified": 3741553697,
+    "receipt_bound_files_verified": 534,
+    "receipt_self_hash_valid": true,
+    "selected_and_final_batches_valid": true,
+    "updates_per_job": 2000
+  },
+  "limitations": [
+    "Selected checkpoints maximize the same 10-scenario selector bank over 41 updates.",
+    "Only three model replicates are available.",
+    "Per-job validation contracts cannot be concatenated into a formal method contrast.",
+    "The heuristic-rush target endpoint is absent.",
+    "The unpersisted 400-game r1-O versus ppo-best diagnostic is excluded."
+  ],
+  "power_sensitivity": {
+    "final": {
+      "delta_03pp": {
+        "ga": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.03,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 66,
+          "normal_initial_n_rounded_up": 66,
+          "paired_sample_sd": 0.08660254037844387,
+          "pilot_mean_difference": 0.15,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "2208b990dfd4f80a51fdb742c4dc767bd2698bfd4e5c8acaa77643d5fe2df4c1",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 50,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.8983,
+          "simulated_power_by_n": {
+            "50": 0.8983
+          },
+          "simulation_draw_sha256": "5b23d3b73a9cd6e20d4924836d361c0dfbb2b746865287c0bd504e9651d0fcd2",
+          "underpowered": false
+        },
+        "heuristic": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.03,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain.",
+            "Target power was not reached at max_n; the resulting design is underpowered."
+          ],
+          "normal_initial_n": 366,
+          "normal_initial_n_rounded_up": 366,
+          "paired_sample_sd": 0.20463381929681124,
+          "pilot_mean_difference": -0.075,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "9305fb340f5d7ae9935453cb0ca5361fb9b59c4fe39251de2d3f8058e900c23d",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 50,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.2562,
+          "simulated_power_by_n": {
+            "50": 0.2562
+          },
+          "simulation_draw_sha256": "51f036ea427ab37e1701c7f9b1f20735483080b55d2fdf8dffbf98480543f655",
+          "underpowered": true
+        },
+        "minimax": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.03,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain.",
+            "Target power was not reached at max_n; the resulting design is underpowered."
+          ],
+          "normal_initial_n": 177,
+          "normal_initial_n_rounded_up": 177,
+          "paired_sample_sd": 0.1421560175769332,
+          "pilot_mean_difference": -0.05833333333333334,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "9749a087d010d95e57bb9b00d666bb7a81f03a015d0ebb7dafa7c9e27246f8a5",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 50,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.4146,
+          "simulated_power_by_n": {
+            "50": 0.4146
+          },
+          "simulation_draw_sha256": "2f224f3075505c83ac81212e3657a91d68e74e0e2c5cd62d69a34e0c239bbcde",
+          "underpowered": true
+        }
+      },
+      "delta_05pp": {
+        "ga": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.05,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 24,
+          "normal_initial_n_rounded_up": 24,
+          "paired_sample_sd": 0.08660254037844387,
+          "pilot_mean_difference": 0.15,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "2208b990dfd4f80a51fdb742c4dc767bd2698bfd4e5c8acaa77643d5fe2df4c1",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 24,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.979,
+          "simulated_power_by_n": {
+            "24": 0.979
+          },
+          "simulation_draw_sha256": "20076e5bc93e604101e3798c8e00cef4c156f4448bd28cf88c76eb1df15bdfe6",
+          "underpowered": false
+        },
+        "heuristic": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.05,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain.",
+            "Target power was not reached at max_n; the resulting design is underpowered."
+          ],
+          "normal_initial_n": 132,
+          "normal_initial_n_rounded_up": 132,
+          "paired_sample_sd": 0.20463381929681124,
+          "pilot_mean_difference": -0.075,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "9305fb340f5d7ae9935453cb0ca5361fb9b59c4fe39251de2d3f8058e900c23d",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 50,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.5468,
+          "simulated_power_by_n": {
+            "50": 0.5468
+          },
+          "simulation_draw_sha256": "f926cd51d2ba72bf3740e3dc381946cb53ca6cc4b0816c2162f9db72aa98e241",
+          "underpowered": true
+        },
+        "minimax": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.05,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 64,
+          "normal_initial_n_rounded_up": 64,
+          "paired_sample_sd": 0.1421560175769332,
+          "pilot_mean_difference": -0.05833333333333334,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "9749a087d010d95e57bb9b00d666bb7a81f03a015d0ebb7dafa7c9e27246f8a5",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 50,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.8776,
+          "simulated_power_by_n": {
+            "50": 0.8776
+          },
+          "simulation_draw_sha256": "fc37508c9852d1dddbc7d474a6fefd6f7b1461be715c9659b14b4504a1311b20",
+          "underpowered": false
+        }
+      }
+    },
+    "selected": {
+      "delta_03pp": {
+        "ga": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.03,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 30,
+          "normal_initial_n_rounded_up": 30,
+          "paired_sample_sd": 0.05773502691896258,
+          "pilot_mean_difference": 0.06666666666666667,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "801992922c8066d4ac27dff20c23c10bc755437a199d0bcc8d357d1febd5b814",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 30,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.9111,
+          "simulated_power_by_n": {
+            "30": 0.9111
+          },
+          "simulation_draw_sha256": "50c8c6d9b026e53073c7490fffb4328a93cac8c960b92202f413861801b643fd",
+          "underpowered": false
+        },
+        "heuristic": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.03,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 30,
+          "normal_initial_n_rounded_up": 30,
+          "paired_sample_sd": 0.05773502691896258,
+          "pilot_mean_difference": 0.016666666666666666,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "e603ca93f200727f0c88715aad57cc24bebac869c1753c34c102c69e6bcab63f",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 30,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.9111,
+          "simulated_power_by_n": {
+            "30": 0.9111
+          },
+          "simulation_draw_sha256": "50c8c6d9b026e53073c7490fffb4328a93cac8c960b92202f413861801b643fd",
+          "underpowered": false
+        },
+        "minimax": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.03,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 66,
+          "normal_initial_n_rounded_up": 66,
+          "paired_sample_sd": 0.08660254037844388,
+          "pilot_mean_difference": 0.0,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "eb2dabe900d54c43663dd75891215cef6a3f7a90936b9d3d1cce7cd5f074f581",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 50,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.8028,
+          "simulated_power_by_n": {
+            "50": 0.8028
+          },
+          "simulation_draw_sha256": "ec6f046bab7ee5db78411e41a801a092c7d8aeee061bd2504a778e4f16243e60",
+          "underpowered": false
+        }
+      },
+      "delta_05pp": {
+        "ga": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.05,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 11,
+          "normal_initial_n_rounded_up": 11,
+          "paired_sample_sd": 0.05773502691896258,
+          "pilot_mean_difference": 0.06666666666666667,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "801992922c8066d4ac27dff20c23c10bc755437a199d0bcc8d357d1febd5b814",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 11,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.8721,
+          "simulated_power_by_n": {
+            "11": 0.8721
+          },
+          "simulation_draw_sha256": "d38fdbec4e6e7dcc612edd425d37e61e82ed51382bbe1928f705017a206585dc",
+          "underpowered": false
+        },
+        "heuristic": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.05,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 11,
+          "normal_initial_n_rounded_up": 11,
+          "paired_sample_sd": 0.05773502691896258,
+          "pilot_mean_difference": 0.016666666666666666,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "e603ca93f200727f0c88715aad57cc24bebac869c1753c34c102c69e6bcab63f",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 11,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.8721,
+          "simulated_power_by_n": {
+            "11": 0.8721
+          },
+          "simulation_draw_sha256": "d38fdbec4e6e7dcc612edd425d37e61e82ed51382bbe1928f705017a206585dc",
+          "underpowered": false
+        },
+        "minimax": {
+          "adjusted_one_sided_alpha": 0.025,
+          "config": {
+            "family_size": 2,
+            "familywise_alpha": 0.05,
+            "max_n": 50,
+            "minimum_effect": 0.05,
+            "round_to": 1,
+            "seed": 20260919,
+            "simulations": 10000,
+            "target_power": 0.8,
+            "unit": "model_replicate"
+          },
+          "design": "fixed-N",
+          "design_minimum_n": 5,
+          "independent_unit": "model_replicate",
+          "limitations": [
+            "Normal approximation is an initial value; N is accepted only after empirical-residual simulation.",
+            "N is fixed before the corresponding validation/test outcomes are observed.",
+            "Pilot has fewer than five model replicates; variance and power are highly uncertain."
+          ],
+          "normal_initial_n": 24,
+          "normal_initial_n_rounded_up": 24,
+          "paired_sample_sd": 0.08660254037844388,
+          "pilot_mean_difference": 0.0,
+          "pilot_unit_count": 3,
+          "pilot_values_sha256": "eb2dabe900d54c43663dd75891215cef6a3f7a90936b9d3d1cce7cd5f074f581",
+          "protocol": "paired-fixed-n-power-v1",
+          "recommended_n": 24,
+          "resampling_model": "centered paired empirical residual + minimum_effect",
+          "schema_version": "splendor-paired-statistics/1",
+          "sequential_stopping": false,
+          "simulated_power_at_recommended_n": 0.9353,
+          "simulated_power_by_n": {
+            "24": 0.9353
+          },
+          "simulation_draw_sha256": "8cb46cbedab8b0197603a7d24ad97b331469ff1bcdb52273794ecf901ef0b883",
+          "underpowered": false
+        }
+      }
+    }
+  },
+  "schema_version": "splendor-t14-pilot-diagnostic-analysis/1",
+  "source": {
+    "completion_path": "runs/task1-t14-crossed-pilot-20260915/pilot-retry-4/control/completion.json",
+    "completion_sha256": "00f4305a36105004eccb53d4aef7199680296ee017f2b989a071bc85b8ff4d16",
+    "manifest_declaration_sha256": "d344e0a4699f44ddbe583c286faad6c4db40d7acd4d2500888aed9b91cdd99fa",
+    "validation_bank_payload_sha256": "88981246ab82552da43f158dc67d7969622ab5fe3354f24cfb7d49eaf9cb8626"
+  },
+  "trajectory_diagnostics": {
+    "r0": {
+      "bridge_mean_wins": 32.09756097560975,
+      "checkpoints": 41,
+      "maximum_win_difference": 20,
+      "mean_win_difference": -0.0975609756097561,
+      "median_win_difference": 0,
+      "minimum_win_difference": -16,
+      "o_mean_wins": 32.0,
+      "positive_tie_negative": [
+        18,
+        6,
+        17
+      ]
+    },
+    "r1": {
+      "bridge_mean_wins": 31.926829268292682,
+      "checkpoints": 41,
+      "maximum_win_difference": 19,
+      "mean_win_difference": 1.0975609756097562,
+      "median_win_difference": 0,
+      "minimum_win_difference": -11,
+      "o_mean_wins": 33.02439024390244,
+      "positive_tie_negative": [
+        17,
+        5,
+        19
+      ]
+    },
+    "r2": {
+      "bridge_mean_wins": 31.73170731707317,
+      "checkpoints": 41,
+      "maximum_win_difference": 11,
+      "mean_win_difference": -0.5365853658536586,
+      "median_win_difference": -2,
+      "minimum_win_difference": -11,
+      "o_mean_wins": 31.195121951219512,
+      "positive_tie_negative": [
+        17,
+        1,
+        23
+      ]
+    }
+  },
+  "variance_decomposition": {
+    "final": {
+      "O": {
+        "design": {
+          "opponents": 3,
+          "replicates": 3,
+          "scenarios": 10,
+          "seats": 2
+        },
+        "energies": {
+          "interaction_residual": 0.21800154320987655,
+          "model_replicate": 0.0004783950617283939,
+          "opponent": 0.0038117283950617246,
+          "scenario": 0.012723765432098766,
+          "seat": 0.0006249999999999984
+        },
+        "population_total_variance": 0.23564043209876542,
+        "shares": {
+          "interaction_residual": 0.9251448966894791,
+          "model_replicate": 0.002030190903434947,
+          "opponent": 0.01617603719833654,
+          "scenario": 0.05399652902845542,
+          "seat": 0.0026523461802940435
+        }
+      },
+      "O_bridge": {
+        "design": {
+          "opponents": 3,
+          "replicates": 3,
+          "scenarios": 10,
+          "seats": 2
+        },
+        "energies": {
+          "interaction_residual": 0.20260030864197529,
+          "model_replicate": 0.005879629629629628,
+          "opponent": 0.0017129629629629621,
+          "scenario": 0.018279320987654314,
+          "seat": 0.00840277777777777
+        },
+        "population_total_variance": 0.236875,
+        "shares": {
+          "interaction_residual": 0.8553047330531938,
+          "model_replicate": 0.02482165542851558,
+          "opponent": 0.007231505912244695,
+          "scenario": 0.07716863741489947,
+          "seat": 0.03547346819114625
+        }
+      }
+    },
+    "selected": {
+      "O": {
+        "design": {
+          "opponents": 3,
+          "replicates": 3,
+          "scenarios": 10,
+          "seats": 2
+        },
+        "energies": {
+          "interaction_residual": 0.18938271604938273,
+          "model_replicate": 0.0004320987654320994,
+          "opponent": 0.0008024691358024683,
+          "scenario": 0.009876543209876541,
+          "seat": 0.00012345679012345593
+        },
+        "population_total_variance": 0.20061728395061731,
+        "shares": {
+          "interaction_residual": 0.944,
+          "model_replicate": 0.002153846153846157,
+          "opponent": 0.003999999999999996,
+          "scenario": 0.04923076923076922,
+          "seat": 0.000615384615384611
+        }
+      },
+      "O_bridge": {
+        "design": {
+          "opponents": 3,
+          "replicates": 3,
+          "scenarios": 10,
+          "seats": 2
+        },
+        "energies": {
+          "interaction_residual": 0.20669753086419757,
+          "model_replicate": 6.172839506172796e-05,
+          "opponent": 0.0008024691358024683,
+          "scenario": 0.0038580246913580223,
+          "seat": 0.0007716049382716057
+        },
+        "population_total_variance": 0.21219135802469138,
+        "shares": {
+          "interaction_residual": 0.9741090909090909,
+          "model_replicate": 0.00029090909090908885,
+          "opponent": 0.0037818181818181774,
+          "scenario": 0.018181818181818167,
+          "seat": 0.0036363636363636394
+        }
+      }
+    }
+  }
+}

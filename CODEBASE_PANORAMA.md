@@ -653,3 +653,25 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
   新 orchestration-v3 将 wall envelope 冻结为 36h，旧 v2 仍按 18h 可审计。后续重跑须用新
   manifest/output，且 production prepare/activate/launch 仅可由 host 主流程执行；validation-B、
   sealed-test 与 reserve `(3,4)` 仍未触及。
+
+### 7.15 Task-1 T1.4 retry-4 完成与统计边界（2026-09-19）
+
+- **六 job 正式闭合**：全新 retry-4 orchestration-v3 在 P5000 上完成
+  `O/O_bridge × r0/r1/r2` 六 job、各 2,000 updates；top-level manifest 从 `running` 转为
+  `completed`，completion receipt schema v2 的自哈希为
+  `00f4305a36105004eccb53d4aef7199680296ee017f2b989a071bc85b8ff4d16`。receipt 绑定的
+  534 个文件（3,741,553,697 bytes）已逐文件重新 SHA-256；六个 journal 各 2,001 行，未见
+  failure、missing 或非法动作。r3 partial 仍只作性能诊断，不与 retry-4 合并。
+- **checkpoint selector 结果**：safe-PBRS `O` 的 best-of-41 排名为 r1/update-1850 45/60、
+  r2/update-1900 43/60、r0/update-1650 42/60；`O_bridge` 分别为 41/60、42/60、42/60。
+  这是 10 个 scenario × 2 seats × 3 opponents 的 selector-bank 描述，不是独立 validation。
+- **crossed 诊断**：完成 receipt-bound notebook 同时分析 selected checkpoint 与共同 update-2000。
+  selected `O-O_bridge` 三 replicate 平均为 +2.78pp（replicate 均值 0、+6.67、+1.67pp），
+  固定 horizon 为 +0.56pp（-3.33、-3.33、+8.33pp）；opponent/seed 多处符号翻转，故 safe-PBRS
+  性能收益尚未建立。可执行 notebook、机器可读摘要与图见
+  `docs/task1/T1.4_PILOT_ANALYSIS_20260919.{ipynb,json,png}`。
+- **统计退出门仍开放**：六个 selector batch 是 per-job evaluation contracts，正式
+  `method_differences()` 会以 `episode rows mix evaluation contracts` 拒绝拼接；只有 3 replicates，
+  selector 复用同一 10-scenario bank 做 best-of-41，且正式目标 heuristic-rush 不在该矩阵中。
+  下一步必须先提出并人工批准 joint、non-sealed pilot-evaluation manifest，冻结候选、target/guardrail
+  endpoints 与 power source，再生成正式 `statistics.json`。validation-B、sealed 与 reserve 仍未触及。

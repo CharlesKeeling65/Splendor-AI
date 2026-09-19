@@ -1,7 +1,7 @@
 # 任务计划（1）：2p 模型提升与科学种子协议
 
-> 复核版本：2026-09-15。
-> 状态：实施中；T1.0–T1.3、T1.4 seed-roll/单次生产 roll、safe episodic PBRS、正式 validation/选模与 tmux 编排门已完成；经后续明确授权已物化 non-sealed pilot/基线 banks，并完成 1,800 局新协议冻结基线及方差分解；下一步启动 CUDA/P5000 crossed pilot。validation-B、sealed 与 reserve 仍受后续批准门约束。
+> 复核版本：2026-09-19。
+> 状态：实施中；T1.0–T1.3、T1.4 seed-roll/单次生产 roll、safe episodic PBRS、正式 validation/选模与 tmux 编排门已完成；经后续明确授权已物化 non-sealed pilot/基线 banks，完成 1,800 局冻结基线与 CUDA/P5000 `O/O_bridge × r0/r1/r2` 六 job crossed pilot。retry-4 completion receipt 与 534 个绑定文件已复核；诊断方差报告已完成，但正式 cross-arm statistics/power 仍须一个包含 heuristic-rush 的 joint non-sealed evaluation contract，之后才能冻结 N/replicate/design manifest。validation-B、sealed 与 reserve 仍受后续批准门约束。
 > 适用模型：当前 C4-R2 `ppo-best` 及其后续 2p PPO 候选。
 > 强制顺序：本计划全部完成并通过 T1.7 退出门槛后，才允许启动
 > [任务计划（2）：3p/4p 多人模型训练](task-2-3p4p-training.md)。
@@ -333,18 +333,23 @@ Scenario 分层只用初态，不用胜负或 rollout。删除信息量恒为零
 - [x] 固定 checkpoint × scenario × seat × opponent，按预注册 finite-population functional ANOVA
   估计 deal、seat、opponent 与交互方差；validation-A/stress 中交互项分别占 78.3880%/79.2581%，
   完整口径与不可识别边界见上述结果文档。model-seed 方差仍须由 crossed pilot 给出。
-- [ ] 在新 RNG 协议下精确复训现行 C2-R2 recipe 至少 3 replicates，命名 `O_bridge`。它保留当前非零
+- [x] 在新 RNG 协议下精确复训现行 C2-R2 recipe 至少 3 replicates，命名 `O_bridge`。它保留当前非零
   terminal potential，只用于量化 runner/protocol 迁移，不作为后续“safe PBRS”控制，也不进入正式 shortlist。
-- [ ] 修正 terminal potential 后冻结主实验共同 reward contract：终局效用 `±10/0`、`gamma=0.99`、
+- [x] 修正 terminal potential 后冻结主实验共同 reward contract：终局效用 `±10/0`、`gamma=0.99`、
   `safe-potential(kappa=0.05, terminal_phi=0)`；在同一 replicate/schedule 上训练 `O`。`O-O_bridge`
   单独估计 reward-contract 修正效应，不能并入 pool/DAgger 效应。
-- [ ] `O_bridge` 与 `O` 都必须是新训练副本；不得只复用历史 seed42/1234/2024 checkpoint 来代表新
+- [x] `O_bridge` 与 `O` 都必须是新训练副本；不得只复用历史 seed42/1234/2024 checkpoint 来代表新
   runner 的 replicate 分布。若实现校验发现上述冻结值与 checkpoint manifest 不符，以现场 manifest 为准，
   记录勘误并在任何结果产生前重新批准。
-- [ ] 做小型 crossed pilot：replicate × scenario × seat × opponent；分别报告固定模型的牌局方差和固定
-  牌局的 model-seed 方差。方差分解模型只作设计工具，不把正态随机效应假设当成事实。
+- [x] 做小型 crossed pilot：replicate × scenario × seat × opponent；分别报告固定模型的牌局方差和固定
+  牌局的 model-seed 方差。retry-4 六 job 各完成 2,000 updates，completion receipt
+  `00f4305a...d16` 绑定 534 个文件；selected 与固定 update-2000 两种口径、trajectory 与有限总体
+  方差能量见 [`T1.4_PILOT_ANALYSIS_20260919.ipynb`](../docs/task1/T1.4_PILOT_ANALYSIS_20260919.ipynb)。
+  该报告只作设计诊断，不把正态随机效应假设或 3-seed sensitivity 当成确认性推断。
 - [ ] 根据 pilot 冻结 `delta`、`delta_NI`、final N、确认性 replicate 数、训练预算、pool CDF、validation
-  规则和总 GPU/墙钟上限，生成 approved manifest；之后不得因 validation-B/test 结果改动。
+  规则和总 GPU/墙钟上限，生成 approved manifest；之后不得因 validation-B/test 结果改动。当前六个
+  selector batch 属于 per-job evaluation contracts，且缺少 heuristic-rush endpoint；必须先用一个新的
+  joint non-sealed pilot-evaluation manifest 生成正式 `statistics.json`，不得把诊断拼接结果冒充批准依据。
 
 **退出门槛**：`O_bridge`/`O` 角色和 reward version 无歧义、control 可重放、方差与 power 报告完成、正式
 manifest 获批、sealed test 尚未消费。

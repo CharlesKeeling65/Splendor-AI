@@ -35,6 +35,26 @@
 - **当前状态：代码、单元测试与多轮训练资产已就绪**；DQN round1/round2、D1 课程和
   浏览器部署 harness 均已按各自协议归档，结果与 3-seed 方差见对应报告。
 
+## Task-1 T1.4 completed-pilot 诊断（2026-09-19）
+
+六个新 PPO job 已完成 `2000/2000` updates。按同一 10-scenario selector bank
+（60 局/候选）的描述性结果，safe-PBRS 候选暂排为
+`r1-O/update-1850`（45/60）>`r2-O/update-1900`（43/60）>`r0-O/update-1650`
+（42/60）。因此 selector shortlist 首位是 `r1-O/update-1850`；
+`O_bridge` 只保留为 terminal-potential 迁移诊断，不进入 safe-PBRS 部署 shortlist。
+
+这不是对 C4-R2 league 的直接替换：新候选是在 41 个 checkpoint 中按同一 selector
+bank 选出的，unique scenario 只有 10 个。completion-bound 复算显示，selected
+`O-O_bridge` 平均为 `+2.78pp`，固定 update-2000 口径仅 `+0.56pp`，且不同 model
+seed/opponent 的符号翻转；safe PBRS 的性能收益尚未建立。完整的行为、座次、scenario
+波动与 checkpoint hash 见
+[`docs/task1/T1.4_RANKING_UPDATE_20260917.md`](docs/task1/T1.4_RANKING_UPDATE_20260917.md)，
+可执行分析及图表见
+[`docs/task1/T1.4_PILOT_ANALYSIS_20260919.ipynb`](docs/task1/T1.4_PILOT_ANALYSIS_20260919.ipynb)。
+历史 `ppo-best` 的新协议 validation-A 基线仍为 740/3/457（61.79%）；早先未落盘的
+400-game head-to-head 已从正式判断中排除。正式 N/power 冻结仍需包含
+heuristic-rush 的 joint non-sealed evaluation contract。
+
 ## 提升路径增量（2026-09-14，按 docs/IMPROVEMENT_ROADMAP_20260912.md 回填）
 
 > 本节随阶段推进回填同口径数字；训练完成的最终数字回填到 §结论上方的新小节。

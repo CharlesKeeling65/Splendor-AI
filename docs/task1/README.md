@@ -83,16 +83,34 @@ non-sealed 200-row validation-A and 100-row stress baseline banks were
 materialized and audited. The 1,800-game new-protocol frozen baseline is now
 complete; its W/D/L, fixed-model variance decomposition, hashes, and recovery
 record are in [`T1.4_BASELINE_RESULTS.md`](T1.4_BASELINE_RESULTS.md). No
-validation-B, sealed, or reserved-replicate bank has been read or created, and
-no GPU training job has yet run.
+validation-B, sealed, or reserved-replicate bank has been read or created. The
+retry-4 CUDA/P5000 output reached a completed manifest with six terminal
+`2000/2000` jobs. Completion receipt
+`00f4305a36105004eccb53d4aef7199680296ee017f2b989a071bc85b8ff4d16`
+binds 534 files (3,741,553,697 bytes), all independently re-hashed by the
+executed analysis notebook. The descriptive checkpoint ranking is recorded in
+[`T1.4_RANKING_UPDATE_20260917.md`](T1.4_RANKING_UPDATE_20260917.md); the
+reproducible selected/final-horizon comparison, crossed variance diagnostic,
+power sensitivity, figure, and machine-readable decision are in
+[`T1.4_PILOT_ANALYSIS_20260919.ipynb`](T1.4_PILOT_ANALYSIS_20260919.ipynb) and
+[`T1.4_PILOT_ANALYSIS_20260919.json`](T1.4_PILOT_ANALYSIS_20260919.json).
+
+Training completion does not yet satisfy the T1.4 statistical exit gate. The
+six selector evaluations are separate per-job contracts, contain only 10
+scenarios, reuse the bank for best-of-41 selection, and omit heuristic-rush.
+The next admissible step is a new joint, manifest-bound, non-sealed pilot
+evaluation and formal `statistics.json`; validation-B, sealed, and reserve stay
+behind their approval gates. An earlier in-memory 400-game head-to-head is
+preserved only as a quarantined, non-evidentiary observation in
+[`T1.4_HEAD_TO_HEAD_R1O_VS_PPO_20260917.md`](T1.4_HEAD_TO_HEAD_R1O_VS_PPO_20260917.md).
 
 [`T1.4_PILOT_ORCHESTRATION.md`](T1.4_PILOT_ORCHESTRATION.md) documents the
 fail-closed P5000/tmux production entry for the approved six-job pilot. It pins
 the exact O/O_bridge recipes, 3×2 job matrix, five-member training pool,
 ScenarioV1 validation selector, P5000 runtime, resource watchdog, one-shot
 output reservations, checkpoint evidence, and lifecycle transitions. The
-baseline replay is complete. The final production manifest and actual CUDA tmux
-launch remain separate recorded steps.
+baseline replay and retry-4 production launch are complete; the remaining gate
+is statistical-design approval, not another six-job training rerun.
 
 ## T1.4 episodic reward contract
 
