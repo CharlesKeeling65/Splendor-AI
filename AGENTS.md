@@ -5,17 +5,12 @@
 > 升级进度（dev 分支，2026-09-19）：**P0-P3 已落地**（索引缓存/注册表/协议/勘误 + DQN 六件套 +
 > 浏览器层七件套含真实 DOM 实测回填 + play-web 部署 harness），**P4 经 ADR 裁决暂缓**，
 > **P5 已完成**（CI/Makefile/文档），**P6 已完成**（TCP JSONL 远程推理、DQN/前馈
-> imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 2p 提升协议
-> **T1.0–T1.3 与 T1.4 seed-roll preflight 已完成**（基线冻结、RNG 分流/配对 schedule、
-> ScenarioV1/内容寻址 bank/sealed gate、配对评测/聚类统计/固定 N、一次性 CSPRNG-root
-> 有限总体抽样与 `paired-training-v2` 门）；生产 root 已获批并唯一生成，非 sealed 96k pilot bank
-> 及 validation-A200/stress100 基线 banks 已物化审计，safe PBRS、正式 checkpoint selection 与
-> P5000/tmux 编排门已实现；1,800 局新协议冻结基线及 fixed-model 方差分解已完成，10-row selector
-> bank 已审计。CUDA/P5000 retry-4 已完成 `O/O_bridge × r0/r1/r2` 六 job、各 2,000 updates；v2
-> completion receipt 绑定的 534 个文件（3.741GB）已全量复核。诊断分析显示 selected `O-O_bridge`
-> 为 +2.78pp、固定 update-2000 为 +0.56pp，但 3 replicates、best-of-41 selector 复用、per-job
-> evaluation contract 与缺失 heuristic-rush endpoint 仍阻断正式 power/N 冻结；下一步先生成并审批
-> joint non-sealed pilot-evaluation manifest。validation-B、sealed 与 reserve 仍受后续批准门约束。
+> imitation-PPO scored-policy、胜率仪表盘与实际 DOM seat guard）。Task-1 历史协议、1,800 局
+> 基线及 retry-4 六 job（各 2,000 updates）已完成；534 个绑定文件已复核，但旧统计退出门未完成。
+> **2026-09-19 用户要求全面轻量化：当前主线改为 PPO 小步续训与少量同局比较**，见
+> [轻量计划](plan/task-1-2p-improvement-and-seed-protocol.md)。不再补 joint pilot / power / 多 seed
+> 前置流程。当前只完成计划重构；下一步补 PPO warm-start 入口，未启动新训练。
+> 历史 root、banks、结果与协议代码保留；validation-B、sealed 与 reserve 继续不消费。
 > 训练课程与 50 局真实网页部署待训练/账号条件解除后执行。
 > 增量明细见 [CODEBASE_PANORAMA.md §7](./CODEBASE_PANORAMA.md)。
 
@@ -30,7 +25,17 @@
 | Agent 层 | `src/splendor/agents/` | `generic/`（random 等基线）、`our_agents/`（PPO 家族 / minimax / 遗传算法 / **DQN**）；P6 远程 registry 适配 DQN 与前馈 imitation-PPO |
 | 浏览器层 | `src/splendor/browser/` | 网页版（game.hullqin.cn/ccbs）适配：driver 协议 + ego-browser 适配器、DOM 抽取（真实页面实测校准）、伪状态、执行器、会话、奇偶监控、夹具 |
 
-当前主线：按 `plan/` 实施「本地 DQN 训练 → 浏览器层部署网页版（game.hullqin.cn/ccbs）」的 sim-to-real 管线；P6 提供本地浏览器控制 + 远程 DQN/前馈 imitation-PPO 推理。
+当前训练主线：按 Task-1 轻量计划改进 2p PPO。既有 sim-to-real 管线与 DQN 保留；P6 提供本地浏览器控制 + 远程 DQN/前馈 imitation-PPO 推理。
+
+## 当前 Task-1 工作方式（优先于历史科学计划）
+
+- 从现有 PPO actor/critic/normalizer warm-start；首轮只提高 heuristic/rush 的池权重，不改网络和奖励。
+- 单 seed、100 updates × 16 局；update 0/50/100 共最多 480 局开发评测。有改善才做一次小复核。
+- 每轮最多 2 小时、最多两轮；不自动扩容、开多 seed、补 power 或恢复 2,800 局联合评测。
+- 文档只查差异/链接，代码只跑相关测试；改特征或掩码仍须 `make parity`。勿为小改动启动重型全量测试。
+- 不删除旧证据、不覆盖官方模型、不读取 B/sealed/reserve；轻量结果只作候选开发，不宣称方法级显著收益。
+- 用户指定后续子智能体使用 **Luna / Max / Fast**：仅在确需独立小任务时调用，最小上下文、避免重复审查；
+  模型使用 `gpt-5.6-luna`、reasoning `max`，Fast 仅在工具暴露该选项时设置，不伪称已设置。
 
 ## 常用命令
 
@@ -123,8 +128,9 @@ CJK 全角标点（`，（）；`）是本仓库的**内容而非笔误**（状�
 | `docs/ALGORITHM_SURVEY_20260912.md` | **策略算法调研**：启发式/minimax/DQN/PPO/GA 的数学本质、代码归因与 2/3/4 人局分析 |
 | `docs/SPLENDOR_LITERATURE_SURVEY_20260912.md` | **Splendor arXiv 文献调研**（Rinascimento 三部曲 + 确定性化 MCTS）与取长补短矩阵 |
 | `docs/IMPROVEMENT_ROADMAP_20260912.md` | **提升路径与分阶段实施计划**（阶段 A–F、G1–G5 验收、种子段与排期） |
-| `plan/task-1-2p-improvement-and-seed-protocol.md` | **Task-1 2p 科学提升主计划**（T1.0–T1.7、批准门、统计与 seed-roll） |
-| `docs/task1/` | **Task-1 已实现协议证据**（T1.0 基线、T1.1 RNG、T1.2 bank、T1.3 统计、T1.4 seed-roll preflight） |
+| `plan/task-1-2p-improvement-and-seed-protocol.md` | **当前 Task-1 轻量 PPO 主计划**（warm-start、定向 pool、小预算同局比较） |
+| `plan/reference/TASK1_SCIENTIFIC_PROTOCOL_20260919.md` | **历史科学协议归档**，不作为当前执行前置条件 |
+| `docs/task1/` | **当前路线入口与历史证据**（基线、RNG、banks、统计、已完成六 job 及分析） |
 | `ALGORITHM_COMPARISON.md` | 算法对比结论（GA 最稳、PPO 需重训——DQN 要超越的目标） |
 
 关键裁决速记：牌库 **90 张**（40/30/20，"78"是发牌后剩余的误读）；四元组 `(tier, colour, points, cost)` 全库零重复；265 维观测天然与网页信息集对齐；支付方式是两侧唯一硬语义差距。

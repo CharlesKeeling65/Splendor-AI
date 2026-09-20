@@ -673,5 +673,21 @@ random:0.5,minimax:0.5）已完成，M2/M3 结论见对应训练报告。
 - **统计退出门仍开放**：六个 selector batch 是 per-job evaluation contracts，正式
   `method_differences()` 会以 `episode rows mix evaluation contracts` 拒绝拼接；只有 3 replicates，
   selector 复用同一 10-scenario bank 做 best-of-41，且正式目标 heuristic-rush 不在该矩阵中。
-  下一步必须先提出并人工批准 joint、non-sealed pilot-evaluation manifest，冻结候选、target/guardrail
-  endpoints 与 power source，再生成正式 `statistics.json`。validation-B、sealed 与 reserve 仍未触及。
+  按当时科学协议，后续本应提出 joint non-sealed evaluation，再冻结 power/N；这一路线在下述
+  §7.16 被用户暂停。旧统计门仍未通过，不因切换路线而追认完成。validation-B、sealed 与 reserve 未触及。
+
+### 7.16 Task-1 全面轻量化重构（2026-09-19）
+
+- 用户明确要求从 PPO 本质提升能力、降低实验和 token 成本。当前
+  [主计划](plan/task-1-2p-improvement-and-seed-protocol.md)重写为三步：最小 warm-start、
+  定向 pool 续训、少量同局对比；旧 T1.0–T1.7 [协议归档](plan/reference/TASK1_SCIENTIFIC_PROTOCOL_20260919.md)。
+- 起点是 r1-O safe-PBRS checkpoint；首轮保留 actor/critic/normalizer/奖励，只提高
+  heuristic/rush pool 权重，保留其余对手。单 seed、100×16 新对局、最多 480 局开发评测；
+  有改善才做一次 800 局复核，每轮总计不超过 2 小时，最多两轮。
+- 源码已具备 PPO clip、GAE、合法 mask、entropy 和 KL 停更；**尚无 PPO-to-PPO 训练入口**。
+  下一步只补 opt-in warm-start（新 Adam，非精确 resume）和定向测试；本次未改 PPO 算法、未启动训练。
+- 2,800-game joint proposal 与 endpoint-family 扩展是在重构前产生的未提交工作，已从活动代码撤回；
+  可恢复 diff 保存在本地忽略目录 `runs/task1-plan-refactor-20260919/abandoned-heavy-proposal.patch`。
+  已提交的统计实现、旧训练结果、root/banks 和历史报告保持不变。
+- 不跑重型全量测试、不自动启动多人或网页训练、不消费 validation-B/sealed/reserve；
+  计划入口与仓库导航同步更新，Luna/Max 子任务偏好写入 AGENTS.md。
