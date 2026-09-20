@@ -1,122 +1,41 @@
-# Task 1 implementation ledger
+# Task-1：当前路线与历史证据
 
-This directory contains small, reviewable protocol artifacts for
-[`plan/task-1-2p-improvement-and-seed-protocol.md`](../../plan/task-1-2p-improvement-and-seed-protocol.md).
-It does not contain checkpoints or scenario banks.
+## 当前：2p PPO 轻量提升（2026-09-19）
 
-## T1.0 baseline freeze
+唯一执行入口是 [轻量主计划](../../plan/task-1-2p-improvement-and-seed-protocol.md)：
+已有 PPO checkpoint → 最小 warm-start → 单 seed 定向练 heuristic/rush → 少量同局比较。
+当前只完成计划重构，续训入口与新训练尚未实施。
 
-- [`T1.0_BASELINE_AUDIT.json`](T1.0_BASELINE_AUDIT.json) is rebuilt from the
-  frozen C2-R2 checkpoint, its BC/DAgger parent data, checked-in opponent
-  implementations, and all raw C4-R2 rows.
-- [`T1.0_BASELINE_MANIFEST_V2.json`](T1.0_BASELINE_MANIFEST_V2.json) is a
-  schema-v2, `proposed` evidence-only manifest. It consumed no validation or
-  sealed-test scenarios and is not approval to train.
-- The manifest was created from clean commit `c87ce25` using
-  `.venv-p5000/bin/python`. CUDA was unavailable at capture time, so its
-  runtime correctly records a CPU resolution and no GPU work was started.
+首轮 100 updates × 16 新对局；开发评测最多 480 局；有改善才做一次 800 局复核，
+仍受每轮 2 小时上限约束。最多两轮，不自动扩为网格、多 seed 或完整科研流程。
+旧 ppo-best 不覆盖，validation-B/sealed/reserve 不消费。
 
-Rebuild the audit (read-only source inputs):
+## 保留的历史工作
 
-```bash
-.venv/bin/python -m \
-  splendor.agents.our_agents.policy_imitation.baseline_audit \
-  --repo . --output /tmp/task1-baseline-audit.json
-diff -u docs/task1/T1.0_BASELINE_AUDIT.json /tmp/task1-baseline-audit.json
-```
+旧 T1.0–T1.7 计划已[归档](../../plan/reference/TASK1_SCIENTIFIC_PROTOCOL_20260919.md)。
+下列材料是实现与结果记录，不是当前训练前置任务，也不构成重启旧实验的授权。
 
-The C4-R2 report is historical description only. For each `ppo-best`
-opponent matchup it contains 150 scheduled rows from 50 source seeds and 100
-unique `(seed, focal-seat)` cells; 50 cells are repeated once. Its legacy
-Wilson intervals must not be used for task-1 decisions.
+| 记录 | 内容 |
+|---|---|
+| [T1.0 audit](T1.0_BASELINE_AUDIT.json) / [manifest](T1.0_BASELINE_MANIFEST_V2.json) | 原模型与历史联赛的冻结身份、样本边界 |
+| [T1.1 RNG](T1.1_RNG_PROTOCOL.md) | 事件键随机流、配对 schedule 与显式 pool |
+| [T1.2 banks](T1.2_SCENARIO_BANK.md) | ScenarioV1、split、跨 runner 初态与 sealed gate |
+| [T1.3 statistics](T1.3_PAIRED_STATISTICS.md) | 正式配对评测、聚类统计与 power 设计 |
+| [T1.4 seed roll](T1.4_SEED_ROLL.md) / [root record](T1.4_PRODUCTION_SEED_ROLL.json) | 已批准的一次性生产 roll；不重新抽 root |
+| [基线结果](T1.4_BASELINE_RESULTS.md) | 1,800 局新协议基线；非 sealed A200/stress100 |
+| [训练编排](T1.4_PILOT_ORCHESTRATION.md) | 已完成的六 job 生命周期、资源与证据契约 |
+| [奖励契约](T1.4_REWARD_CONTRACT.md) | O 的 safe-PBRS 与历史 O_bridge 的区别 |
+| [候选排序](T1.4_RANKING_UPDATE_20260917.md) | r1-O 优先作续训起点，但不是独立泛化排名 |
+| [分析 notebook](T1.4_PILOT_ANALYSIS_20260919.ipynb) / [结果 JSON](T1.4_PILOT_ANALYSIS_20260919.json) | completion receipt 复核、selected/final 对比与证据限制 |
+| [隔离观察](T1.4_HEAD_TO_HEAD_R1O_VS_PPO_20260917.md) | 缺逐局持久化证据的旧 head-to-head，不用于结论 |
 
-## T1.1 RNG and paired training
+## 已完成与未证明的边界
 
-[`T1.1_RNG_PROTOCOL.md`](T1.1_RNG_PROTOCOL.md) freezes the event-keyed RNG,
-paired schedule, explicit weighted-pool, spawn-worker, deterministic runtime,
-and manifest-binding contracts. All new behavior is opt-in through a
-`FormalTrainingSpec`; legacy PPO and opponent APIs retain their previous path.
+retry-4 的 O/O_bridge × r0/r1/r2 六 job 已各完成 2,000 updates；
+receipt 绑定 534 文件、3,741,553,697 bytes，已复核。
+但旧 selector 只有 10 scenarios、每 job best-of-41，且缺 heuristic-rush；
+正式 T1.4 统计退出门**未完成**。轻量化不是把这个门改成通过，而是暂停正式研究路线。
 
-This is protocol evidence, not a training result. Scenario snapshots and
-cross-runner deal parity begin in T1.2.
-
-## T1.2 ScenarioV1 and banks
-
-[`T1.2_SCENARIO_BANK.md`](T1.2_SCENARIO_BANK.md) records the immutable opening
-schema, registry hashes, seven disjoint split ranges, opening-only strata,
-content-addressed bank format, sealed consumption gate, and Game/raw/PPO
-parity contract. Only CI fixtures were produced; the formal sealed bank remains
-unmaterialized until the T1.4 crossed pilot and fixed-N approval gate.
-
-## T1.3 paired evaluation and statistics
-
-[`T1.3_PAIRED_STATISTICS.md`](T1.3_PAIRED_STATISTICS.md) records the strict
-candidate × opponent × ScenarioV1 × two-seat evaluator, append-only episode
-schema, failure-preserving denominator, joint scenario-cluster and nested
-replicate→scenario bootstrap, separate scenario/model-replicate power designs,
-checkpoint-to-live-policy attestation, and manifest-bound immutable
-`statistics.json` contract. Power artifacts distinguish prospective pilot data
-from a separately approved fixed-N run, whose manifest must bind the exact
-pilot artifact before outcomes are read. Only CI/synthetic fixtures were
-executed. The crossed pilot and its final fixed N remain behind the T1.4
-approval gate; no formal or sealed bank was consumed.
-
-## T1.4 seed-roll preflight
-
-[`T1.4_SEED_ROLL.md`](T1.4_SEED_ROLL.md) specifies the one-shot
-`splendor-seed-roll/1` authority, keyed finite-population SRSWOR allocation,
-five pre-reserved replicate blocks, exact seat balance, root-derived model
-initialization, streaming ScenarioV1 bank, and `paired-training-v2` runtime
-bindings. The optimizer accepts only the explicit `task1-formal-5x32000`
-profile; smaller rolls remain visibly tagged CI fixtures. Pilot and reserved
-replicates, per-treatment inputs, and one-shot output paths are manifest-bound.
-The formal gate additionally binds the exact root-derived scenario/seat order;
-confirmatory reserve jobs require a separately frozen activation file tied to
-the completed pilot manifest and its evidence, not a caller-supplied hash.
-The production root was explicitly approved and drawn once for
-`task1-t14-crossed-pilot-20260915`; its compact public record is
-[`T1.4_PRODUCTION_SEED_ROLL.json`](T1.4_PRODUCTION_SEED_ROLL.json). No formal bank
-was materialized as part of the root draw itself. After the later explicit
-implementation/training authorization, the non-sealed 96,000-row pilot
-`train-schedule` bank, the non-sealed 10-row checkpoint-selector bank, and the
-non-sealed 200-row validation-A and 100-row stress baseline banks were
-materialized and audited. The 1,800-game new-protocol frozen baseline is now
-complete; its W/D/L, fixed-model variance decomposition, hashes, and recovery
-record are in [`T1.4_BASELINE_RESULTS.md`](T1.4_BASELINE_RESULTS.md). No
-validation-B, sealed, or reserved-replicate bank has been read or created. The
-retry-4 CUDA/P5000 output reached a completed manifest with six terminal
-`2000/2000` jobs. Completion receipt
-`00f4305a36105004eccb53d4aef7199680296ee017f2b989a071bc85b8ff4d16`
-binds 534 files (3,741,553,697 bytes), all independently re-hashed by the
-executed analysis notebook. The descriptive checkpoint ranking is recorded in
-[`T1.4_RANKING_UPDATE_20260917.md`](T1.4_RANKING_UPDATE_20260917.md); the
-reproducible selected/final-horizon comparison, crossed variance diagnostic,
-power sensitivity, figure, and machine-readable decision are in
-[`T1.4_PILOT_ANALYSIS_20260919.ipynb`](T1.4_PILOT_ANALYSIS_20260919.ipynb) and
-[`T1.4_PILOT_ANALYSIS_20260919.json`](T1.4_PILOT_ANALYSIS_20260919.json).
-
-Training completion does not yet satisfy the T1.4 statistical exit gate. The
-six selector evaluations are separate per-job contracts, contain only 10
-scenarios, reuse the bank for best-of-41 selection, and omit heuristic-rush.
-The next admissible step is a new joint, manifest-bound, non-sealed pilot
-evaluation and formal `statistics.json`; validation-B, sealed, and reserve stay
-behind their approval gates. An earlier in-memory 400-game head-to-head is
-preserved only as a quarantined, non-evidentiary observation in
-[`T1.4_HEAD_TO_HEAD_R1O_VS_PPO_20260917.md`](T1.4_HEAD_TO_HEAD_R1O_VS_PPO_20260917.md).
-
-[`T1.4_PILOT_ORCHESTRATION.md`](T1.4_PILOT_ORCHESTRATION.md) documents the
-fail-closed P5000/tmux production entry for the approved six-job pilot. It pins
-the exact O/O_bridge recipes, 3×2 job matrix, five-member training pool,
-ScenarioV1 validation selector, P5000 runtime, resource watchdog, one-shot
-output reservations, checkpoint evidence, and lifecycle transitions. The
-baseline replay and retry-4 production launch are complete; the remaining gate
-is statistical-design approval, not another six-job training rerun.
-
-## T1.4 episodic reward contract
-
-[`T1.4_REWARD_CONTRACT.md`](T1.4_REWARD_CONTRACT.md) separates the historical
-`O_bridge/terminal-biased-potential-v1` semantics from the explicit
-`O/safe-potential-v1` contract. The safe contract fixes the absorbing terminal
-potential at zero for normal, deadlock, round-limit, and truncation exits while
-leaving the `+10 / 0 / -10` terminal utility unchanged. Legacy constructors and
-CLI entries retain their old non-zero-terminal behavior.
+2,800 局 joint pilot、power/N 冻结、多 replicate 确认与 sealed 批次不再是下一步。
+尚未提交的 joint-proposal 扩展已退出活动代码，本地可恢复副本见主计划 §5。
+现有协议实现、root、banks、checkpoints 和所有已完成结果不删除、不改写。

@@ -1,19 +1,19 @@
 # 任务计划（2）：3p/4p 多人模型训练
 
-> 状态：依赖任务（1）完成后启动。本文只定义多人训练路线、任务、验收和产物，
-> 不表示 3p/4p 正式训练已经完成。
-> 前置计划：[任务计划（1）：2p 模型提升与科学种子协议](task-1-2p-improvement-and-seed-protocol.md)。
+> 状态（2026-09-19）：后续草案，未启动。当前只执行 Task-1 轻量 PPO 路线。
+> 前置计划：[任务计划（1）：2p PPO 轻量提升](task-1-2p-improvement-and-seed-protocol.md)。
+> 本文保留多人设计参考；预算、manifest、多 seed 与大规模评测条目须在真正启动时重新轻量化，
+> 不得自动继承为当前任务，也不再要求通过旧 Task-1 的 T1.7 科学退出门。
 
 ## 1. 启动条件与范围
 
 ### 1.1 强制启动闸门
 
-任务（2）不得与任务（1）并行启动。至少要先完成：
+任务（2）不与当前 2p 小实验并行启动；须用户另行要求。启动前至少完成：
 
-- 2p RNG lineage、scenario bank、train/validation/test split 和统计规则通过审查；
-- 当前 2p `ppo-best` 已完成新测试 bank 的基线重测；
-- 2p heuristic/rush 定向实验已经结束，或有明确的停止理由；
-- 3p/4p 使用的新 seed 段、manifest schema 和 ranking utility 已预注册；
+- 2p 轻量实验已得到一个保留候选，或两轮内有明确的停止理由；不要求完成旧 power/N、sealed 或 T1.7；
+- 固定 2p 模型身份并保留原文件，不让多人训练覆盖它；
+- 为 3p 重新确定小预算、独立数据划分与 ranking utility，而非直接启动本文完整矩阵；
 - `public-v2-multi` 的 337 维特征与 2p 前缀逐位关系已验证；
 - 任务（1）的最终测试段不会被多人训练或多人调参复用。
 
@@ -176,9 +176,9 @@
 
 ## 4. 训练、评测和模型选择协议
 
-### 4.1 继承任务（1）的 seed 规则
+### 4.1 多人数据隔离参考（非当前执行要求）
 
-多人训练继续使用层级 seed：
+以下保留原多人设计思路，不把旧 Task-1 的生产 roll 或统计门作为启动前提：
 
 ```text
 master_seed
@@ -279,10 +279,9 @@ T2.3 3p PPO ───────────────► T2.4 3p league gate
 
 ## 8. 依据与关联文档
 
-- [任务计划（1）：2p 模型提升与科学种子协议](task-1-2p-improvement-and-seed-protocol.md)
+- [任务计划（1）：2p PPO 轻量提升](task-1-2p-improvement-and-seed-protocol.md)
 - [shared feature schemas](../src/splendor/splendor/features_v2.py)
 - [整体提升路线](../docs/IMPROVEMENT_ROADMAP_20260912.md)
 - [C4-R2 league report](../runs/c4r2-league-20260914/league_report.md)
 - [remote inference feature/seat contract](phase-6-remote-inference.md)
 - [seed registry](../docs/seed_registry.md)
-

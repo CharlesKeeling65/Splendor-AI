@@ -5,9 +5,18 @@
 
 ## 文档体系
 
+### 当前训练主线：轻量 PPO（2026-09-19）
+
+- [Task-1：2p PPO 轻量提升](task-1-2p-improvement-and-seed-protocol.md)：从已有模型 warm-start，
+  定向练 heuristic/rush，单 seed、100×16 局、少量同局比较；最多两轮小试验。
+  当前仅计划重构完成，续训入口与新训练尚未实施。
+- [历史证据](../docs/task1/README.md)保留；[旧科学协议](reference/TASK1_SCIENTIFIC_PROTOCOL_20260919.md)
+  已归档，joint pilot、power/N、多 replicate 与 sealed 批次不再是当前训练前置条件。
+- [Task-2：3p/4p](task-2-3p4p-training.md)仍为后续草案，不自动启动，不要求完成旧 T1.7 科学门。
+
 ### 训练方向增量计划（2026-09-07）
 
-- [策略模仿与自博弈实施计划](policy-imitation-selfplay.md)：教师评测 → BC → DAgger → PPO 对手池训练；保留 corrected DQN 对照，MCTS 按收益门槛进入。**待实施**，不代表已完成训练或替换部署模型。
+- [策略模仿与自博弈实施计划](policy-imitation-selfplay.md)：历史路线（教师 → BC → DAgger → PPO）；已有落地与结果见 Task-1 证据，不再按此文从头重跑。DQN/MCTS 扩展不属于当前轻量任务。
 - 依据：[DQN 第二轮结果与选模纠错](../docs/DQN_ROUND2_RESULTS_20260907.md)；已有实验协议见 [dqn-round2.md](dqn-round2.md)。
 
 ### 对局辅助面板计划（2026-09-14）
@@ -21,6 +30,8 @@
 ```
 plan/
 ├── README.md                        ← 本文：阶段总览 + 验收体系说明 + 导航
+├── task-1-2p-improvement-and-seed-protocol.md  当前轻量 PPO 主线
+├── task-2-3p4p-training.md           后续多人训练草案（未启动）
 ├── phase-0-foundation.md            P0 地基与对齐（性能/注册表/协议/网页实测）
 ├── phase-1-dqn-training.md          P1 DQN 本地训练（与 P2 并行）
 ├── phase-2-browser-layer.md         P2 浏览器层最小闭环（与 P1 并行）
@@ -29,14 +40,15 @@ plan/
 ├── phase-5-engineering.md           P5 工程化固化（测试/CI/文档）
 ├── phase-6-remote-inference.md      P6 本地浏览器控制 + 远程推理 + 实时胜率仪表盘
 ├── phase-7-browser-advisor.md       P7 浏览器对局辅助面板（只读 Advisor，v0/v1 已实现）
-└── reference/                       四份原始文档（依据归档，内容未改动）
+└── reference/                       历史设计依据与旧科学协议归档
+    ├── TASK1_SCIENTIFIC_PROTOCOL_20260919.md  已暂停的重型 Task-1 路线
     ├── UPGRADE_ROADMAP.md           架构裁决与勘误（含 5 项源码验证裁决）
     ├── DQN_GUIDE.md                 DQN 算法完整方案（超参/骨架/陷阱）
     ├── BROWSER_RL_MAPPING.md        网页版 ↔ 仓库 RL 环境映射（实测依据）
     └── IMPLEMENTATION_SPEC.md       实现规格书（任务看板 + 函数级框架）
 ```
 
-**阅读路径**：实施者按 `phase-N` 顺序读（每份阶段文档自带任务、代码说明、验收标准）；
+**阅读路径**：当前 2p 训练先读 Task-1 轻量计划；涉及既有平台改动再读相应 `phase-N` 文档；
 想了解"为什么这样设计"先读 `reference/UPGRADE_ROADMAP.md`；写代码时对照 `reference/IMPLEMENTATION_SPEC.md` 的函数签名。
 
 ## 阶段总览
@@ -54,6 +66,8 @@ plan/
 依赖图：`P0 → {P1 ∥ P2} → P3 → P4`；P5 贯穿，P6 依赖 P2/P3 的浏览器边界与 P5 的质量门。**关键路径先启动项：T0.4（网页实测）同时阻塞 P2 的两个任务，应最先安排。**
 
 ## 验收体系说明（双轨制）
+
+以下是原 P0–P6 平台工程验收体系，不是每轮轻量 PPO 开发的附加门槛；当前训练按 Task-1 的小预算验证执行。
 
 每个阶段同时给出两类验收标准，两者**都通过**才算阶段完成：
 
